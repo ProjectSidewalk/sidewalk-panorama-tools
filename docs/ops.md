@@ -1241,6 +1241,42 @@ keeps turning up as `(HTTP 403)` night after night, rather than many ids in one 
 answer, not a refusal, and should leave `TILE_PUSHBACK_STATUSES`: under a fresh latch one such pano near the
 head of the shuffled list would trip probation and rewrite the latch every night.
 
+## When Mapillary refuses the image phase
+
+Mapillary has its own stop, beside Google's and independent of it
+([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). It counts two shapes
+(`mapillary.pushback_reason`): a 429 that survived the session's five retries, and the token refused (an
+error envelope with code 190 or type `OAuthException`, at any status). Three Mapillary panos in a row refused
+that way stop Mapillary images for the rest of the run:
+
+```
+IMAGEDOWNLOAD: WARNING - Mapillary refused 3 panos in a row (HTTP 429). Stopping Mapillary images for this run.
+IMAGEDOWNLOAD: WARNING - Mapillary refused this run (HTTP 429); 214 pano(s) were left unattempted and nothing
+was ledgered for them, so they retry next run. No ledger repair is needed. Wait before the next run; a
+standalone run is safe to resume, since nothing was ledgered.
+```
+
+For a refused token, the summary says `(token refused)` and `Replace MAPILLARY_ACCESS_TOKEN before the next
+run`. How it differs from Google's:
+
+- **No latch, no probation, no depth stand-down.** The depth phase never asks Mapillary for anything, and a
+  Mapillary refusal says nothing about this host's standing with Google.
+- **The city is booked `failed`** (exit 1, through the tripped-sources channel), and `image_stop` is **left
+  alone**, not set to `blocked`: a later budget stop is still recorded, and `images-no-success`'s budget arm
+  stays live for a mixed city's GSV panos.
+- **No ledger repair**, as for Google's: a refusal is never a verdict.
+- **Only a Mapillary success resets the count.** A 5xx storm, a timeout, a retired image's 400 (code 100,
+  subcode 33), a skip, a permanent verdict and other sources' outcomes neither count nor reset. GSV keeps
+  downloading after a Mapillary trip, and the reverse.
+- **`Retry-After` is ignored** for Mapillary's session (`common.retrying_session(respect_retry_after=False)`),
+  so a 429 costs about 30 s of fixed backoff rather than up to six hours inside one request, which neither
+  `--max-runtime` nor this stop could see. Panoramax keeps the default.
+- **Rate-limit envelope codes are logged, not counted.** Meta's Graph API documents envelope codes for rate
+  limits (4, 17, 32, 613, an 80000 series); whether Mapillary uses them is unmeasured. Every non-200 Graph
+  answer with an envelope writes an INFO line, `Mapillary answered <status> for <id>: type=... code=...`, so
+  the first such refusal is measured. If one turns out to be a refusal, raise it as its own type in
+  `mapillary.download_single_pano` and count that type in `pushback_reason`, as the token refusal is.
+
 ## If the cbk tile endpoint dies: moving to streetviewpixels-pa
 
 This section replaces [#205](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/205), the

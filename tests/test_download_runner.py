@@ -2778,19 +2778,22 @@ class TestGoogleRefusingGsvImagesStopsThePhase(_PushbackHarness):
         assert self.ledger() == ['mly-0,1', 'mly-1,1']
         assert tripped == {'gsv'}
 
-    def test_another_sources_push_back_shaped_errors_trip_nothing(self, monkeypatch, caplog):
-        """A Mapillary 429 is Mapillary's business: it neither counts here nor is logged as Google's refusal."""
+    def test_another_sources_push_back_shaped_errors_are_not_googles(self, monkeypatch, caplog):
+        """A Mapillary 429 is Mapillary's business: it is never logged as Google's refusal and never latches.
+        Since #239 it trips Mapillary's own stop (TestMapillaryRefusingStopsMapillary) - not GSV's, and with
+        image_stop left alone."""
         panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(5)]
         verdicts = {p['pano_id']: probe_retry_error(429) for p in panos}
 
         with caplog.at_level(logging.ERROR):
             _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
 
-        assert len(calls) == 5 and tripped == set() and stop_reasons['image_stop'] is None
+        assert len(calls) == DownloadRunner.MAPILLARY_MAX_CONSECUTIVE_PUSHBACK and tripped == {'mapillary'}
+        assert stop_reasons['image_stop'] is None
         assert not self.latch.exists()
         logged = [r.getMessage() for r in caplog.records]
-        assert len([m for m in logged if 'due to error' in m]) == 5
-        assert not any('refused by Google' in m for m in logged)
+        assert len([m for m in logged if 'due to error' in m]) == DownloadRunner.MAPILLARY_MAX_CONSECUTIVE_PUSHBACK
+        assert not any('refused by Google' in m or 'Google pushed back' in m for m in logged)
 
     def test_a_probe_shaped_refusal_counts_and_names_itself(self, monkeypatch, caplog):
         panos = self.gsv_panos(4)
@@ -5336,3 +5339,110 @@ def test_the_unusable_image_ledger_repair_recipe_finds_and_removes_exactly_the_j
     assert DownloadRunner.progress_check(path)[0] == good
     assert os.stat(path).st_mode & 0o777 == 0o664, 'the next lab user must still be able to append'
     assert not os.path.exists(path + '.new')
+
+
+class TestMapillaryRefusingStopsMapillary(_PushbackHarness):
+    """#239: Mapillary's own push-back stop, beside #162's and independent of it.
+
+    Counts only mapillary.pushback_reason (a 429 past the retry adapter, or the token refused), resets only on a
+    Mapillary success, ledgers nothing, never touches Google's latch or pace file, leaves image_stop alone, and
+    prints its own summary - never #162's (worded for Google) and never #113's (false downloaded=0 rows).
+    """
+
+    @staticmethod
+    def mly_panos(count):
+        return [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(count)]
+
+    @pytest.fixture(autouse=True)
+    def _refusal(self):
+        self.R = probe_retry_error(429)
+        self.T = downloaders.mapillary.MapillaryTokenRefused('Mapillary refused the token for mly-x (code=190)')
+
+    def test_three_refusals_in_a_row_stop_mapillary_and_nothing_else(self, monkeypatch, capsys):
+        panos = self.mly_panos(5)
+        result, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, {p['pano_id']: self.R for p in panos})
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2'], 'panos after the trip must not be attempted'
+        assert self.ledger() == [], 'a refusal is never a verdict'
+        assert result == (0, 0, 3, 0, 3)
+        assert tripped == {'mapillary'}, 'tripped_sources is what makes main() exit 1'
+        assert stop_reasons['image_stop'] is None, 'image_stop is left alone (#239 plan, D6)'
+        assert not self.latch.exists() and not self.pace.exists(), "Mapillary's refusal is not Google's"
+        out = capsys.readouterr().out
+        assert 'Mapillary refused 3 panos in a row (HTTP 429)' in out
+        assert 'Mapillary refused this run (HTTP 429); 2 pano(s) were left unattempted' in out
+        assert 'false downloaded=0' not in out, "#113's repair advice must not be printed for a refusal"
+        assert 'Google' not in out
+
+    def test_a_refused_token_says_to_replace_it(self, monkeypatch, capsys):
+        panos = self.mly_panos(4)
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, {p['pano_id']: self.T for p in panos})
+
+        assert len(calls) == 3 and tripped == {'mapillary'}
+        out = capsys.readouterr().out
+        assert 'Mapillary refused this run (token refused)' in out
+        assert 'Replace MAPILLARY_ACCESS_TOKEN' in out
+
+    def test_two_are_not_a_trip(self, monkeypatch):
+        panos = self.mly_panos(2)
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, {p['pano_id']: self.R for p in panos})
+
+        assert calls == ['mly-0', 'mly-1'] and tripped == set()
+
+    def test_only_a_success_resets_the_count(self, monkeypatch):
+        panos = self.mly_panos(7)
+        verdicts = {p['pano_id']: self.R for p in panos}
+        verdicts['mly-2'] = downloaders.DownloadResult.success
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['mly-%d' % n for n in range(6)], 'the success resets, so the trip is at mly-5'
+        assert self.ledger() == ['mly-2,1'] and tripped == {'mapillary'}
+
+    def test_a_transient_neither_counts_nor_resets(self, monkeypatch):
+        """A 5xx storm, a timeout or a retired image's 400 is no evidence either way."""
+        panos = self.mly_panos(5)
+        verdicts = {p['pano_id']: self.R for p in panos}
+        verdicts['mly-1'] = probe_retry_error(503)
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3'] and tripped == {'mapillary'}
+
+    def test_a_permanent_verdict_neither_counts_nor_resets(self, monkeypatch):
+        """#113 counts verdicts and this counts refusals; neither touches the other."""
+        panos = self.mly_panos(5)
+        verdicts = {p['pano_id']: self.R for p in panos}
+        verdicts['mly-1'] = downloaders.DownloadResult.failure
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3'] and tripped == {'mapillary'}
+        assert self.ledger() == ['mly-1,0']
+
+    def test_a_mixed_city_keeps_each_source_to_itself(self, monkeypatch):
+        """A Mapillary trip leaves GSV running, and GSV's refusals never count towards Mapillary's stop."""
+        panos = []
+        for n in range(4):
+            panos += [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'}, {'pano_id': 'gsv-%d' % n, 'source': 'gsv'}]
+        verdicts = {p['pano_id']: self.R for p in panos if p['source'] == 'mapillary'}
+        verdicts.update({p['pano_id']: downloaders.DownloadResult.success for p in panos if p['source'] == 'gsv'})
+
+        _, calls, tripped, stop_reasons = self.drive(monkeypatch, panos, verdicts)
+
+        assert tripped == {'mapillary'}
+        assert [c for c in calls if c.startswith('gsv')] == ['gsv-%d' % n for n in range(4)]
+        assert stop_reasons['image_stop'] is None
+
+    def test_googles_refusals_do_not_count_towards_mapillarys_stop(self, monkeypatch):
+        panos = []
+        for n in range(3):
+            panos += [{'pano_id': 'gsv-%d' % n, 'source': 'gsv'}, {'pano_id': 'mly-%d' % n, 'source': 'mapillary'}]
+        verdicts = {p['pano_id']: self.P for p in panos if p['source'] == 'gsv'}
+        verdicts.update({p['pano_id']: downloaders.DownloadResult.success for p in panos
+                         if p['source'] == 'mapillary'})
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert tripped == {'gsv'}
+        assert [c for c in calls if c.startswith('mly')] == ['mly-0', 'mly-1', 'mly-2']

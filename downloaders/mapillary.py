@@ -8,6 +8,12 @@ import logging
 import os
 import stat
 
+import requests
+
+# Private in the package on purpose: making it public adds a name to the installable package, which is a
+# release (.claude/rules/package.md). One regex is not worth one, so it is read from its one definition.
+from sidewalk_panorama_tools.gsv_tiles import _RETRY_STATUS_RE
+
 from . import common
 from .common import (DownloadResult, atomic_output_path, jpeg_dimensions, retrying_session,
                      write_downscaled_sidecar_from_file)
@@ -93,6 +99,50 @@ class MapillaryErrorResponse(RuntimeError):
     """
 
 
+class MapillaryTokenRefused(MapillaryErrorResponse):
+    """A Graph API answer carrying the measured auth signature (is_auth_envelope), at any status (#239).
+
+    The token is refused, so every Mapillary pano tonight will be too: pushback_reason reads this type as
+    'token refused', and three in a row stop the source for the run. A subclass, so everything that reads a
+    MapillaryErrorResponse (a raise, unledgered, retried next run) is unchanged.
+    """
+
+
+# The Graph API's own refusals that pushback_reason counts. Only 429 to start (#239 plan, decision D2): Meta
+# documents rate-limit envelope codes (4, 17, 32, 613, an 80000 series) but whether Mapillary's Graph API
+# uses them is unmeasured, so download_single_pano logs any envelope code it sees on a non-200 instead.
+PUSHBACK_STATUSES = frozenset((429,))
+
+
+def pushback_reason(exc):
+    """'HTTP 429' / 'token refused' when `exc` is Mapillary refusing this run; None otherwise (#239).
+
+    What the image loop's Mapillary push-back stop counts. Reads exception types and attributes only, never a
+    response body: by the time an exception reaches the loop the session is closed.
+
+    * requests' RetryError whose message names a status in PUSHBACK_STATUSES - the retry adapter gave up on
+      429s. A 5xx RetryError is Mapillary being ill, not refusing us, and a timeout or reset is this box.
+    * requests' HTTPError carrying a 429 response - unreachable while 429 is in the forcelist; kept for the
+      day it is not.
+    * MapillaryTokenRefused - the token is refused; no pano will succeed until it is replaced.
+
+    Everything else is None, notably 400 code 100 / subcode 33 ("does not exist ... or missing
+    permissions"), which retired images send every night.
+    """
+    if isinstance(exc, MapillaryTokenRefused):
+        return 'token refused'
+    if isinstance(exc, requests.exceptions.RetryError):
+        match = _RETRY_STATUS_RE.search(str(exc))
+        if match and int(match.group(1)) in PUSHBACK_STATUSES:
+            return 'HTTP %s' % (match.group(1),)
+        return None
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response is not None and response.status_code in PUSHBACK_STATUSES:
+            return 'HTTP %d' % (response.status_code,)
+    return None
+
+
 # The auth signature, as measured: every auth failure on 2026-09-05 carried code 190, at every status it
 # arrived on (400, 401 and 500 - OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05 in tests/test_image_downloaders.py),
 # and Meta's Graph family files token trouble under type OAuthException. What this is keyed on matters at
@@ -147,6 +197,8 @@ def original_rendition_url(payload, pano_id):
     if not isinstance(payload, dict):
         raise MapillaryErrorResponse("Mapillary metadata for %s was not a JSON object: %.80r" % (pano_id, payload))
     error = payload.get('error')
+    if is_auth_envelope(payload):
+        raise MapillaryTokenRefused("Mapillary refused the token for %s (%s)" % (pano_id, _envelope_detail(error)))
     if error is not None:
         # Checked before the URL, not instead of it: a body that carries both is still saying the token is
         # bad, and following its URL would store whatever that URL serves as the pano.
@@ -164,7 +216,9 @@ def _session():
     """The retry policy now lives in common.retrying_session, shared with panoramax.py (#110). This stays as
     a named seam rather than becoming an import: it is where every test in tests/test_image_downloaders.py
     patches in its fake session."""
-    return retrying_session()
+    # Retry-After is ignored here (#239): honouring it can hold one request for hours, past --max-runtime and
+    # the push-back stop alike. See common.retrying_session.
+    return retrying_session(respect_retry_after=False)
 
 
 def _write_display_copy(out_image_name, pano_id):
@@ -240,7 +294,7 @@ def download_single_pano(storage_path, pano_info):
             except ValueError:
                 payload = None
             if is_auth_envelope(payload):
-                raise MapillaryErrorResponse("Mapillary answered 404 for %s with an auth error envelope (%s)"
+                raise MapillaryTokenRefused("Mapillary answered 404 for %s with an auth error envelope (%s)"
                                              % (pano_id, _envelope_detail(payload['error'])))
             logging.error("Mapillary has no image %s (404)", pano_id)
             return DownloadResult.failure
@@ -259,6 +313,22 @@ def download_single_pano(storage_path, pano_info):
         # own: it bounds the damage at two false rows, but it does not make this body any less ambiguous.
         # Reading a message that conflates "does not exist" with "missing permissions" as a verdict on the
         # pano stays a separate decision, on separate evidence.
+        if meta_resp.status_code != 200:
+            try:
+                error_payload = meta_resp.json()
+            except ValueError:
+                error_payload = None
+            if is_auth_envelope(error_payload):
+                # The measured auth failures arrived at 400 and 401 as well as 500 (a 500 exhausts the retry
+                # adapter and never gets here): the token, not this pano, so the push-back stop counts it.
+                raise MapillaryTokenRefused("Mapillary answered %d for %s with an auth error envelope (%s)"
+                                            % (meta_resp.status_code, pano_id,
+                                               _envelope_detail(error_payload['error'])))
+            if isinstance(error_payload, dict) and isinstance(error_payload.get('error'), dict):
+                # Measurement, not policy (#239 plan, D2): whether Mapillary rate-limits with an envelope code
+                # rather than a 429 is unknown, so record which codes non-200 answers carry.
+                logging.info("Mapillary answered %d for %s: %s", meta_resp.status_code, pano_id,
+                             _envelope_detail(error_payload['error']))
         meta_resp.raise_for_status()
 
         try:
