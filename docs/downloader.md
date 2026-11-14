@@ -112,25 +112,31 @@ Three consequences worth knowing:
 
 A city can be scraped before it has a Project Sidewalk deployment, so the imagery is already on hand if it
 is deployed later. Give the pano list as a CSV and any placeholder for the host
-([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)):
+([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). For a Mapillary city, the
+token must be set; without it every Mapillary row is skipped and nothing is downloaded (see
+[Imagery sources](#imagery-sources)):
 
 ```bash
-python3 DownloadRunner.py unused.invalid /srv/panos/sacramento-ca \
-  -c pano_list.csv --skip-depth --max-runtime 20
+read -rs MAPILLARY_ACCESS_TOKEN && export MAPILLARY_ACCESS_TOKEN
+python3 DownloadRunner.py unused.invalid /srv/panos/sacramento-ca -c pano_list.csv --max-runtime 20
 ```
 
 With `-c` the host is only printed in the run's opening line; `/adminapi/panos` is never requested. The CSV
-needs a `pano_id` and a `source` column. Other columns are those of `/adminapi/panos` (see `samples/`), and
-a CSV without `has_labels` has every row downloaded, with or without `--all-panos`.
+needs a `pano_id` and a `source` column. Other columns are those of `/adminapi/panos` (see `samples/`). A CSV
+without `has_labels` has every row downloaded, with or without `--all-panos`. A CSV without `width`/`height`
+prints a `WARNING` about records with no width/height; for a Mapillary or Panoramax list it is harmless,
+since those sources read the size from the image. The depth phase only ever covers GSV panos, so
+`--skip-depth` matters only for a GSV list.
 
-**A later nightly scrape accepts everything the pre-fetch leaves behind.** The ledger rows, the `log.csv`
-row and `scrape.log` are the same files a nightly run writes, and the next run resumes from them:
+**A later nightly scrape resumes from what the pre-fetch leaves**: the ledger rows, the `log.csv` row and
+`scrape.log` are the same files a nightly run writes.
 
 | Left by the pre-fetch | What a later nightly run does with it |
 |---|---|
 | `1` rows in `pano_id_log.csv`, stamped or blank | Skips those panos at zero requests. A blank `fetched_at` means the file was already on disk; its mtime is the only record of when it was fetched ([`fetched_at`](ops.md#fetched_at-and-the-two-row-widths)). |
-| `0` rows | Never asks the source for that pano again. For Mapillary only a record that names the image and has no original rendition produces one. |
+| `0` rows | Never asks the source for that pano again. For Mapillary those are a 404, or a record that names the image and has no original rendition ([below](#imagery-sources)). |
 | Files for panos the server never lists | Left on disk and in the ledger. The cumulative image counts in `log.csv` are seeded from the ledger, so they can exceed that night's corpus ([columns](ops.md#the-logcsv-columns)). |
+| Any ledger row at all | The store now has history, so a night on which the server serves an **empty** pano list is booked as the `pano-list-empty` condition and fails under the queue. A fresh store is exempt; a pre-fetched one is not. A new deployment that serves no panos yet will therefore fail its nights until it does. |
 | The folder name | Not checked by the runner, but it **must equal the deployment's `city_id`**, because the app reads `<store-root>/<city_id>`. If the id chosen at deployment differs, rename the folder; the ledgers hold pano ids, not paths. |
 
 Four things to know before a long run:
@@ -146,30 +152,42 @@ Four things to know before a long run:
   print(len(bad), bad[:10])
   ```
 
-  For each file it lists, move the file away and delete that pano's row from `pano_id_log.csv`; the next run
-  fetches it again.
-* **There is no Mapillary stop for rate limiting.** A 429 is retried in the session up to 5 times with
-  backoff, then the pano is counted as failed, left unledgered, and the loop moves on, so a refusing
-  Mapillary would cost up to 6 requests for every pano left in the list. (Google has a push-back breaker;
-  Mapillary does not.) The loop is serial with no fixed delay, about 0.5 s and two requests per Mapillary
-  pano. **Pass `--max-runtime` and run a long list in pieces**: each piece resumes from the ledger, so nothing
-  is fetched twice. Between pieces, read the `failed` count in the last `IMAGEDOWNLOAD: Completed` line. A
-  handful is normal (ids Mapillary no longer has, which answer 400 and are asked again on every run); if most
-  of a piece failed, read `scrape.log` before running again.
-* **The exit code says less than it does under the queue.** A standalone run exits 1 only when a source
-  breaker trips or on the first frame wider than the viewer ceiling. The other run conditions, "every
-  attempt raised" included, are `WARNING` lines and entries in `--run-summary-file`; only `scrape_queue.py`
-  turns them into an exit code. Read the output, or pass `--run-summary-file`.
-* **Depth needs GSV.** `--skip-depth` is only a saving for a GSV city; the depth phase never requests
-  anything for Mapillary or Panoramax panos.
+  This proves each file is a whole JPEG, not that it is the original rendition: a complete thumbnail passes.
+  For each file it lists, first delete that pano's row from `pano_id_log.csv`, then move the file out of the
+  storage directory; the next run fetches it again. (In the other order, an interrupted repair leaves a `1`
+  row with no file, which is never refetched.)
+* **There is no Mapillary stop for rate limiting, and `--max-runtime` does not bound a refused run.** A 429
+  is retried inside the request up to 5 times. Without a `Retry-After` header that costs about 30 s per pano,
+  after which the pano is counted as failed, left unledgered, and the loop moves on. With one, each retry
+  sleeps as long as the header asks, up to 6 hours, inside a single request. `--max-runtime` is checked only
+  between panos, so it cannot interrupt that. Whether Mapillary sends the header is unmeasured. (Google has
+  a push-back breaker; Mapillary does not.) So **run a long list in pieces with `--max-runtime`**: each piece
+  resumes from the ledger, so nothing is fetched twice. A piece that stops printing `IMAGEDOWNLOAD:` lines
+  for minutes is waiting on a refusal; stop it and wait before the next piece. The loop is serial with no
+  fixed delay, about two requests per Mapillary pano (#239's Sacramento run measured about 0.5 s per pano).
+  Between pieces, read field 20 of the piece's `log.csv` row: the attempts that raised. (The `failed` figure
+  on stdout starts from the ledger's `0` rows, so it is not that run's alone.) A handful is normal; ids
+  Mapillary no longer has answer 400 and are asked again on every run. If most of a piece raised, read
+  `scrape.log` before running again.
+* **The exit code says less than it does under the queue.** A standalone run exits 1 when a source breaker
+  trips, on the first frame wider than the viewer ceiling that this host has seen, or on an uncaught error
+  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 when stopped. The run
+  conditions, among them "every attempt raised" and `mapillary-token-missing`, are `WARNING` lines and
+  entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
+  pass `--run-summary-file`.
+* **Permissions are the copy's to set.** The runner creates shard folders `2775` (group-writable, setgid;
+  not on Windows), but the city folder itself is a plain `os.makedirs`, and a copy carries the source's modes.
 
 **Copying the folder to the lab pano store** is enough as it is, because the ledgers hold no paths, host or
-city names. Preserve modification times (`rsync -a`), since for every blank-stamp row the mtime is the only
-fetch record; never overwrite at the destination (`--ignore-existing`), because
-[the store is an archive](ops.md#the-store-is-an-archive-not-a-cache); and keep the shard folders
-group-writable (the runner creates them `2775`) for the account the app and the scraper run as. If the city
+city names. Preserve modification times, since for every blank-stamp row the mtime is the only fetch
+record; never overwrite at the destination, because
+[the store is an archive](ops.md#the-store-is-an-archive-not-a-cache); and set modes for the account the
+app and the scraper run as rather than copying the source's. For example
+`rsync -rt --ignore-existing --chmod=D2775,F664 sacramento-ca/ <store-root>/sacramento-ca/`. If the city
 folder already exists on the store, copy the image files only and leave its ledgers alone: the next nightly
-run finds each new file on disk and ledgers it at zero requests. Jon or Mikey write the store, not an agent.
+run finds each new file on disk and ledgers it at zero requests, but only for panos the server lists,
+that are selected (labelled, or `--all-panos`), and that have no `0` row there already. Jon or Mikey write
+the store, not an agent.
 
 ## Pulling from the Project Sidewalk pano store
 
