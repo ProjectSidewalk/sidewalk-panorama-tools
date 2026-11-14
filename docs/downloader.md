@@ -163,15 +163,19 @@ Four things to know before a long run:
   between panos, so it cannot interrupt that. Whether Mapillary sends the header is unmeasured. (Google has
   a push-back breaker; Mapillary does not.) So **run a long list in pieces with `--max-runtime`**: each piece
   resumes from the ledger, so nothing is fetched twice. A piece that stops printing `IMAGEDOWNLOAD:` lines
-  for minutes is waiting on a refusal; stop it and wait before the next piece. The loop is serial with no
+  for minutes is most likely waiting on a refusal (a dead connection looks the same); stop it and wait
+  before the next piece. The loop is serial with no
   fixed delay, about two requests per Mapillary pano (#239's Sacramento run measured about 0.5 s per pano).
-  Between pieces, read field 20 of the piece's `log.csv` row: the attempts that raised. (The `failed` figure
-  on stdout starts from the ledger's `0` rows, so it is not that run's alone.) A handful is normal; ids
+  Between pieces, read field 20 of the piece's `log.csv` row: the attempts that raised. It is blank for a
+  piece that was stopped before the image phase finished; read that piece's `Failed to download pano` lines
+  in `scrape.log` instead. (The `failed` figure on stdout starts from the ledger's `0` rows, so it is not
+  that run's alone.) A handful is normal; ids
   Mapillary no longer has answer 400 and are asked again on every run. If most of a piece raised, read
   `scrape.log` before running again.
 * **The exit code says less than it does under the queue.** A standalone run exits 1 when a source breaker
   trips, on the first frame wider than the viewer ceiling that this host has seen, or on an uncaught error
-  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 when stopped. The run
+  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 on `SIGTERM` (a Ctrl-C is a `KeyboardInterrupt`; the `log.csv` row is
+  written either way). The run
   conditions, among them "every attempt raised" and `mapillary-token-missing`, are `WARNING` lines and
   entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
   pass `--run-summary-file`.
@@ -183,7 +187,8 @@ city names. Preserve modification times, since for every blank-stamp row the mti
 record; never overwrite at the destination, because
 [the store is an archive](ops.md#the-store-is-an-archive-not-a-cache); and set modes for the account the
 app and the scraper run as rather than copying the source's. For example
-`rsync -rt --ignore-existing --chmod=D2775,F664 sacramento-ca/ <store-root>/sacramento-ca/`. If the city
+`rsync -rtp --ignore-existing --chmod=D2775,F664 sacramento-ca/ <store-root>/sacramento-ca/`; without
+`-p` rsync applies the receiver's umask instead and the `--chmod` has no effect. If the city
 folder already exists on the store, copy the image files only and leave its ledgers alone: the next nightly
 run finds each new file on disk and ledgers it at zero requests, but only for panos the server lists,
 that are selected (labelled, or `--all-panos`), and that have no `0` row there already. Jon or Mikey write

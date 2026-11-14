@@ -35,7 +35,9 @@ is never reached, deliberately, and a test pins that (so nobody "fixes" it by re
 - One helper, `common.stored_pano_is_complete(path)`, moved out of `store_sftp` so the runner does not import
   the SFTP module for a file check. Called in two places: the scrape loop on `DownloadResult.skipped`
   (the path is `<storage>/<id[:2]>/<id>.jpg`, the one layout every downloader writes), and store mode's
-  `_partition_for_pull` for its `local` list.
+  `pull_panos_from_store` on the `local` list `_partition_for_pull` returns. **Not inside
+  `_partition_for_pull`**: `pull_depth_from_store` shares it with `DEPTH_SUFFIX`, and a JPEG check there would
+  refuse every `.depth.npz`.
 - **Complete**: unchanged (ledger `1`, blank stamp).
 - **Incomplete**: not ledgered, the file not touched. One ERROR per pano naming the path. It is a new per-run
   counter, `incomplete`, which is **not** a raise and **not** an answer (so `images-no-success` and field 20
@@ -47,7 +49,8 @@ is never reached, deliberately, and a test pins that (so nobody "fixes" it by re
   path and the count, so the night fails under the queue (decision D3).
 - **The override** for a false refusal: an operator who has checked the file appends its `1` row to
   `pano_id_log.csv` by hand (documented in `docs/ops.md`), after which it is never checked again. Recommended
-  in addition: a PIL decode as a second opinion before refusing (decision D4). A file that decodes whole is
+  in addition: a PIL decode as a second opinion before refusing (decision D4), which must be
+  `Image.open(...).load()`: `open` alone and `verify()` do not catch a truncated JPEG (to be pinned by a test). A file that decodes whole is
   ledgered with an INFO line naming the trailer size; only a file that fails both is refused.
 - Leaving a refused file means it is reported on every run until someone acts. That is deliberate: the store
   is an archive (`docs/ops.md`), and the runner must not delete or replace a stored file on its own judgement.
@@ -64,11 +67,11 @@ python3 verify_store.py <storage-dir> [--max-runtime MINUTES] [--report CSV] [--
 
 - Writes `pano_id,verdict,bytes` for each incomplete file to `--report`. Exit codes: 0 nothing incomplete,
   1 incomplete files found (read-only) or anything left in place (`--quarantine`), 2 usage, 3 refused.
-- `--quarantine DIR`, per pano, in this order and under the queue lock:
-  1. **Remove the ledger row first**, through a shared `rewrite_ledger` with a backup named for this tool
+- `--quarantine DIR`, in this order and under the queue lock:
+  1. **Remove every bad pano's ledger row first, in one rewrite**, through a shared `rewrite_ledger` with a backup named for this tool
      (`.verify-<stamp>.csv`; today `rewrite_ledger` hard-codes `.readmitted-`, so it gains a suffix
      parameter). In the other order, an interrupted run leaves a `1` row with no file, never refetched.
-  2. **Then move the file** to `DIR/<id[:2]>/<id>.jpg`. Never overwrite; a collision is listed and the file
+  2. **Then move the files** to `DIR/<id[:2]>/<id>.jpg`. Never overwrite; a collision is listed and the file
      left. `DIR` is usually on another filesystem, so a move is a copy plus a delete: copy, verify the copy
      byte-for-byte, then delete. This makes the sweep the first tool to delete a `.jpg` from the archive, and
      it does so only after the bytes exist elsewhere (decision D6).
@@ -86,12 +89,15 @@ python3 verify_store.py <storage-dir> [--max-runtime MINUTES] [--report CSV] [--
   `--quarantine` removes the row before moving, keeps a backup, verifies the copy before deleting, moves the
   display copy and not the depth artifact, lists a collision, is refused inside the root, and resumes across
   `--max-runtime`. A failure injected between the two steps leaves no `1` row without a file.
+- The new condition joins `DownloadRunner.RUN_CONDITIONS` and `scrape_queue.CONDITION_LABELS` together (a
+  test pins the two equal).
 - Coverage: `verify_store.py` joins the measured set (`tests/test_coverage_config.py`).
 
 ## Docs
 
-`docs/downloader.md` (the pre-fetch section's first bullet), `docs/ops.md` (the condition, the override and
-the sweep, beside "The store is an archive"), `.claude/rules/downloader.md`, `.claude/rules/store-repair.md`
+`docs/downloader.md` (the pre-fetch section's first bullet, and its run-conditions table), `docs/ops.md` (the
+condition, the override and the sweep, beside "The store is an archive"; field 9's wording in the `log.csv`
+columns table), `.claude/rules/downloader.md`, `.claude/rules/store-repair.md`
 (the sweep), and the `CLAUDE.md` command list.
 
 ## Decisions for Jon
@@ -109,4 +115,5 @@ the sweep, beside "The store is an archive"), `.claude/rules/downloader.md`, `.c
 - **D6. Part B deletes after a verified copy.** Recommended, with the copy verified. The alternative is
   same-filesystem quarantine only (a rename), which is refused when `DIR` is elsewhere.
 - **D7. Build B now, or only A?** A covers anything the runner ledgers from here on; B is for stores already
-  assembled, so Sacramento needs B. Recommended both.
+  assembled, so Sacramento needs B. Recommended both. **B's quarantine depends on A:** without A, a scrape run
+  between B's two steps finds the file unledgered and re-ledgers it `1` unread.

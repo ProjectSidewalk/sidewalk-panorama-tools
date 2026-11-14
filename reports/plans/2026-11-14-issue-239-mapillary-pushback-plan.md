@@ -63,7 +63,9 @@ The status regex: `gsv_tiles._RETRY_STATUS_RE` is private. Make it public in `si
    `consecutive_mapillary_pushback`, resets only on a Mapillary success, and on reaching
    `MAPILLARY_MAX_CONSECUTIVE_PUSHBACK` (3) adds `'mapillary'` to `tripped` (exit 1, no `main` edit) and to a
    new `mapillary_refused` flag that selects its own end-of-phase summary. Neither #113's "false downloaded=0
-   rows" advice nor #162's latch wording reaches it.
+   rows" advice nor #162's latch wording reaches it, which needs one more edit: the end-of-phase split
+   `verdict_tripped = tripped - refused` must also subtract the push-back-tripped Mapillary, or #113's summary
+   ("check that source's credentials ... look for false downloaded=0 rows") prints for it.
 4. **Per-pano line.** A Mapillary push-back keeps the ordinary `Failed to download pano %s due to error %s
    (after %.1f s)` line, so `RAISE_RE` still counts it as a raise. The trip gets one WARNING on both channels,
    `IMAGEDOWNLOAD: WARNING - Mapillary refused N panos in a row (reason). Stopping Mapillary images for this
@@ -77,7 +79,8 @@ The status regex: `gsv_tiles._RETRY_STATUS_RE` is private. Make it public in `si
 6. **Only GSV latches.** `gsv.record_google_refusal`, the block latch, probation and the depth pace are
    untouched. The depth phase never asks Mapillary for anything.
 7. **Cap `Retry-After`** (decision D1): build Mapillary's session with `respect_retry_after_header=False`, or
-   with a cap of a few seconds, so a refusal reaches the counter instead of sleeping. `retrying_session` is
+   with a cap of a few seconds (`retry_after_max`, present in the pinned urllib3 2.7.0 but not necessarily in
+   every version `requirements.txt`'s `>=2.0` allows; the cap would need a raised floor), so a refusal reaches the counter instead of sleeping. `retrying_session` is
    shared with Panoramax, so this is a parameter, not a change to its defaults.
 8. **`images-no-success` is unchanged.** A Mapillary push-back is a raise, as a GSV one is.
 
@@ -88,7 +91,7 @@ The status regex: `gsv_tiles._RETRY_STATUS_RE` is private. Make it public in `si
 - `download_single_pano` raises `MapillaryRateLimited` with the code for an envelope at 400, 403 and on a 200.
 - Three Mapillary 429s in a row trip; the remaining Mapillary panos are unattempted and unledgered; exit 1;
   `image_stop` unchanged; no latch written and the pace file untouched; the Mapillary summary, never the
-  Google one.
+  Google one and never #113's.
 - Two 429s, a success, two 429s: no trip. Two 429s, a timeout, one 429: trips (transients do not reset).
 - A mixed city: a Mapillary trip leaves GSV running and its `images-no-success` budget arm live; a GSV trip
   leaves Mapillary running.
