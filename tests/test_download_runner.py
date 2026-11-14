@@ -3850,8 +3850,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
                 DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
-                DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 13
+                DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER,
+                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 14
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:

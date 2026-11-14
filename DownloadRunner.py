@@ -633,6 +633,10 @@ def _found_file_is_whole(storage_path, pano_id, tag):
     whole, with an INFO line; one both refuse gets one ERROR line naming the path.
     """
     path = store_sftp.local_final_path(storage_path, pano_id, store_sftp.IMAGE_SUFFIX)
+    if not os.path.isfile(path):
+        # Nothing on disk to judge. Every downloader returns `skipped` only after os.path.isfile, so this is a
+        # file removed since (its row is then the pre-#239 behaviour) or a test double's skip.
+        return True
     verdict = common.stored_jpeg_verdict(path)
     if verdict == common.STORED_JPEG_DECODED:
         logging.info("%s: %s fails the end-of-image check but decodes in full; ledgered as whole", tag, path)
