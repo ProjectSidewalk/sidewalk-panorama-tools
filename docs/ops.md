@@ -295,8 +295,11 @@ partway, a file whose ledger row was lost
 
 **The image phases check before they ledger.** A file found on disk **with no ledger row** is judged by
 `common.stored_jpeg_verdict`: a readable header and an end-of-image marker that closes the image (the store
-pull's rule, up to 64 KB of trailer), and for a file that fails that, a full decode as a second opinion, since
-that rule has refused whole files before. A file that passes either is ledgered `1` as before (a decode-only
+pull's rule, up to 64 KB of trailer), and for a file that fails that, a second opinion, since that rule has
+refused whole files before: a full decode of a file Pillow reads as a JPEG, **and** an end-of-image marker
+anywhere after its first scan. The decode alone is not enough: libjpeg reads a zero-filled tail as scan data,
+so a baseline file cut short and padded with zeros (what a preallocating copy that dies leaves) decodes
+without an error. A file that passes either is ledgered `1` as before (a decode-only
 pass writes an INFO line). A file that fails both is **not ledgered and not touched**, gets one ERROR line in
 `scrape.log`, is counted in field 9, and the phase ends with
 
@@ -325,10 +328,13 @@ and a `.quarantined-<stamp>.csv` beside the ledger), and then moves each file to
 copied, compared byte for byte, and only then deleted from the store, with its `.w8192.jpg` display copy. The
 depth artifact stays. A destination that already exists is never overwritten: that pano is listed and keeps
 its row. The next scrape fetches each moved pano again. `DIR` must be outside the store. Exit codes: 0 nothing
-found or all moved, 1 found (read-only) or anything left, 2 usage, 3 refused.
+found or all moved, 1 found (read-only), anything left, or files left unjudged by `--max-runtime`, 2 usage, 3
+refused (a `--ledger` or `--report` naming a file it did not write included).
 
 **A false refusal** (a file you have checked by eye and want kept): append its row by hand,
-`<pano_id>,1,` to `pano_id_log.csv`, and it is never checked again.
+`<pano_id>,1,` to `pano_id_log.csv`, and the image phases never check it again (`verify_store.py` still
+judges every file, ledgered or not). A file the check cannot read at all (a dead mount, a permission error) is
+reported the same way as one that is not whole, so read the ERROR line's path before acting on it.
 
 ## Resume ledgers
 

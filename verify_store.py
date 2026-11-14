@@ -35,9 +35,10 @@ in this order:
 
 `DIR` must be outside the storage directory, or the walker would find a quarantined file again (exit 3).
 
-Exit codes: 0 nothing found, or everything found was quarantined; 1 files that are not whole were found (read-
-only), or anything was left in place; 2 usage; 3 refused (no storage directory, a foreign `--ledger`, DIR
-inside the store, the queue's lock held).
+Exit codes: 0 every file judged and nothing found, or everything found was quarantined; 1 files that are not
+whole were found (read-only), anything was left in place, or `--max-runtime` left files unjudged (a sweep cut
+short has not shown the store is clean); 2 usage; 3 refused (no storage directory, a foreign `--ledger` or
+`--report`, DIR inside the store, the queue's lock held).
 
 Usage:
     python3 verify_store.py <storage-dir> [--max-runtime MINUTES] [--report CSV] [--ledger CSV]
@@ -64,7 +65,18 @@ EXIT_OK, EXIT_FOUND, EXIT_USAGE, EXIT_REFUSED = 0, 1, 2, 3
 
 
 class ForeignLedgerError(Exception):
-    """--ledger names a file this tool did not write."""
+    """--ledger or --report names a file this tool did not write."""
+
+
+def check_report_path(report_path):
+    """Refuse a --report that names a file this tool did not write (`pano_id_log.csv` is a typo away): an
+    existing, non-empty file must start with the report's own header. Raises ForeignLedgerError."""
+    if not os.path.isfile(report_path) or os.path.getsize(report_path) == 0:
+        return
+    with open(report_path, newline='', encoding='utf-8', errors='replace') as f:
+        header = next(csv.reader(f), None)
+    if header != REPORT_FIELDS:
+        raise ForeignLedgerError('%s has header %r, not %r' % (report_path, header, REPORT_FIELDS))
 
 
 def _pano_id(path):
@@ -171,19 +183,43 @@ def _inside(path, root):
         return False        # different drives on Windows
 
 
+def _fsync(path):
+    # A writable handle: Windows' fsync (_commit) refuses a read-only descriptor with EBADF.
+    with open(path, 'r+b') as f:
+        os.fsync(f.fileno())
+
+
+def _discard(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _move_verified(source, destination):
-    """Copy, compare byte for byte, then delete the source. Never overwrites `destination`."""
+    """Copy, flush to disk, compare byte for byte, then delete the source. Never overwrites `destination`.
+
+    The fsync comes before the compare, so the compare is not only against the page cache and the source is
+    deleted only once the copy is on disk. Every failure before the delete leaves no `.part` behind and the
+    source in place. A failed delete of the source leaves both copies and says so.
+    """
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     part = destination + '.part'
-    shutil.copy2(source, part)
-    if not filecmp.cmp(source, part, shallow=False):
-        os.remove(part)
-        raise OSError('copy of %s did not match; source left in place' % source)
-    if os.path.exists(destination):
-        os.remove(part)
-        raise FileExistsError(destination)
-    os.replace(part, destination)
-    os.remove(source)
+    try:
+        shutil.copy2(source, part)
+        _fsync(part)
+        if not filecmp.cmp(source, part, shallow=False):
+            raise OSError('copy of %s did not match; source left in place' % source)
+        if os.path.exists(destination):
+            raise FileExistsError(destination)
+        os.replace(part, destination)
+    except BaseException:
+        _discard(part)
+        raise
+    try:
+        os.remove(source)
+    except OSError as e:
+        raise OSError('copied to %s but %s could not be deleted (%s); delete it by hand' % (destination, source, e))
 
 
 def quarantine(storage_dir, bad_ids, quarantine_dir):
@@ -229,7 +265,7 @@ def quarantine(storage_dir, bad_ids, quarantine_dir):
             try:
                 _move_verified(sidecar, common.downscaled_sidecar_path(pano_path(quarantine_dir, pano_id)))
             except OSError as e:
-                print('WARNING: %s: display copy %s not moved (%s); delete it by hand' % (pano_id, sidecar, e))
+                left[pano_id] = 'pano moved, display copy %s not moved (%s); move or delete it by hand' % (sidecar, e)
     return moved, left
 
 
@@ -270,6 +306,8 @@ def main(argv=None):
     common.raise_decompression_bomb_ceiling()   # a large pano must not fail the decode for its size
 
     try:
+        if args.report:
+            check_report_path(args.report)
         bad, counts, unreached = sweep(args.storage_dir, args.ledger, args.max_runtime)
     except ForeignLedgerError as e:
         print('REFUSED: %s; nothing written' % (e,))
@@ -284,8 +322,11 @@ def main(argv=None):
     if args.report:
         write_report(args.report, bad)
 
+    if unreached:
+        print('Incomplete sweep: %d file(s) not judged within --max-runtime; run again (with --ledger to resume).'
+              % unreached)
     if not bad:
-        return EXIT_OK
+        return EXIT_FOUND if unreached else EXIT_OK
     if args.quarantine is None:
         print('Read-only: nothing moved. Pass --quarantine DIR to move them out of the store.')
         return EXIT_FOUND
@@ -301,7 +342,7 @@ def main(argv=None):
           % (len(moved), args.quarantine))
     for pano_id in sorted(left):
         print('  left in place: %s (%s)' % (pano_id, left[pano_id]))
-    return EXIT_FOUND if left else EXIT_OK
+    return EXIT_FOUND if left or unreached else EXIT_OK
 
 
 if __name__ == '__main__':

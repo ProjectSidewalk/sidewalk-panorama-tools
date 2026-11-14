@@ -19,6 +19,20 @@ def jpeg_bytes(size=(64, 32), color=(90, 120, 150)):
 
 
 WHOLE = jpeg_bytes()
+
+
+def noisy_baseline_jpeg():
+    """A baseline JPEG large enough that half of it is real scan data."""
+    import numpy as np
+    pixels = (np.random.RandomState(0).rand(256, 512, 3) * 255).astype('uint8')
+    buf = io.BytesIO()
+    Image.fromarray(pixels).save(buf, 'JPEG', quality=90)
+    return buf.getvalue()
+
+
+NOISY = noisy_baseline_jpeg()
+# A preallocating copy that died at half: libjpeg decodes the zero tail as scan data without an error (#242 review).
+ZERO_FILLED = NOISY[:len(NOISY) // 2] + b'\x00' * (len(NOISY) - len(NOISY) // 2)
 CUT = WHOLE[:len(WHOLE) // 2]                       # a copy that died partway: the header still reads
 BIG_TRAILER = WHOLE + b'\x00' * (common.TRAILING_BYTES_WINDOW + 1024)   # whole, but past the EOI window
 
@@ -49,8 +63,10 @@ def store(tmp_path):
     put(storage, 'aaWHOLE', WHOLE)
     put(storage, 'bbCUT', CUT)
     put(storage, 'ccTRAILER', BIG_TRAILER)
+    # One stamped row, one two-field row from before #129, one blank stamp: the shapes a real ledger holds.
     (storage / 'pano_id_log.csv').write_text(
-        'pano_id,downloaded,fetched_at\naaWHOLE,1,\nbbCUT,1,\nccTRAILER,1,\n', newline='')
+        'pano_id,downloaded,fetched_at\naaWHOLE,1,2026-11-01T02:00:00-07:00\nbbCUT,1\nccTRAILER,1,\n',
+        newline='')
     return storage
 
 
@@ -78,6 +94,19 @@ class TestTheVerdict:
     @pytest.mark.parametrize('data', [b'', b'<html>error</html>', b'\xff\xd8'], ids=['empty', 'html', 'soi only'])
     def test_not_a_jpeg_at_all_is_incomplete(self, tmp_path, data):
         assert common.stored_jpeg_verdict(str(put(tmp_path, 'aaX', data))) == common.STORED_JPEG_INCOMPLETE
+
+    def test_a_zero_filled_cut_is_incomplete_although_it_decodes(self, tmp_path):
+        """libjpeg reads the zeros as scan data; only the missing EOI after the first scan gives it away."""
+        path = put(tmp_path, 'aaX', ZERO_FILLED)
+        with Image.open(str(path)) as image:
+            image.load()                        # the premise: the decode alone accepts it
+        assert common.stored_jpeg_verdict(str(path)) == common.STORED_JPEG_INCOMPLETE
+
+    def test_another_format_named_jpg_is_incomplete(self, tmp_path):
+        buf = io.BytesIO()
+        Image.new('RGB', (8, 8)).save(buf, 'PNG')
+        assert common.stored_jpeg_verdict(str(put(tmp_path, 'aaX', buf.getvalue()))) == \
+            common.STORED_JPEG_INCOMPLETE
 
     def test_a_missing_file_is_incomplete_not_a_crash(self, tmp_path):
         assert common.stored_jpeg_verdict(str(tmp_path / 'nope.jpg')) == common.STORED_JPEG_INCOMPLETE
@@ -114,6 +143,11 @@ class TestReadOnlyByDefault:
         run([str(store), '--report', str(report)], tmp_path)
         assert report.read_text().splitlines() == ['pano_id,verdict,bytes', 'bbCUT,incomplete,%d' % len(CUT)]
 
+    def test_a_report_naming_a_file_it_did_not_write_is_refused_untouched(self, store, tmp_path):
+        before = (store / 'pano_id_log.csv').read_bytes()
+        assert run([str(store), '--report', str(store / 'pano_id_log.csv')], tmp_path) == verify_store.EXIT_REFUSED
+        assert (store / 'pano_id_log.csv').read_bytes() == before
+
     def test_no_storage_directory_is_refused(self, tmp_path):
         assert run([str(tmp_path / 'nope')], tmp_path) == verify_store.EXIT_REFUSED
 
@@ -144,9 +178,11 @@ class TestTheResumeLedger:
         monkeypatch.setattr(verify_store.time, 'monotonic', lambda: next(clock))
         ledger = tmp_path / 'verify.csv'
 
-        run([str(store), '--ledger', str(ledger), '--max-runtime', '1'], tmp_path)
+        code = run([str(store), '--ledger', str(ledger), '--max-runtime', '1'], tmp_path)
 
-        assert '3 unreached' in capsys.readouterr().out
+        assert code == verify_store.EXIT_FOUND, 'a sweep cut short has not shown the store is clean'
+        out = capsys.readouterr().out
+        assert '3 unreached' in out and 'Incomplete sweep' in out
         assert ledger.read_text().splitlines() == [','.join(verify_store.LEDGER_FIELDS)]
 
     def test_a_foreign_ledger_is_refused_untouched(self, store, tmp_path):
@@ -176,11 +212,12 @@ class TestQuarantine:
         assert (q / 'bb' / 'bbCUT.w8192.jpg').exists() and not (store / 'bb' / 'bbCUT.w8192.jpg').exists()
         assert (store / 'bb' / 'bbCUT.depth.npz').exists(), 'the depth artifact is not the image'
         assert (store / 'pano_id_log.csv').read_text().splitlines() == [
-            'pano_id,downloaded,fetched_at', 'aaWHOLE,1,', 'ccTRAILER,1,']
+            'pano_id,downloaded,fetched_at', 'aaWHOLE,1,2026-11-01T02:00:00-07:00', 'ccTRAILER,1,'], \
+            'the two-field row goes; the stamped and blank-stamp rows stay byte for byte'
         backups = sorted(p.name for p in store.iterdir() if p.name.startswith('pano_id_log.csv.'))
         assert backups[0].startswith('pano_id_log.csv.bak-')
         assert backups[1].startswith('pano_id_log.csv.quarantined-')
-        assert (store / backups[1]).read_text() == 'bbCUT,1,\n'
+        assert (store / backups[1]).read_text() == 'bbCUT,1\n'
 
     def test_a_destination_that_exists_is_never_overwritten(self, store, tmp_path, capsys):
         q = tmp_path / 'quarantine'
@@ -190,7 +227,7 @@ class TestQuarantine:
 
         assert (q / 'bb' / 'bbCUT.jpg').read_bytes() == b'earlier'
         assert (store / 'bb' / 'bbCUT.jpg').read_bytes() == CUT
-        assert 'bbCUT,1,' in (store / 'pano_id_log.csv').read_text(), 'a pano left in place keeps its row'
+        assert 'bbCUT,1' in (store / 'pano_id_log.csv').read_text(), 'a pano left in place keeps its row'
         assert 'destination exists' in capsys.readouterr().out
 
     def test_a_failed_move_after_the_row_is_gone_leaves_the_file(self, store, tmp_path, monkeypatch):
@@ -233,4 +270,92 @@ class TestQuarantine:
         (store / 'bb' / 'bbCUT.jpg').write_bytes(WHOLE)
         moved, left = verify_store.quarantine(str(store), bad, str(tmp_path / 'q'))
         assert moved == [] and 'whole when re-checked' in left['bbCUT']
-        assert 'bbCUT,1,' in (store / 'pano_id_log.csv').read_text()
+        assert 'bbCUT,1' in (store / 'pano_id_log.csv').read_text()
+
+
+class TestTheMoveAndItsEdges:
+
+    def test_a_corrupted_copy_with_the_same_size_and_mtime_is_caught(self, tmp_path, monkeypatch):
+        """The compare must read the bytes: copy2 keeps size and mtime, so a shallow compare passes this."""
+        import shutil
+        source = put(tmp_path / 'src', 'bbCUT', CUT)
+
+        def corrupting_copy(src, dst):
+            data = bytearray(open(src, 'rb').read())
+            data[10] ^= 0xFF
+            with open(dst, 'wb') as f:
+                f.write(bytes(data))
+            shutil.copystat(src, dst)
+        monkeypatch.setattr(verify_store.shutil, 'copy2', corrupting_copy)
+
+        with pytest.raises(OSError, match='did not match'):
+            verify_store._move_verified(str(source), str(tmp_path / 'dst' / 'bbCUT.jpg'))
+
+        assert source.read_bytes() == CUT
+        assert os.listdir(tmp_path / 'dst') == [], 'no .part left behind'
+
+    def test_a_failed_copy_leaves_no_part(self, tmp_path, monkeypatch):
+        source = put(tmp_path / 'src', 'bbCUT', CUT)
+
+        def failing_copy(src, dst):
+            with open(dst, 'wb') as f:
+                f.write(b'half')
+            raise OSError('disk full')
+        monkeypatch.setattr(verify_store.shutil, 'copy2', failing_copy)
+
+        with pytest.raises(OSError, match='disk full'):
+            verify_store._move_verified(str(source), str(tmp_path / 'dst' / 'bbCUT.jpg'))
+        assert os.listdir(tmp_path / 'dst') == [] and source.read_bytes() == CUT
+
+    def test_the_never_overwrite_backstop(self, tmp_path):
+        """A destination that appeared after quarantine's own check is still never overwritten."""
+        source = put(tmp_path / 'src', 'bbCUT', CUT)
+        destination = put(tmp_path / 'dst', 'bbCUT', b'earlier')
+
+        with pytest.raises(FileExistsError):
+            verify_store._move_verified(str(source), str(destination))
+        assert destination.read_bytes() == b'earlier' and source.read_bytes() == CUT
+        assert sorted(os.listdir(destination.parent)) == ['bbCUT.jpg']
+
+    def test_a_source_that_cannot_be_deleted_says_so(self, tmp_path, monkeypatch):
+        source = put(tmp_path / 'src', 'bbCUT', CUT)
+        real_remove = os.remove
+
+        def remove(path):
+            if path == str(source):
+                raise PermissionError('read-only')
+            real_remove(path)
+        monkeypatch.setattr(verify_store.os, 'remove', remove)
+
+        with pytest.raises(OSError, match='could not be deleted'):
+            verify_store._move_verified(str(source), str(tmp_path / 'dst' / 'bbCUT.jpg'))
+        assert (tmp_path / 'dst' / 'bbCUT.jpg').read_bytes() == CUT and source.exists()
+
+    def test_a_file_gone_since_the_sweep_is_left(self, store, tmp_path):
+        moved, left = verify_store.quarantine(str(store), {'zzGONE': ('incomplete', 1)}, str(tmp_path / 'q'))
+        assert moved == [] and left == {'zzGONE': 'gone since the sweep'}
+
+    def test_a_bad_file_with_no_ledger_row_is_moved_and_the_ledger_untouched(self, store, tmp_path):
+        put(store, 'ddLOOSE', CUT)
+        before = (store / 'pano_id_log.csv').read_bytes()
+
+        moved, left = verify_store.quarantine(str(store), {'ddLOOSE': ('incomplete', len(CUT))},
+                                              str(tmp_path / 'q'))
+
+        assert moved == ['ddLOOSE'] and left == {}
+        assert (store / 'pano_id_log.csv').read_bytes() == before
+        assert not [p for p in os.listdir(store) if p.startswith('pano_id_log.csv.')], 'no rewrite, no backup'
+
+    def test_a_display_copy_that_cannot_be_moved_is_left_and_exits_1(self, store, tmp_path, monkeypatch, capsys):
+        put(store, 'bbCUT', CUT, name='bbCUT.w8192.jpg')
+        real = verify_store._move_verified
+
+        def move(source, destination):
+            if source.endswith('.w8192.jpg'):
+                raise OSError('locked')
+            real(source, destination)
+        monkeypatch.setattr(verify_store, '_move_verified', move)
+
+        assert run([str(store), '--quarantine', str(tmp_path / 'q')], tmp_path) == verify_store.EXIT_FOUND
+        assert 'display copy' in capsys.readouterr().out
+        assert (store / 'bb' / 'bbCUT.w8192.jpg').exists() and not (store / 'bb' / 'bbCUT.jpg').exists()

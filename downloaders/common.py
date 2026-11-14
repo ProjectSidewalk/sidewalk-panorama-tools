@@ -261,10 +261,35 @@ def stored_jpeg_verdict(path):
         return STORED_JPEG_INCOMPLETE
     try:
         with Image.open(path) as image:
+            if image.format != 'JPEG':
+                return STORED_JPEG_INCOMPLETE   # a PNG, GIF, WebP... named .jpg decodes, and is not a JPEG
             image.load()
     except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
         return STORED_JPEG_INCOMPLETE
+    # A decode alone is not proof (#242 review): libjpeg reads a zero-filled tail as scan data, so a baseline file
+    # cut short and padded with zeros - what a preallocating copy that dies leaves - decodes without an error.
+    # A whole file still has an end-of-image marker somewhere after its first scan, beyond the 64 KB window the
+    # cheap check looks in; a cut one cannot (byte stuffing keeps FF D9 out of scan data).
+    if not _eoi_after_first_scan(path):
+        return STORED_JPEG_INCOMPLETE
     return STORED_JPEG_DECODED
+
+
+def _eoi_after_first_scan(path, chunk_size=1 << 20):
+    """Whether an FF D9 marker occurs anywhere after the start of the JPEG's first scan. Reads the whole file."""
+    with open(path, 'rb') as f:
+        scan_start = _first_scan_offset(f)
+        if scan_start is None:
+            return False
+        f.seek(scan_start)
+        previous = b''
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                return False
+            if b'\xff\xd9' in previous[-1:] + chunk:
+                return True
+            previous = chunk
 
 
 
