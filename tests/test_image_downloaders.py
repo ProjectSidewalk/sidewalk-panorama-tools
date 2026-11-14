@@ -517,13 +517,16 @@ class TestMapillaryErrorEnvelopes:
         assert envelope['error']['type'] in str(excinfo.value)
         assert '190' in str(excinfo.value)
 
-    @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05))
+    @pytest.mark.parametrize('condition', sorted(c for c, (status, _) in OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05
+                                                 .items() if status < 500))
     def test_every_measured_auth_failure_is_refused_as_measured(self, monkeypatch, tmp_path, mapillary_token,
                                                                 condition):
         """As measured, each one is a non-200 carrying the auth signature. Since #239 the body is read before the
         status is raised for, so each is MapillaryTokenRefused - what the push-back stop counts as 'token
         refused' - rather than a bare HTTPError. Still a raise, so still unledgered. The test above is what
-        covers the shape nobody has measured."""
+        covers the shape nobody has measured. The 500 is left out: FakeSession bypasses the retry adapter, and
+        in production a 500 exhausts it and arrives as a RetryError, which is not counted (see
+        test_a_refused_token_answering_500_is_a_retry_error_and_not_counted)."""
         status, envelope = OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05[condition]
         monkeypatch.setattr(downloaders.mapillary, '_session',
                             lambda: FakeSession(FakeResponse(status_code=status, payload=envelope)))
@@ -949,6 +952,37 @@ class TestMapillaryPushbackReason:
         assert downloaders.mapillary.pushback_reason(excinfo.value) is None
         assert any('Mapillary answered 400' in r.getMessage() and 'code=100' in r.getMessage()
                    for r in caplog.records)
+
+    @pytest.mark.parametrize('status', [400, 403])
+    def test_an_oauth_rate_limit_is_not_a_refused_token(self, monkeypatch, tmp_path, mapillary_token, caplog,
+                                                        status):
+        """Meta files rate limits (code 4, 17, 32, 613) under type OAuthException. Decision D2: logged, not
+        counted - and above all never reported as a token to replace."""
+        body = {'error': {'message': 'Application request limit reached', 'type': 'OAuthException', 'code': 4}}
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=status, payload=body)))
+
+        with caplog.at_level(logging.INFO), pytest.raises(requests.HTTPError) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert not isinstance(excinfo.value, downloaders.mapillary.MapillaryTokenRefused)
+        assert downloaders.mapillary.pushback_reason(excinfo.value) is None
+        assert any('code=4' in r.getMessage() for r in caplog.records), 'the D2 measurement line'
+
+    def test_an_oauth_rate_limit_on_a_200_or_a_404_is_not_a_refused_token(self, monkeypatch, tmp_path,
+                                                                         mapillary_token):
+        body = {'error': {'message': 'Application request limit reached', 'type': 'OAuthException', 'code': 4}}
+        for status in (200, 404):
+            monkeypatch.setattr(downloaders.mapillary, '_session',
+                                lambda: FakeSession(FakeResponse(status_code=status, payload=body)))
+            with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
+                downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+            assert not isinstance(excinfo.value, downloaders.mapillary.MapillaryTokenRefused), status
+
+    def test_a_refused_token_answering_500_is_a_retry_error_and_not_counted(self):
+        """Pinned as a known limit: 500 is in the forcelist, so the body is never read."""
+        from test_gsv_stitcher import probe_retry_error
+        assert downloaders.mapillary.pushback_reason(probe_retry_error(500)) is None
 
     def test_an_auth_envelope_on_a_200_is_a_refused_token(self, monkeypatch, tmp_path, mapillary_token):
         body = {'error': {'message': 'Invalid OAuth access token', 'type': 'OAuthException', 'code': 190}}

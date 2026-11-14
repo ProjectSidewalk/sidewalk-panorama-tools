@@ -5399,6 +5399,41 @@ class TestMapillaryRefusingStopsMapillary(_PushbackHarness):
         assert calls == ['mly-%d' % n for n in range(6)], 'the success resets, so the trip is at mly-5'
         assert self.ledger() == ['mly-2,1'] and tripped == {'mapillary'}
 
+    def test_a_skip_does_not_reset_the_count(self, monkeypatch):
+        """A skip never contacted Mapillary, so it is no evidence that Mapillary is answering."""
+        panos = self.mly_panos(5)
+        verdicts = {p['pano_id']: self.R for p in panos}
+        verdicts['mly-1'] = downloaders.DownloadResult.skipped
+
+        _, calls, tripped, _ = self.drive(monkeypatch, panos, verdicts)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3'] and tripped == {'mapillary'}
+
+    def test_a_trip_leaves_images_no_success_budget_arm_live(self, monkeypatch):
+        """image_stop is left alone, so a later max-runtime stop is still recorded - which is what the
+        images-no-success budget arm keys on for a mixed city's GSV half."""
+        panos = self.mly_panos(3) + [{'pano_id': 'gsv-0', 'source': 'gsv'}, {'pano_id': 'gsv-1', 'source': 'gsv'}]
+        verdicts = {p['pano_id']: self.R for p in panos if p['source'] == 'mapillary'}
+        verdicts.update({'gsv-0': downloaders.DownloadResult.success, 'gsv-1': downloaders.DownloadResult.success})
+        clock = [0.0]
+        monkeypatch.setattr(DownloadRunner.time, 'monotonic', lambda: clock[0])
+        answer = scripted_download_pano(verdicts)
+
+        def slow(storage_path, pano_info):
+            clock[0] += 60.0
+            return answer(storage_path, pano_info)
+        monkeypatch.setattr(DownloadRunner, 'download_pano', slow)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        tripped, stop_reasons = set(), {'image_stop': None, 'depth_stop': None}
+
+        DownloadRunner.download_panorama_images(str(self.storage), panos, run_start_monotonic=0.0,
+                                                max_runtime_minutes=3.5, tripped_sources=tripped,
+                                                stop_reasons=stop_reasons, block_latch_path=str(self.latch),
+                                                pace_state_path=str(self.pace))
+
+        assert tripped == {'mapillary'}
+        assert stop_reasons['image_stop'] == DownloadRunner.STOP_MAX_RUNTIME
+
     def test_a_transient_neither_counts_nor_resets(self, monkeypatch):
         """A 5xx storm, a timeout or a retired image's 400 is no evidence either way."""
         panos = self.mly_panos(5)
