@@ -100,7 +100,10 @@ class MapillaryErrorResponse(RuntimeError):
 
 
 class MapillaryTokenRefused(MapillaryErrorResponse):
-    """A Graph API answer carrying the measured auth signature (is_auth_envelope), at any status (#239).
+    """A Graph API answer whose envelope says the token is refused - code 190 (is_token_refusal) - on a status
+    whose body is read (#239). A 5xx is not: 500 is in the retry forcelist, so a refused token answering 500
+    exhausts the adapter and surfaces as a RetryError, which pushback_reason does not count (unmeasured at
+    that status; the 2026-09-05 expiry and bad-token cases were 400 and 401).
 
     The token is refused, so every Mapillary pano tonight will be too: pushback_reason reads this type as
     'token refused', and three in a row stop the source for the run. A subclass, so everything that reads a
@@ -170,6 +173,16 @@ def _envelope_detail(error):
     return '%.200r' % (error,)
 
 
+def is_token_refusal(payload):
+    """True only for code 190, Meta's "invalid OAuth access token" - what the push-back stop may read as the
+    token being refused (#239). NOT is_auth_envelope: Meta's Graph API files its rate-limit codes (4, 17, 32,
+    613) under type OAuthException too, so the type alone would count a rate limit as a refused token - which
+    decision D2 leaves uncounted until it is measured - and tell the operator to replace a good token."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('error'), dict):
+        return False
+    return str(payload['error'].get('code')) == str(AUTH_ERROR_CODE)
+
+
 def is_auth_envelope(payload):
     """True when a JSON body is an error envelope carrying the measured auth signature: code 190, or type
     OAuthException. Anything else - no envelope, an envelope of another kind, not an object - is False."""
@@ -197,7 +210,7 @@ def original_rendition_url(payload, pano_id):
     if not isinstance(payload, dict):
         raise MapillaryErrorResponse("Mapillary metadata for %s was not a JSON object: %.80r" % (pano_id, payload))
     error = payload.get('error')
-    if is_auth_envelope(payload):
+    if is_token_refusal(payload):
         raise MapillaryTokenRefused("Mapillary refused the token for %s (%s)" % (pano_id, _envelope_detail(error)))
     if error is not None:
         # Checked before the URL, not instead of it: a body that carries both is still saying the token is
@@ -294,8 +307,11 @@ def download_single_pano(storage_path, pano_info):
             except ValueError:
                 payload = None
             if is_auth_envelope(payload):
-                raise MapillaryTokenRefused("Mapillary answered 404 for %s with an auth error envelope (%s)"
-                                             % (pano_id, _envelope_detail(payload['error'])))
+                # Still raised for the whole auth signature (the #99 verdict guard); counted as a refused token
+                # only for code 190 (is_token_refusal), so a rate-limit OAuthException stays uncounted.
+                exc_type = MapillaryTokenRefused if is_token_refusal(payload) else MapillaryErrorResponse
+                raise exc_type("Mapillary answered 404 for %s with an auth error envelope (%s)"
+                               % (pano_id, _envelope_detail(payload['error'])))
             logging.error("Mapillary has no image %s (404)", pano_id)
             return DownloadResult.failure
         # Anything else non-200 is a condition of the RUN, not of this pano - 401/403 is an expired or
@@ -318,9 +334,10 @@ def download_single_pano(storage_path, pano_info):
                 error_payload = meta_resp.json()
             except ValueError:
                 error_payload = None
-            if is_auth_envelope(error_payload):
-                # The measured auth failures arrived at 400 and 401 as well as 500 (a 500 exhausts the retry
-                # adapter and never gets here): the token, not this pano, so the push-back stop counts it.
+            if is_token_refusal(error_payload):
+                # Code 190 at 400 or 401, as measured 2026-09-05 (a 500 exhausts the retry adapter and never gets
+                # here): the token, not this pano, so the push-back stop counts it. Any other envelope, an
+                # OAuthException rate limit included, falls through to the INFO line and raise_for_status.
                 raise MapillaryTokenRefused("Mapillary answered %d for %s with an auth error envelope (%s)"
                                             % (meta_resp.status_code, pano_id,
                                                _envelope_detail(error_payload['error'])))

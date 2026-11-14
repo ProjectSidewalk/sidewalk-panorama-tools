@@ -1291,7 +1291,8 @@ head of the shuffled list would trip probation and rewrite the latch every night
 Mapillary has its own stop, beside Google's and independent of it
 ([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). It counts two shapes
 (`mapillary.pushback_reason`): a 429 that survived the session's five retries, and the token refused (an
-error envelope with code 190 or type `OAuthException`, at any status). Three Mapillary panos in a row refused
+error envelope with code 190, on a 4xx or a 200; type `OAuthException` alone is not enough, because Meta files
+its rate-limit codes under it too). A refused token answering 5xx exhausts the retries and is not counted. Three Mapillary panos in a row refused
 that way stop Mapillary images for the rest of the run:
 
 ```
