@@ -219,6 +219,54 @@ def jpeg_is_complete(f, size):
     return b'\xff\xd9' in f.read(size - window_start)
 
 
+def is_complete_jpeg(path):
+    """A readable SOF header AND an end-of-image marker (FF D9) that closes the main image.
+
+    The header alone is not enough: a transfer or a copy that dies partway leaves a file whose SOF header is
+    intact and reports full dimensions. Two small reads (the header, then near the end), never a decode, so a
+    store-wide sweep is cheap. A false refusal is possible - a real JPEG with more than TRAILING_BYTES_WINDOW
+    after its EOI - which is why stored_jpeg_verdict adds a decode as a second opinion before anything is
+    refused. Moved here from store_sftp (which re-exports it) for #239, so the image loop's check of a file it
+    finds on disk does not import the SFTP module.
+    """
+    if jpeg_dimensions(path) is None:
+        return False
+    # A readable SOF means the file is far longer than two bytes, so the seeks cannot fail on a short file.
+    with open(path, 'rb') as f:
+        return jpeg_is_complete(f, os.path.getsize(path))
+
+
+#: stored_jpeg_verdict's answers.
+STORED_JPEG_COMPLETE = 'complete'       # a header and a closing EOI: the cheap check passed
+STORED_JPEG_DECODED = 'decoded'         # the cheap check refused it, and a full decode did not
+STORED_JPEG_INCOMPLETE = 'incomplete'   # both refused it, or it cannot be read at all
+
+
+def stored_jpeg_verdict(path):
+    """Is the JPEG at `path` whole? For a file the scraper did not write itself (#239).
+
+    is_complete_jpeg first; only a file it refuses is decoded in full, as a second opinion -
+    Image.open(...).load(), because open alone reads only the header and verify() does not catch a JPEG cut
+    short. The trailer rule has refused whole files before (7 of 7 photospheres, nightly, until the 64 KB
+    window), so a file that decodes is not refused on the cheap check's word alone. The decode costs one full
+    raster, and only for a file the cheap check refused. The caller must have raised the decompression-bomb
+    ceiling (raise_decompression_bomb_ceiling), or a large pano is refused here for its size.
+
+    @return STORED_JPEG_COMPLETE, STORED_JPEG_DECODED or STORED_JPEG_INCOMPLETE.
+    """
+    try:
+        if is_complete_jpeg(path):
+            return STORED_JPEG_COMPLETE
+    except OSError:
+        return STORED_JPEG_INCOMPLETE
+    try:
+        with Image.open(path) as image:
+            image.load()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        return STORED_JPEG_INCOMPLETE
+    return STORED_JPEG_DECODED
+
+
 
 # --- Edge black bands (#179) ----------------------------------------------------------------------------------
 #

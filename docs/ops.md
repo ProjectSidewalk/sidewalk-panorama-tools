@@ -285,6 +285,51 @@ request, 15 of the 19 moved (14 with a pose the fit can name), and
 [`photometa_census.py --refetch`](../reports/2026-09-06-rerender-probe.md#how-we-would-ever-notice-this-again)
 compares them across runs as `pose_drift`. It catches the re-poses, not the pure re-grades.
 
+## A stored file that is not a whole JPEG
+
+Every downloader skips a pano whose `.jpg` is already on disk, and that file is the resume marker: once it is
+ledgered `1`, nothing looks at it again. The runner's own writes are atomic and checked before the rename, so a
+broken file comes from somewhere else: a store assembled partly by another downloader, a copy that died
+partway, a file whose ledger row was lost
+([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)).
+
+**The image phases check before they ledger.** A file found on disk **with no ledger row** is judged by
+`common.stored_jpeg_verdict`: a readable header and an end-of-image marker that closes the image (the store
+pull's rule, up to 64 KB of trailer), and for a file that fails that, a full decode as a second opinion, since
+that rule has refused whole files before. A file that passes either is ledgered `1` as before (a decode-only
+pass writes an INFO line). A file that fails both is **not ledgered and not touched**, gets one ERROR line in
+`scrape.log`, is counted in field 9, and the phase ends with
+
+```
+IMAGEDOWNLOAD: WARNING - 1 file(s) found on disk are not whole JPEGs (first: /srv/panos/city/ab/abc.jpg). They
+were not ledgered and were left in place; run verify_store.py, or see docs/ops.md, 'A stored file that is not a
+whole JPEG'.
+```
+
+and the `incomplete-on-disk` condition, which fails the night under the queue. It is neither a raise nor an
+answer for `images-no-success`, and it neither counts toward nor resets any breaker. The runner never moves
+or deletes a stored file on its own judgement, so the condition recurs every run until someone acts. Files
+**already ledgered** are never reached; that is the sweep's job.
+
+**What to do.** Run `verify_store.py` on the city (read-only unless asked; `--report CSV` lists the files,
+`--ledger CSV` makes a long sweep resumable, `--max-runtime` bounds it):
+
+```bash
+.venv/bin/python verify_store.py /mnt/panostore/<city> --report /tmp/not-whole.csv          # look first
+.venv/bin/python verify_store.py /mnt/panostore/<city> --quarantine /srv/quarantine/<city>  # then move them
+```
+
+`--quarantine DIR` takes the nightly queue's lock (run it outside the window, as the cron user, like the
+readmit tools), re-judges each file, removes every bad pano's ledger row in one rewrite (with a `.bak-<stamp>`
+and a `.quarantined-<stamp>.csv` beside the ledger), and then moves each file to `DIR/<id[:2]>/<id>.jpg`:
+copied, compared byte for byte, and only then deleted from the store, with its `.w8192.jpg` display copy. The
+depth artifact stays. A destination that already exists is never overwritten: that pano is listed and keeps
+its row. The next scrape fetches each moved pano again. `DIR` must be outside the store. Exit codes: 0 nothing
+found or all moved, 1 found (read-only) or anything left, 2 usage, 3 refused.
+
+**A false refusal** (a file you have checked by eye and want kept): append its row by hand,
+`<pano_id>,1,` to `pano_id_log.csv`, and it is never checked again.
+
 ## Resume ledgers
 
 Both phases resume from an append-only ledger, and both draw the same line: **a row means the outcome is
@@ -671,7 +716,7 @@ deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectS
 | 6 | metadata phase duration | effectively `0` (stub) |
 | 7 | image successes | |
 | 8 | image fallback successes | downloaded, but at a fallback resolution — only a lower level was available (zoom 3, or since [#74](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/74) zoom 4) for a frame whose reported dimensions need a higher one, so the stitch was upscaled to reach them. Real imagery, materially less of it. **Not** simply "downloaded at zoom 3": an old pano whose own max zoom is 3 is at its native resolution and counts in field 7. Was a constant `0` before [#52](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/52) because nothing ever returned the verdict, so runs before that show every fallback inside field 7 |
-| 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run |
+| 9 | image failures | includes prior runs' permanent failures, seeded from `pano_id_log.csv`; a transient failure is not ledgered, so it is counted again if it fails again next run. So is a file found on disk that is not a whole JPEG ([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)) |
 | 10 | image skipped | includes panos already downloaded on previous runs, seeded likewise |
 | 11 | image total processed | sum of fields 7–10 |
 | 12 | image phase duration | |

@@ -145,12 +145,16 @@ def main(argv=None):
     return 0
 
 
-def rewrite_ledger(ledger, lines, kept, removed):
-    """Backup, removed-rows file, then an atomic replace of the ledger. Never in place."""
+def rewrite_ledger(ledger, lines, kept, removed, removed_name='readmitted'):
+    """Backup, removed-rows file, then an atomic replace of the ledger. Never in place.
+
+    `removed_name` names the removed-rows file (`<ledger>.<removed_name>-<stamp>.csv`), so a tool that removes
+    rows for another reason says so: verify_store.py passes 'quarantined' (#239).
+    """
     stamp = datetime.now().strftime('%Y%m%dT%H%M%S')
     with open('%s.bak-%s' % (ledger, stamp), 'w', newline='') as f:
         f.writelines(lines)
-    with open('%s.readmitted-%s.csv' % (ledger, stamp), 'w', newline='') as f:
+    with open('%s.%s-%s.csv' % (ledger, removed_name, stamp), 'w', newline='') as f:
         f.writelines(removed)
     directory = os.path.dirname(os.path.abspath(ledger))
     fd, tmp = tempfile.mkstemp(prefix='.pano_id_log.', suffix='.tmp', dir=directory)

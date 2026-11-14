@@ -150,7 +150,7 @@ The per-module detail lives in the rules files named in "Guidance layout"; the s
 
 **log_analyzer/analyze.py** - ops monitoring: pulls each city's `log.csv` off the store, applies the per-city rules, reports the depth backfill, and cross-checks `cities.csv` against the live roster with its own copy of the roster code. Rules: `.claude/rules/log-analyzer.md`.
 
-**Repair and migration passes** - `refetch_panos.py` (re-fetch behind four refusal gates; the `fover` pass it was built for does not run), `downscale_panos.py` (the display-copy sweep; the feature is switched off and this is its only creator), `scan_black_bands.py` (read-only: ledgers every pano's edge black-band depth and lists the deep ones, #179), `migrate_depth_artifacts.py` (pre-v2 artifacts into v2 order) and `migrate_crop_store.py` (a pre-#159 flat crop store into `<crop-dir>/<city>/`). Rules: `.claude/rules/store-repair.md` for the first three, `.claude/rules/depth.md` and `.claude/rules/cropper.md` for the migrators.
+**Repair and migration passes** - `refetch_panos.py` (re-fetch behind refusal gates; its `fover` pass does not run), `downscale_panos.py` (the display-copy sweep; the feature is switched off and this is its only creator), `scan_black_bands.py` (read-only: ledgers every pano's edge black-band depth and lists the deep ones, #179), `verify_store.py` (#239), `migrate_depth_artifacts.py` (pre-v2 artifacts into v2 order) and `migrate_crop_store.py` (a pre-#159 flat crop store into `<crop-dir>/<city>/`). Rules: `.claude/rules/store-repair.md` for the first four, `.claude/rules/depth.md` and `.claude/rules/cropper.md` for the migrators.
 
 ## Storage layout
 
