@@ -187,6 +187,413 @@ def count_resizes(monkeypatch):
     return sizes
 
 
+# --- the composition ----------------------------------------------------------------------------------------
+
+class TestTheComposition:
+
+    def test_a_live_pano_costs_two_probes_three_frame_checks_and_its_grid(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch)
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert isinstance(stitched, gsv_tiles.StitchedPano)
+        assert isinstance(stitched.image, Image.Image)
+        assert stitched.image.size == (1024, 512)
+        assert_color(stitched.image.getpixel((100, 256)), RED)
+        assert_color(stitched.image.getpixel((900, 256)), BLUE)
+        assert stitched.undersized_tiles == 0
+        assert stitched.upscaled is False
+        assert triples(cbk.probe_urls) == [(3, 0, 0), (5, 0, 0), (5, 2, 0), (5, 0, 1), (5, 1, 0)]
+        assert tile_triples(cbk) == [(5, 0, 0), (5, 1, 0)]
+        assert cbk.download_calls == 1
+
+    def test_a_retired_pano_is_gone_not_a_frame_disagreement(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, levels=())
+
+        with pytest.raises(gsv_tiles.PanoGoneError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert isinstance(raised.value, ValueError)
+        assert not isinstance(raised.value, gsv_tiles.FrameDisagreementError)
+        assert raised.value.pano_id == PANO
+        assert len(cbk.probe_urls) == 2
+        assert cbk.tiles == []
+
+    @pytest.mark.parametrize('served,requests_made', [((2048, 1024), 3), ((1024, 1024), 4)],
+                             ids=['wider', 'taller-only'])
+    def test_a_pano_served_larger_than_the_frame_is_refused_before_the_fan_out(self, monkeypatch, served,
+                                                                                requests_made):
+        cbk = FakeCbk(monkeypatch, served=served)
+
+        with pytest.raises(gsv_tiles.FrameDisagreementError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert str(raised.value).startswith('frame disagreement')
+        assert 'larger' in str(raised.value)
+        assert len(cbk.probe_urls) == requests_made
+        assert cbk.tiles == []
+
+    def test_a_pano_served_smaller_than_the_frame_is_refused_before_the_fan_out(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, served=(1024, 512))
+
+        with pytest.raises(gsv_tiles.FrameDisagreementError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 2048, 1024)
+
+        assert 'smaller' in str(raised.value)
+        assert len(cbk.probe_urls) == 5
+        assert cbk.tiles == []
+
+    @pytest.mark.parametrize('error,reason', [(probe_http_error(403), 'HTTP 403'),
+                                              (probe_retry_error(429), 'HTTP 429')],
+                             ids=['403-HTTPError', '429-RetryError'])
+    def test_a_refused_probe_is_raised_unchanged(self, monkeypatch, error, reason):
+        cbk = FakeCbk(monkeypatch, error_for=lambda url: error)
+
+        with pytest.raises(Exception) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert raised.value is error
+        assert gsv_tiles.pushback_reason(raised.value) == reason
+        assert not isinstance(raised.value, gsv_tiles.PanoGoneError)
+        assert len(cbk.probe_urls) == 1
+        assert cbk.tiles == []
+
+    def test_a_refused_tile_is_raised_and_never_retried(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, tile_result=lambda tile: gsv_tiles.TilePushbackError(429, tile[0], tile[1]))
+
+        with pytest.raises(gsv_tiles.TilePushbackError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert cbk.download_calls == 1
+        assert raised.value.total == 2
+
+    def test_a_failed_tile_fails_the_pano(self, monkeypatch):
+        boom = aiohttp.ClientConnectionError('boom')
+
+        def tile_result(tile):
+            return boom if tile[:2] == (1, 0) else RED_TILE
+
+        FakeCbk(monkeypatch, tile_result=tile_result)
+
+        with pytest.raises(aiohttp.ClientConnectionError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+        assert raised.value is boom
+
+    def test_it_writes_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        FakeCbk(monkeypatch)
+
+        gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=256)
+
+        assert os.listdir(tmp_path) == []
+
+
+# --- an explicit zoom ---------------------------------------------------------------------------------------
+
+class TestAnExplicitZoom:
+
+    def test_an_explicit_zoom_still_probes_so_a_retired_pano_is_gone(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, levels=())
+
+        with pytest.raises(gsv_tiles.PanoGoneError):
+            gsv_tiles.fetch_equirect(PANO, 1024, 512, zoom=5)
+
+        assert len(cbk.probe_urls) == 2
+
+    def test_zoom_5_on_a_pano_whose_zoom_5_corner_is_black_is_a_zoom_disagreement(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, levels=(0, 1, 2, 3))
+
+        with pytest.raises(gsv_tiles.ZoomDisagreementError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512, zoom=5)
+
+        assert isinstance(raised.value, ValueError)
+        assert not isinstance(raised.value, gsv_tiles.FrameDisagreementError)
+        assert (raised.value.pano_id, raised.value.zoom, raised.value.probed) == (PANO, 5, 3)
+        assert 'zoom=None' in str(raised.value) and 'zoom=4' in str(raised.value)
+        assert len(cbk.probe_urls) == 2
+        assert cbk.tiles == []
+
+    def test_zoom_4_is_fetched_on_a_pano_the_probe_can_only_call_zoom_3(self, monkeypatch):
+        """A five-level pano (native zoom 4): the probe sees the zoom-5 corner black and says 3, and an
+        explicit zoom 4 is exactly what the caller should be able to ask for."""
+        cbk = FakeCbk(monkeypatch, served=(5376, 2688), levels=(0, 1, 2, 3, 4))
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 5376, 2688, zoom=4)
+
+        assert stitched.image.size == (5376, 2688)
+        assert stitched.upscaled is False
+        assert [z for z, _x, _y in triples(cbk.probe_urls[2:])] == [4, 4, 4]
+        assert len(cbk.tiles) == 11 * 6
+        assert {z for z, _x, _y in tile_triples(cbk)} == {4}
+
+    def test_a_lower_zoom_than_the_frames_own_is_fetched_and_flagged_upscaled(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, served=(8192, 4096))
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 8192, 4096, zoom=3)
+
+        assert len(cbk.tiles) == 32
+        assert {z for z, _x, _y in tile_triples(cbk)} == {3}
+        assert stitched.image.size == (8192, 4096)
+        assert stitched.upscaled is True
+
+    @pytest.mark.parametrize('zoom', [0, 2, 6, -1, 4.0, 4.5, '5', True, numpy.bool_(True)],
+                             ids=lambda z: '%s-%r' % (type(z).__name__, z))
+    def test_a_zoom_that_is_not_3_4_or_5_is_refused_before_any_request(self, monkeypatch, zoom):
+        cbk = FakeCbk(monkeypatch)
+
+        with pytest.raises(ValueError):
+            gsv_tiles.fetch_equirect(PANO, 1024, 512, zoom=zoom)
+
+        assert cbk.probe_urls == [] and cbk.tiles == []
+
+    def test_a_numpy_integer_is_accepted(self, monkeypatch):
+        FakeCbk(monkeypatch, served=(4096, 2048))
+
+        stitched = gsv_tiles.fetch_equirect(PANO, numpy.int64(4096), numpy.int64(2048), zoom=numpy.int64(3))
+
+        assert stitched.image.size == (4096, 2048)
+
+
+# --- max_width ----------------------------------------------------------------------------------------------
+
+class TestMaxWidth:
+
+    def test_it_downsizes_keeping_the_aspect(self, monkeypatch):
+        FakeCbk(monkeypatch)
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=256)
+
+        assert stitched.image.size == (256, 128)
+        assert_color(stitched.image.getpixel((25, 64)), RED)
+        assert_color(stitched.image.getpixel((230, 64)), BLUE)
+
+    def test_the_height_is_the_nearest_pixel(self, monkeypatch):
+        FakeCbk(monkeypatch, served=(1024, 500))
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 500, max_width=100)
+
+        assert stitched.image.size == (100, 49)          # 500 * 100 / 1024 = 48.8
+
+    @pytest.mark.parametrize('max_width', [1024, 4096])
+    def test_a_max_width_at_or_above_the_frame_changes_nothing(self, monkeypatch, max_width):
+        FakeCbk(monkeypatch)
+        stitches = record_stitches(monkeypatch)
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=max_width)
+
+        assert stitched.image.size == (1024, 512)
+        assert [dims for dims, _thread in stitches] == [(1024, 512)]
+        assert stitched.upscaled is False
+
+    @pytest.mark.parametrize('max_width,upscaled', [(None, True), (6000, True), (4097, True), (4096, False),
+                                                    (1024, False)])
+    def test_upscaled_is_judged_against_the_returned_width(self, monkeypatch, max_width, upscaled):
+        """A zoom-3 fetch of an 8192 frame holds 4096 columns of imagery: anything wider is an upscale."""
+        FakeCbk(monkeypatch, served=(8192, 4096))
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 8192, 4096, zoom=3, max_width=max_width)
+
+        assert stitched.upscaled is upscaled
+        assert stitched.image.size[0] == (8192 if max_width is None else max_width)
+
+    @pytest.mark.parametrize('max_width', [4096, 2048, 6000])
+    def test_a_max_width_below_the_frame_stitches_the_zooms_own_frame_once(self, monkeypatch, max_width):
+        """The tiles are stitched at the zoom's own frame, never upscaled to the full frame first, so the output
+        is at most ONE resample of the imagery fetched (none when the zoom's frame is the output)."""
+        FakeCbk(monkeypatch, served=(8192, 4096))
+        stitches = record_stitches(monkeypatch)
+        resizes = count_resizes(monkeypatch)
+
+        stitched = gsv_tiles.fetch_equirect(PANO, 8192, 4096, zoom=3, max_width=max_width)
+
+        assert [dims for dims, _thread in stitches] == [(4096, 2048)]
+        assert stitched.image.size == (max_width, max_width // 2)
+        if max_width == 4096:
+            assert resizes == []
+            plain = gsv_tiles.fetch_pano_image(PANO, 4096, 2048, 3)
+            assert stitched.image.tobytes() == plain.image.tobytes()
+        else:
+            assert resizes == [(max_width, max_width // 2)]
+
+    def test_undersized_tiles_survives_the_resize(self, monkeypatch):
+        def small(tile):
+            x, _y, _url = tile
+            return RED_SMALL_TILE if x == 0 else BLUE_SMALL_TILE
+
+        FakeCbk(monkeypatch, tile_result=small)
+
+        assert gsv_tiles.fetch_equirect(PANO, 1024, 512).undersized_tiles == 2
+        assert gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=256).undersized_tiles == 2
+
+    def test_the_zoom_native_frame_has_the_frames_grid(self):
+        """What the max_width path rests on: at every zoom a frame can be fetched at, the zoom's own frame
+        (_dims_at_zoom) asks for exactly the frame's grid, and is its own frame at that zoom."""
+        pairs = 0
+        for width in range(513, 16385):
+            height = (width + 1) // 2
+            for zoom in range(3, gsv_tiles._pano_max_zoom(width) + 1):
+                native = gsv_tiles._dims_at_zoom(width, height, zoom)
+                assert gsv_tiles._tile_grid(native[0], native[1], zoom) == gsv_tiles._tile_grid(width, height, zoom), \
+                    (width, height, zoom)
+                assert gsv_tiles._dims_at_zoom(native[0], native[1], zoom) == native, (width, height, zoom)
+                pairs += 1
+        assert pairs == 34816
+
+    @pytest.mark.parametrize('max_width', [0, -1, 1.5, True, '8192'], ids=repr)
+    def test_a_bad_max_width_is_refused_before_any_request(self, monkeypatch, max_width):
+        cbk = FakeCbk(monkeypatch)
+
+        with pytest.raises(ValueError):
+            gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=max_width)
+
+        assert cbk.probe_urls == []
+
+
+# --- refused before any request -----------------------------------------------------------------------------
+
+class TestRefusedBeforeAnyRequest:
+
+    @pytest.mark.parametrize('pano_id', [AF1Q_PANO, 'CAoSnotAPhotoId', 'CAoS.with.dots'],
+                             ids=['AF1Qip-photosphere', 'undecodable', 'not-base64url'])
+    def test_a_photosphere_id_is_refused_by_name(self, monkeypatch, pano_id):
+        cbk = FakeCbk(monkeypatch)
+
+        with pytest.raises(gsv_tiles.PhotosphereUnsupportedError) as raised:
+            gsv_tiles.fetch_equirect(pano_id, 16384, 8192)
+
+        assert isinstance(raised.value, ValueError)
+        assert '#223' in str(raised.value) and 'photosphere' in str(raised.value)
+        assert 'photo host' not in str(raised.value)
+        assert raised.value.pano_id == pano_id
+        assert cbk.probe_urls == []
+
+    @pytest.mark.parametrize('pano_id', [None, '', 123, b'abc', 'abc&zoom=3', 'abc#x', 'a/b', 'a b'], ids=repr)
+    def test_a_bad_pano_id_is_refused(self, monkeypatch, pano_id):
+        cbk = FakeCbk(monkeypatch)
+
+        with pytest.raises(ValueError) as raised:
+            gsv_tiles.fetch_equirect(pano_id, 1024, 512)
+
+        assert not isinstance(raised.value, gsv_tiles.PhotosphereUnsupportedError)
+        assert cbk.probe_urls == []
+
+    @pytest.mark.parametrize('side', ['width', 'height'])
+    @pytest.mark.parametrize('bad', [0, -1, None, 1024.0, float('nan'), True, numpy.bool_(True), '1024'],
+                             ids=lambda v: '%s-%r' % (type(v).__name__, v))
+    def test_a_bad_frame_is_refused(self, monkeypatch, side, bad):
+        cbk = FakeCbk(monkeypatch)
+        frame = {'width': 1024, 'height': 512}
+        frame[side] = bad
+
+        with pytest.raises(ValueError):
+            gsv_tiles.fetch_equirect(PANO, frame['width'], frame['height'])
+
+        assert cbk.probe_urls == []
+
+
+# --- the event loop -----------------------------------------------------------------------------------------
+
+class TestTheEventLoop:
+
+    def test_the_sync_call_inside_a_running_loop_says_what_to_await(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch)
+
+        async def main():
+            # Caught here and returned as text: a held exception would keep a coroutine alive past the
+            # warnings block below, hiding the never-awaited warning this test exists to see.
+            try:
+                gsv_tiles.fetch_equirect(PANO, 1024, 512)
+            except RuntimeError as e:
+                return str(e)
+            return None
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            message = asyncio.run(main())
+            gc.collect()
+
+        assert message is not None and 'fetch_equirect_async' in message
+        assert cbk.probe_urls == []
+        assert not [w for w in caught if issubclass(w.category, RuntimeWarning) and 'never awaited' in str(w.message)]
+
+    def test_two_fetches_awaited_together_keep_separate_refusals(self, monkeypatch):
+        """Under the real fan-out: a refusal in one fetch abandons that fetch's tiles and nobody else's."""
+        FakeCbk(monkeypatch, served=(8192, 4096), stub_tiles=False)
+        requested = real_fan_out(monkeypatch, refuse_one_pano)
+
+        async def main():
+            return await asyncio.gather(gsv_tiles.fetch_equirect_async(REFUSED_PANO, 8192, 4096, zoom=4),
+                                        gsv_tiles.fetch_equirect_async(SERVED_PANO, 8192, 4096, zoom=4),
+                                        return_exceptions=True)
+
+        refused, served = asyncio.run(main())
+
+        assert isinstance(refused, gsv_tiles.TilePushbackError), refused
+        assert 1 <= refused.requested <= gsv_tiles.CONCURRENCY
+        assert refused.total == 128
+        assert isinstance(served, gsv_tiles.StitchedPano), served
+        assert len([t for t in requested if '&panoid=%s' % SERVED_PANO in t[2]]) == 128
+
+    def test_the_fan_out_state_is_reset_in_the_awaiting_task(self, monkeypatch):
+        FakeCbk(monkeypatch, stub_tiles=False)
+        real_fan_out(monkeypatch, refuse_one_pano)
+
+        async def main():
+            with pytest.raises(gsv_tiles.TilePushbackError):
+                await gsv_tiles.fetch_equirect_async(REFUSED_PANO, 1024, 512)
+            left_behind = gsv_tiles._TILE_FANOUT.get()
+            return left_behind, await gsv_tiles.fetch_equirect_async(SERVED_PANO, 1024, 512)
+
+        left_behind, stitched = asyncio.run(main())
+
+        assert left_behind is None
+        assert stitched.image.size == (1024, 512)
+
+    def test_the_async_call_works_inside_a_running_loop(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch)
+
+        async def main():
+            return await gsv_tiles.fetch_equirect_async(PANO, 1024, 512)
+
+        stitched = asyncio.run(main())
+
+        assert stitched.image.size == (1024, 512) and stitched.upscaled is False
+        assert triples(cbk.probe_urls) == [(3, 0, 0), (5, 0, 0), (5, 2, 0), (5, 0, 1), (5, 1, 0)]
+        assert tile_triples(cbk) == [(5, 0, 0), (5, 1, 0)]
+
+    def test_the_blocking_work_runs_off_the_loop_thread(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch)
+        stitches = record_stitches(monkeypatch)
+
+        async def main():
+            loop_thread = threading.get_ident()
+            await gsv_tiles.fetch_equirect_async(PANO, 1024, 512)
+            return loop_thread
+
+        loop_thread = asyncio.run(main())
+
+        assert len(cbk.probe_threads) == 5
+        assert loop_thread not in cbk.probe_threads
+        assert len(stitches) == 1 and stitches[0][1] != loop_thread
+
+    def test_a_refusal_is_not_chained_to_the_loop_check(self, monkeypatch):
+        """The running-loop check must not leave its own RuntimeError ("no running event loop") as the context
+        of every exception the fetch raises, or each consumer traceback reads "during handling of the above
+        exception" about an error nobody made."""
+        FakeCbk(monkeypatch, levels=())
+
+        with pytest.raises(gsv_tiles.PanoGoneError) as raised:
+            gsv_tiles.fetch_equirect(PANO, 1024, 512)
+
+        assert raised.value.__context__ is None
+
+    def test_the_sync_call_runs_outside_a_loop_twice(self, monkeypatch):
+        FakeCbk(monkeypatch)
+
+        assert gsv_tiles.fetch_equirect(PANO, 1024, 512).image.size == (1024, 512)
+        assert gsv_tiles.fetch_equirect(PANO, 1024, 512).image.size == (1024, 512)
+
+
 # --- the async tile fetch -----------------------------------------------------------------------------------
 
 class TestTheAsyncTileFetch:
@@ -227,3 +634,26 @@ class TestTheAsyncTileFetch:
         assert callers.get('_stitch_tiles') == {'_stitch_fan_out'}
         assert callers.get('_reject_mostly_black_stitch') == {'_stitch_fan_out'}
         assert {'fetch_pano_image', '_fetch_pano_image_async'} <= callers.get('_stitch_fan_out', set())
+
+
+# --- the public surface -------------------------------------------------------------------------------------
+
+class TestThePublicSurface:
+
+    @pytest.mark.parametrize('name', NEW_PUBLIC_NAMES)
+    def test_the_new_names_are_public(self, name):
+        assert name in gsv_tiles.__all__
+
+    def test_the_async_tile_fetch_is_private(self):
+        assert '_fetch_pano_image_async' not in gsv_tiles.__all__
+        assert 'fetch_pano_image_async' not in gsv_tiles.__all__
+
+    @pytest.mark.parametrize('name', ['PanoGoneError', 'ZoomDisagreementError', 'PhotosphereUnsupportedError'])
+    def test_the_new_errors_are_value_errors_and_not_frame_refusals(self, name):
+        error = getattr(gsv_tiles, name)
+        assert issubclass(error, ValueError)
+        assert not issubclass(error, gsv_tiles.FrameDisagreementError)
+
+    def test_gsv_does_not_re_export_the_one_call(self):
+        assert 'fetch_equirect' not in gsv.RE_EXPORTED_FROM_GSV_TILES
+        assert 'fetch_equirect_async' not in gsv.RE_EXPORTED_FROM_GSV_TILES

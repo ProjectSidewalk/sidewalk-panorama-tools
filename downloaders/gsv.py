@@ -129,9 +129,11 @@ RE_EXPORTED_FROM_GSV_TILES = (
 )
 
 # The two seams this module composes by its OWN binding - download_single_pano calls fetch_pano_image and
-# _frame_refusal calls frame_covers_pano by bare name - and refetch_panos reads as gsv.<name>. The package never
-# calls either, so they are patched HERE (refetch's stub_seams, the stitcher's end-to-end tests); patching them
-# on gsv_tiles would intercept nothing, and conftest's check says so.
+# _frame_refusal calls frame_covers_pano by bare name - and refetch_panos reads as gsv.<name>, so they are
+# patched HERE (refetch's stub_seams, the stitcher's end-to-end tests); patching them on gsv_tiles would intercept
+# nothing this module or refetch_panos runs, and conftest's check says so. The package calls frame_covers_pano
+# only from its own fetch_equirect (#236), which this module neither calls nor re-exports, and whose tests stub
+# the requests beneath it, never the seam.
 GSV_COMPOSED_SEAMS = ('fetch_pano_image', 'frame_covers_pano')
 
 # FrameDisagreementError under this module's #41 ledger (its docstring, before #222 step 2, said this):
