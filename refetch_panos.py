@@ -26,6 +26,8 @@ Outcomes:
     not_affected  the stored frame implies a max zoom below 5, and the band is a zoom-5-only effect
     already_clean the file was written after --fixed-after, so it never carried `fover`
     dims_changed  the work-list's frame disagrees with the stored one; see --allow-dims-change
+    kept_original a #185 Part 2 `<pano_id>.native` sits beside the stored file, which is a copy resampled from
+                  it; swapping the copy alone would leave the two disagreeing, so it is never fetched
     gone          Google no longer serves this panorama at any zoom
     frame_grew    Google serves this panorama larger than the stored frame, so it would fetch a CROP of it
     frame_shrank  Google serves this panorama SMALLER than the stored frame (#181). Not swapped, not
@@ -36,7 +38,7 @@ Outcomes:
     too_black     the fresh stitch has more black than a real panorama does; refused
     replaced      swapped in
 
-The first five cost zero HTTP requests and are recomputed from the store on every run rather than ledgered.
+The first six cost zero HTTP requests and are recomputed from the store on every run rather than ledgered.
 That is what keeps a pass over a large store cheap, makes a re-run after a completed sweep free even if the
 ledger is lost, and means a flag such as --fixed-after can be corrected later without scrubbing anything.
 The rest cost requests, and every one of them except `undersized` and `frame_shrank` is remembered in
@@ -99,11 +101,11 @@ LOG_FILENAME = 'refetch.log'
 
 # Every outcome the pass can reach, in the order the summary prints them. Everything else that can happen is
 # an exception, which is transient by construction.
-OUTCOMES = ('absent', 'unreadable', 'not_affected', 'already_clean', 'dims_changed',
+OUTCOMES = ('absent', 'unreadable', 'not_affected', 'already_clean', 'dims_changed', 'kept_original',
             'gone', 'frame_grew', 'frame_shrank', 'upscaled', 'undersized', 'too_black', 'replaced')
 
 # The outcomes the ledger remembers, so a later run never re-attempts them: the ones that cost requests to
-# reach, and whose answer is a property of the panorama or of Google. The five zero-request outcomes are
+# reach, and whose answer is a property of the panorama or of Google. The six zero-request outcomes are
 # deliberately NOT here. Each is recomputed from the store in microseconds, so remembering one buys nothing -
 # and two of them are properties of the FLAGS rather than the panorama: `already_clean` moves with
 # --fixed-after, `dims_changed` with --allow-dims-change and whichever work-list was passed. Ledgering them
@@ -364,9 +366,10 @@ def _stored_path(storage_path, pano_id):
 def decide_without_fetching(storage_path, record, fixed_after, allow_dims_change):
     """Everything knowable from the store alone: (outcome, fetch_dims).
 
-    outcome is one of the five zero-request statuses when the panorama needs no request at all, and None
-    when it does; in that case fetch_dims is the (width, height) frame to fetch at. None of the five is
-    ledgered - see LEDGERED_OUTCOMES - so this runs again, for free, on every pass.
+    outcome is one of the six zero-request statuses when the panorama needs no request at all, and None
+    when it does; in that case fetch_dims is the (width, height) frame to fetch at. None of the six is
+    ledgered - see LEDGERED_OUTCOMES - so this runs again, for free, on every pass. `kept_original` (#185) is
+    checked last, just before each return that would fetch, so the cheaper answers keep their order.
 
     The default frame is the STORED file's, not the work-list's. That is what keeps this pass to the thing
     that was actually agreed - recovering polar-band resolution inside the frame the store already has.
@@ -392,9 +395,20 @@ def decide_without_fetching(storage_path, record, fixed_after, allow_dims_change
     if listed_dims[0] is not None and listed_dims[1] is not None and tuple(listed_dims) != stored_dims:
         if not allow_dims_change:
             return 'dims_changed', None
+        if _has_kept_original(path):
+            return 'kept_original', None
         return None, tuple(listed_dims)
 
+    if _has_kept_original(path):
+        return 'kept_original', None
     return None, stored_dims
+
+
+def _has_kept_original(path):
+    """Whether a #185 Part 2 original sits beside the stored pano. Then the stored .jpg is a copy resampled from
+    it, and swapping the copy alone would leave the two disagreeing - so the pano is refused at zero requests, as
+    `kept_original`. One stat, and only for a pano that would otherwise spend requests."""
+    return os.path.isfile(common.native_original_path(path))
 
 
 def _refresh_display_copy(storage_path, pano_id, image):

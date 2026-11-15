@@ -414,6 +414,25 @@ class TestTheOneStoreWalker:
 
         assert list(common.walk_store_panos(str(tmp_path))) == []
 
+    def test_a_kept_original_is_not_a_panorama(self, tmp_path):
+        """#185 Part 2: the larger original kept beside a GSV pano is a JPEG under a name that does not end in
+        .jpg, so the walker - and any lister keyed on the extension - never takes it for a panorama."""
+        pano = tmp_path / 'aa' / 'aaKeptOriginalAAAAAA.jpg'
+        two_tone_jpeg(str(pano), 16, 8)
+        two_tone_jpeg(str(tmp_path / 'aa' / 'aaKeptOriginalAAAAAA.w8192.jpg'), 16, 8)
+        two_tone_jpeg(common.native_original_path(str(pano)), 32, 16)
+
+        assert list(common.walk_store_panos(str(tmp_path))) == [str(pano)]
+
+    def test_a_photosphere_id_ending_in_a_dot_is_still_a_panorama(self, tmp_path):
+        """A CAoS id is base64url with `.` for `=` padding, so `<id>.jpg` can have a dot in its stem. A walker
+        that excluded sidecars by "no dot in the stem" (the #185 issue's first idea) would drop it."""
+        from test_gsv_photosphere import CIAB_PANO
+        pano = tmp_path / CIAB_PANO[:2] / (CIAB_PANO + '.jpg')
+        two_tone_jpeg(str(pano), 16, 8)
+
+        assert list(common.walk_store_panos(str(tmp_path))) == [str(pano)]
+
     def test_the_order_is_stable_across_calls_and_shards(self, tmp_path):
         """Both callers rely on it: the sweep's --max-runtime resumes where the last run stopped, and the
         repair pass shuffles a list it needs to have drawn identically each time."""

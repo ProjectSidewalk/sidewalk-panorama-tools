@@ -2115,6 +2115,22 @@ class TestAnyConditionFailsTheNight:
         assert '[queue] edge-band: GSV stitches saved with a deep exact-black edge band; check the work-list' in out
         assert '1 pano(s) saved with a deep edge band' in out
 
+    def test_a_kept_larger_pano_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal, monkeypatch,
+                                                                fleet_in_step, capsys):
+        """#185 Part 2's `served-larger-kept` (only while the switch is on): the city is ok - the pano is on the
+        store - and the night still fails, because the app's record for that pano is wrong."""
+        monkeypatch.setenv('QUEUE_TEST_CONDITIONS_BRAVO_BB',
+                           "served-larger-kept=1 pano(s) kept at Google's larger frame; first: pano x")
+
+        code = run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate')
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert '3/3 cities ok' in out
+        assert ("[queue] served-larger-kept: GSV panos kept at Google's larger frame beside an app-frame copy; "
+                "the app's record is wrong") in out
+        assert "1 pano(s) kept at Google's larger frame" in out
+
     def test_an_unusable_image_ledger_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal,
                                                                       monkeypatch, fleet_in_step, capsys):
         """#203: the image phase sat the run out over a pano_id_log.csv it could not parse. The runner exits 0

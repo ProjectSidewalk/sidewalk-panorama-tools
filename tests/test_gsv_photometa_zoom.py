@@ -205,7 +205,7 @@ class TestResolveFrameUsesPhotometaFirst:
         deny_probe(monkeypatch)
 
         assert gsv.resolve_frame(pano_info(13312, 6656)) == \
-            gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa', 'frame')
+            gsv.ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa', 'frame', tuple(SERIES_16384))
 
 
 # --- a pano the app reports no frame for (#184) ---------------------------------------------------------------
@@ -673,6 +673,36 @@ class TestRequestsPerPano:
         shard.mkdir()
         (shard / (PANO + '.jpg')).write_bytes(b'already here')
         assert self.run(tmp_path, monkeypatch, sizes=[(512, 256), (1024, 512)]) == (0, 0, 0)
+
+    # #185 Part 2: a pano Google serves larger than the app's frame (tests/test_gsv_served_larger.py's fixture, a
+    # small analogue of 13312 on 16384). Kept, it costs exactly one native fan-out at Google's frame; refused (the
+    # shipped default), exactly what it cost on master; rebuilt from an original on disk, nothing.
+
+    def run_served_larger(self, tmp_path, monkeypatch):
+        from test_gsv_served_larger import APP, PANO as KEPT_PANO, SERVED
+        asked = stub_photometa(monkeypatch, SERVED)
+        probes = count_probes(monkeypatch, 5)
+        tiles = red_tiles(monkeypatch)
+        try:
+            gsv.download_single_pano(str(tmp_path), pano_info(*APP, pano_id=KEPT_PANO))
+        except gsv.FrameDisagreementError:
+            pass
+        return len(asked), len(probes), len(tiles)
+
+    def test_a_pano_served_larger_costs_one_photometa_and_one_native_fan_out_when_kept(self, tmp_path,
+                                                                                        monkeypatch):
+        monkeypatch.setattr(gsv, 'KEEP_SERVED_LARGER_ORIGINALS', True)
+        assert self.run_served_larger(tmp_path, monkeypatch) == (1, 0, 8)
+
+    def test_a_pano_served_larger_costs_one_photometa_and_no_tile_when_refused(self, tmp_path, monkeypatch):
+        assert self.run_served_larger(tmp_path, monkeypatch) == (1, 0, 0)
+
+    def test_a_copy_rebuilt_from_a_kept_original_costs_nothing(self, tmp_path, monkeypatch):
+        from test_gsv_served_larger import PANO as KEPT_PANO, place_native
+        monkeypatch.setattr(gsv, 'KEEP_SERVED_LARGER_ORIGINALS', True)
+        place_native(tmp_path)
+        assert self.run_served_larger(tmp_path, monkeypatch) == (0, 0, 0)
+        assert os.path.isfile(os.path.join(str(tmp_path), KEPT_PANO[:2], KEPT_PANO + '.jpg'))
 
     def test_a_photosphere_costs_one_photo_host_request_and_no_photometa_probe_or_tile(self, tmp_path,
                                                                                          monkeypatch):

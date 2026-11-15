@@ -239,6 +239,20 @@ class TestQuarantine:
         assert backups[1].startswith('pano_id_log.csv.quarantined-')
         assert (store / backups[1]).read_text() == 'bbCUT,1\n'
 
+    def test_a_kept_original_stays_when_its_copy_is_quarantined(self, store, tmp_path):
+        """#185 Part 2: a `<pano_id>.native` is archive imagery, not a derivative of the pano, so quarantine leaves
+        it in the store (as it leaves `.depth.npz`); with the switch on, the next scrape rebuilds the copy from it."""
+        q = tmp_path / 'quarantine'
+        native = common.native_original_path(str(store / 'bb' / 'bbCUT.jpg'))
+        with open(native, 'wb') as f:
+            f.write(WHOLE)
+
+        assert run([str(store), '--quarantine', str(q)], tmp_path) == verify_store.EXIT_OK
+
+        assert (q / 'bb' / 'bbCUT.jpg').read_bytes() == CUT
+        assert open(native, 'rb').read() == WHOLE
+        assert not (q / 'bb' / 'bbCUT.native').exists()
+
     def test_a_destination_that_exists_is_never_overwritten(self, store, tmp_path, capsys):
         q = tmp_path / 'quarantine'
         put(q, 'bbCUT', b'earlier')

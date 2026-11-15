@@ -164,9 +164,12 @@ ImageLevels = collections.namedtuple('ImageLevels', ['sizes', 'tile_size'])
 #                   the caller's grid - with 'photometa-dims', the served top level's own grid, #184) or
 #                   'tile_size' (the levels are not cut in 512 px tiles). None otherwise, including on the probe
 #                   arm, whose frame check is download_single_pano's.
+#   sizes         - photometa's levels, as a tuple of (w, h), ONLY on the dimensioned arm's refusal='frame'
+#                   answer, so _served_larger_plan can judge it without a second request (#185 Part 2). None on
+#                   every other answer.
 ResolvedFrame = collections.namedtuple('ResolvedFrame',
                                        ['width', 'height', 'zoom', 'consistent', 'served_dims', 'evidence',
-                                        'refusal'], defaults=(None,))
+                                        'refusal', 'sizes'], defaults=(None, None))
 
 
 class FrameUnknownError(Exception):
@@ -471,8 +474,10 @@ def resolve_frame(pano_info, block_latch_path=None, photometa=True):
                         levels.tile_size[0], levels.tile_size[1], gsv_tiles.TILE_SIZE)
         return ResolvedFrame(width, height, len(levels.sizes) - 1, False, served_dims, 'photometa', 'tile_size')
     zoom, consistent = gsv_tiles.choose_zoom(levels.sizes, width, height)
-    return ResolvedFrame(width, height, zoom, consistent, served_dims, 'photometa',
-                         None if consistent else 'frame')
+    if consistent:
+        return ResolvedFrame(width, height, zoom, True, served_dims, 'photometa')
+    return ResolvedFrame(width, height, zoom, False, served_dims, 'photometa', 'frame',
+                         tuple(tuple(s) for s in levels.sizes))
 
 
 def _resolve_frame_from_photometa(pano_id, block_latch_path):
@@ -662,6 +667,194 @@ def _flag_deep_edge_band(image, pano_id):
     print("IMAGEDOWNLOAD: WARNING - %s" % message)
     _edge_band_run.saved += 1
     _edge_band_run.details.append(detail)
+
+
+# --- A pano Google serves LARGER than the app's frame (#185 Part 2), SWITCHED OFF ---------------------------------
+#
+# A pano's frame never changes (#217), so photometa reporting a top level strictly larger than the app's frame, at
+# the same aspect ratio, means the app's record is wrong and too small (the 13312x6656 hardcoded until 2022-03, or
+# a value inferred by SidewalkWebpage evolution 366 part 1). Today that is a frame-disagreement refusal (#207's
+# condition), retried nightly until the app's record is fixed - and lost for good if Google retires the pano first.
+# With the switch on it is fetched once at Google's frame, kept as <pano_id>.native (a JPEG under a name no lister
+# takes for a panorama), and <pano_id>.jpg is written as a uniform LANCZOS resample of that original, read back
+# from disk, at the app's frame - a second JPEG generation, by design: night and recovery share one code path,
+# and the original is decoded back through the mount before anything is ledgered. Neither write ever replaces a
+# file (atomic_output_path(..., overwrite=False)); the store is an archive (docs/ops.md).
+#
+# Whether the app's labels sit on the same referent in the resampled copy is an ASSUMPTION for this population:
+# the app projects against its recorded frame, and a uniform resample to that frame keeps a label on its referent
+# only if the label was computed against the recorded frame. docs/ops.md says so.
+
+#: Whether a GSV pano Google serves LARGER than the app's frame, at the same aspect ratio, is downloaded at Google's
+#: frame and kept as <pano_id>.native beside an app-frame <pano_id>.jpg (#185 Part 2), instead of being refused.
+#: OFF: the rate has been zero on every measurement (reports/2026-10-06-fleet-thresholds-and-frame-refusals.md),
+#: and a new file kind on the archive is the owner's to turn on. NOT a CLI flag (WRITE_DISPLAY_COPIES' reason): a
+#: flip is a reviewed diff, and a test pins the shipped value. It gates the automatic writer AND the rebuild of a
+#: lost copy from an original on disk; readers (refetch_panos' kept_original, the walker) never read it.
+KEEP_SERVED_LARGER_ORIGINALS = False
+
+
+class KeptOriginalError(Exception):
+    """A kept original (#185 Part 2) read back at a size other than the one just written. Nothing is ledgered.
+
+    TRANSIENT under the #41 ledger: counted in tonight's failures, not ledgered, retried next run. Deliberately
+    NOT a FrameDisagreementError subclass: DownloadRunner counts that type by isinstance (#207), and a read-back
+    that disagrees with the write is a storage fault, not a frame disagreement.
+    """
+
+
+def _served_larger_plan(frame):
+    """(served_w, served_h, zoom) when `frame` is the #185 Part 2 case, else None. Pure: no request, no I/O.
+
+    A plan only when ALL hold; otherwise the frame-disagreement refusal stands exactly as it is today:
+      1. photometa's own `frame` refusal on the dimensioned arm (not 'photometa-dims', not 'tile_size', not the
+         probe arm), carrying the levels it was decided on;
+      2. Google's top level is strictly larger than the app's frame on both axes;
+      3. at the same aspect ratio, compared in integers;
+      4. no larger than common.MAX_PANO_PIXELS;
+      5. fetchable natively: choose_zoom picks a consistent level for Google's own frame AND that level's grid is
+         the whole frame. Never len(sizes) - 1 by assumption (#216 review S1): the stitcher infers its grid from
+         the width, so a pyramid whose top is not at that index would fetch a quarter and upscale it.
+
+    Example, the 13312-on-16384 case::
+
+        >>> _served_larger_plan(ResolvedFrame(13312, 6656, 5, False, (16384, 8192), 'photometa', 'frame',
+        ...     ((512, 256), (1024, 512), (2048, 1024), (4096, 2048), (8192, 4096), (16384, 8192))))
+        (16384, 8192, 5)
+    """
+    if frame.refusal != 'frame' or frame.evidence != 'photometa' or frame.sizes is None:
+        return None
+    served_w, served_h = frame.served_dims
+    if not (served_w > frame.width and served_h > frame.height):
+        return None
+    if served_w * frame.height != served_h * frame.width:
+        return None
+    if served_w * served_h > common.MAX_PANO_PIXELS:
+        return None
+    zoom, consistent = gsv_tiles.choose_zoom(frame.sizes, served_w, served_h)
+    if not consistent or gsv_tiles._dims_at_zoom(served_w, served_h, zoom) != (served_w, served_h):
+        return None
+    return served_w, served_h, zoom
+
+
+class _ServedLargerRunMemory:
+    """How many panos this run kept at Google's larger frame, or rebuilt a copy for (#185 Part 2), and one short
+    detail each. _EdgeBandRunMemory's shape and reasons: reset by DownloadRunner.run (and by conftest.py between
+    tests), and `details[i]` is the process's i-th, so a phase can name its own first pano."""
+
+    def __init__(self):
+        self.kept = 0
+        self.details = []
+
+
+_served_larger_run = _ServedLargerRunMemory()
+
+
+def _note_served_larger_kept(pano_id, app_dims, served_dims, native_path, rebuilt):
+    """Count a kept pano and say so once on both channels - never with the phrase `frame disagreement`, which the
+    ops grep counts refusals by. The runner turns the per-phase count into the `served-larger-kept` condition."""
+    detail = 'pano %s: app %dx%d, Google %dx%d' % ((pano_id,) + tuple(app_dims) + tuple(served_dims))
+    if rebuilt:
+        what = ('rebuilt %s.jpg from the original %s already on disk'
+                % (pano_id, os.path.basename(native_path)))
+    else:
+        what = ("kept the original as %s and saved %s.jpg as a copy resampled to the app's frame"
+                % (os.path.basename(native_path), pano_id))
+    message = ("pano %s: the app records %dx%d but Google serves %dx%d; %s (#185); ledgered downloaded=1, so this "
+               "is said once; see docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records"
+               % ((pano_id,) + tuple(app_dims) + tuple(served_dims) + (what,)))
+    logging.warning("IMAGEDOWNLOAD: WARNING - %s", message)
+    print("IMAGEDOWNLOAD: WARNING - %s" % message)
+    _served_larger_run.kept += 1
+    _served_larger_run.details.append(detail)
+
+
+def _write_app_frame_copy(pano_id, native_path, out_image_name, app_dims, expect=None):
+    """Write <pano_id>.jpg as a LANCZOS resample of the original on disk at `app_dims`; return the copy.
+
+    The ONE place a copy is made, the night of the download and in recovery alike, so both make the same bytes.
+    The original is decoded in full from disk - the read-back through the mount - and, when `expect` is given (the
+    night's write), must come back at that size before anything else is written. The save is the plain
+    save(tmp, 'jpeg') every stored pano gets, and it never replaces a file.
+
+    @raise KeptOriginalError when the original reads back at a size other than `expect`; OSError when it does not
+           decode; FileExistsError when a <pano_id>.jpg appeared meanwhile. All transient.
+    """
+    with Image.open(native_path) as native:
+        native.load()
+        if expect is not None and native.size != tuple(expect):
+            raise KeptOriginalError('pano %s: %s reads back at %dx%d, not the %dx%d just written; left in place, '
+                                    'no copy written, not ledgered'
+                                    % ((pano_id, native_path) + tuple(native.size) + tuple(expect)))
+        copy = native.convert('RGB').resize(tuple(app_dims), Image.LANCZOS)
+    with atomic_output_path(out_image_name, overwrite=False) as tmp_path:
+        copy.save(tmp_path, 'jpeg')
+    return copy
+
+
+def _copy_from_kept_original(pano_id, app_dims, out_image_name):
+    """Rebuild a lost <pano_id>.jpg from a kept original already on disk, at zero requests (#185 Part 2).
+
+    None when there is no original, or when it is not usable - not larger than the app's frame on both axes at
+    the same aspect, over MAX_PANO_PIXELS, unreadable, or not whole - in which case it is left untouched, said
+    once on both channels, and the pano takes the ordinary path (where the refusal names the file). Otherwise
+    DownloadResult.skipped: the imagery was already on disk and nothing was asked, so the runner writes a blank
+    fetched_at, moves no breaker, and checks the new file (#239) before ledgering it.
+    """
+    native_path = common.native_original_path(out_image_name)
+    if not os.path.isfile(native_path):
+        return None
+    app_w, app_h = app_dims
+    dims = common.jpeg_dimensions(native_path)
+    usable = (dims is not None
+              and dims[0] > app_w and dims[1] > app_h and dims[0] * app_h == dims[1] * app_w
+              and dims[0] * dims[1] <= common.MAX_PANO_PIXELS
+              and common.stored_jpeg_verdict(native_path) != common.STORED_JPEG_INCOMPLETE)
+    if not usable:
+        message = ("pano %s: the kept original %s (%s) is not usable for the app's %dx%d frame (#185); left "
+                   "untouched" % (pano_id, native_path, '%dx%d' % dims if dims else 'unreadable', app_w, app_h))
+        logging.warning("IMAGEDOWNLOAD: WARNING - %s", message)
+        print("IMAGEDOWNLOAD: WARNING - %s" % message)
+        return None
+    copy = _write_app_frame_copy(pano_id, native_path, out_image_name, app_dims)
+    _note_served_larger_kept(pano_id, app_dims, dims, native_path, rebuilt=True)
+    _flag_deep_edge_band(copy, pano_id)
+    _write_display_copy(copy, out_image_name, pano_id)
+    return DownloadResult.skipped
+
+
+def _keep_served_larger(pano_id, frame, plan, out_image_name, refusal):
+    """The night of the download (#185 Part 2): one fan-out at Google's frame, the original written first, then the
+    app-frame copy made from it. Returns DownloadResult.success.
+
+    An original already on disk here is one _copy_from_kept_original could not use: it is never overwritten, and
+    the pano is refused as a frame disagreement naming it (the disagreement is real and unresolved).
+    """
+    served_w, served_h, zoom = plan
+    app_dims = (frame.width, frame.height)
+    native_path = common.native_original_path(out_image_name)
+    if os.path.lexists(native_path):
+        refusal = ('%s; an original is already on disk at %s and was not usable, so it was left untouched'
+                   % (refusal, native_path))
+        print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
+        raise gsv_tiles.FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
+    # The #121 tripwire on the width about to be STORED - Google's. The app's narrower width was checked in
+    # resolve_frame, as on every pano.
+    common.warn_if_wider_than_viewer_ceiling(pano_id, served_w, 'gsv')
+    # Raises as for any pano on a failed tile, a push-back or a mostly black stitch; nothing is written then.
+    stitched = fetch_pano_image(pano_id, served_w, served_h, zoom)
+    with atomic_output_path(native_path, overwrite=False) as tmp_path:
+        stitched.image.save(tmp_path, 'jpeg')
+    # scrape.log only: the durable record if the run dies before the copy lands.
+    logging.warning("IMAGEDOWNLOAD: pano %s: kept the %dx%d original as %s; writing the app-frame copy",
+                    pano_id, served_w, served_h, native_path)
+    # The only reference to the stitch, released before the read-back so the two rasters never coexist.
+    del stitched
+    copy = _write_app_frame_copy(pano_id, native_path, out_image_name, app_dims, expect=(served_w, served_h))
+    _note_served_larger_kept(pano_id, app_dims, (served_w, served_h), native_path, rebuilt=False)
+    _flag_deep_edge_band(copy, pano_id)
+    _write_display_copy(copy, out_image_name, pano_id)
+    return DownloadResult.success
 
 
 # --- User photospheres (#223) ------------------------------------------------------------------------------
@@ -947,6 +1140,14 @@ def download_single_pano(storage_path, pano_info):
         logging.info("IMAGEDOWNLOAD: pano %s has the photosphere prefix but does not decode to a photo id; "
                      "trying cbk (#223)", pano_id)
 
+    # #185 Part 2, only with the switch on: a <pano_id>.native kept on an earlier night whose copy is missing is
+    # rebuilt here at zero requests. With the switch off this costs nothing - not even a stat.
+    if KEEP_SERVED_LARGER_ORIGINALS and pano_info.get('width') is not None and pano_info.get('height') is not None:
+        rebuilt = _copy_from_kept_original(pano_id, (int(pano_info['width']), int(pano_info['height'])),
+                                           out_image_name)
+        if rebuilt is not None:
+            return rebuilt
+
     # A dimensionless pano photometa cannot answer for raises FrameUnknownError here - transient (#184).
     frame = resolve_frame(pano_info)
     if frame is None:
@@ -964,6 +1165,12 @@ def download_single_pano(storage_path, pano_info):
         #
         # One line per channel: the print here, and the ERROR DownloadRunner's image loop logs with this
         # exception's text. Logging an ERROR here as well put two in scrape.log for every refusal.
+        #
+        # The one exception, only with KEEP_SERVED_LARGER_ORIGINALS on (#185 Part 2): Google serves the pano
+        # strictly larger at the same aspect, so the original is kept and the app-frame copy made from it.
+        plan = _served_larger_plan(frame) if KEEP_SERVED_LARGER_ORIGINALS else None
+        if plan is not None:
+            return _keep_served_larger(pano_id, frame, plan, out_image_name, refusal)
         print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
         raise gsv_tiles.FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
 
