@@ -603,6 +603,14 @@ GSV_MAX_CONSECUTIVE_PUSHBACK = 3
 # The threshold while the block latch is fresh: probation, not a stand-down (see download_panorama_images).
 GSV_PUSHBACK_PROBATION = 1
 
+# Mapillary refusing this run (#239): consecutive Mapillary panos for which mapillary.pushback_reason is set -
+# a 429 past the retry adapter, or the token refused. Its own block beside #162's, not a table entry in it:
+# there is no latch (the depth phase never asks Mapillary for anything), no probation, and the summaries,
+# the per-pano line and reports/scripts/fleet_thresholds.py's regexes are worded for Google. Three for
+# MAX_CONSECUTIVE_UNDERSIZED's reason. A trip exits 1 and leaves image_stop alone: 'blocked' would stop a
+# later max-runtime stop being recorded and switch off images-no-success's budget arm for a mixed city's GSV.
+MAPILLARY_MAX_CONSECUTIVE_PUSHBACK = 3
+
 # The stop reason a push-back trip records under 'image_stop'. The depth phase's DEPTH_STOP_BLOCKED spelling,
 # pinned equal by a test: scrape_queue reads 'blocked' as "do not spend an extra pass on this city".
 STOP_BLOCKED = 'blocked'
@@ -705,6 +713,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # refusal rather than by permanent verdicts - keeps #113's repair advice out of its summary.
     consecutive_pushback = 0
     refused = set()
+    # The Mapillary push-back stop (#239): its own count, last reason, and whether it is what tripped Mapillary
+    # (so #113's "false downloaded=0 rows" summary is not printed for it).
+    consecutive_mapillary_pushback, last_mapillary_pushback, mapillary_refused = 0, None, False
     # One resolution order for both halves of the phase that touch this host's standing (#172 final review,
     # cross-PR item 4): the breaker uses these, and the loop below scopes photometa's module paths to them.
     latch_path, pace_state_path = gsv.image_host_state_paths(block_latch_path, pace_state_path)
@@ -770,6 +781,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             attempt_start = time.monotonic()
             print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
             pushback = None
+            mapillary_pushback = None
             try:
                 result_code = download_pano(storage_path, pano_info)
                 if result_code == DownloadResult.success:
@@ -799,6 +811,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     if first_frame_refusal is None:
                         first_frame_refusal = str(e)
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
+                mapillary_pushback = mapillary.pushback_reason(e) if source == 'mapillary' else None
                 # A raise's own duration rides on its ERROR line (#178 step 1): scrape.log is the one durable
                 # per-raise record, and the `--- N seconds ---` line below is a print, so it never reaches the
                 # file. Read ONCE here and added to raise_seconds below as the same value, so the logged
@@ -922,6 +935,25 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                               % (consecutive_pushback, pushback, latch_said))
                 elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
                     consecutive_pushback = 0
+            elif source == 'mapillary':
+                # The Mapillary push-back stop (#239), on #162's rule: only a refusal counts, only a success
+                # resets. A transient (5xx, timeout, a retired image's 400) is no evidence either way, a skip
+                # never contacted Mapillary, and a permanent verdict is #113's to count.
+                if mapillary_pushback is not None:
+                    consecutive_mapillary_pushback += 1
+                    last_mapillary_pushback = mapillary_pushback
+                    if consecutive_mapillary_pushback >= MAPILLARY_MAX_CONSECUTIVE_PUSHBACK:
+                        tripped.add(source)
+                        mapillary_refused = True
+                        logging.error("IMAGEDOWNLOAD: Mapillary refused %d consecutive panos (%s). Stopping "
+                                      "Mapillary images for the rest of this run; its remaining panos are left "
+                                      "unattempted and retry next run (#239).", consecutive_mapillary_pushback,
+                                      mapillary_pushback)
+                        print("IMAGEDOWNLOAD: WARNING - Mapillary refused %d panos in a row (%s). Stopping "
+                              "Mapillary images for this run." % (consecutive_mapillary_pushback,
+                                                                  mapillary_pushback))
+                elif result_code in (DownloadResult.success, DownloadResult.fallback_success):
+                    consecutive_mapillary_pushback = 0
             total_completed = success_count + fallback_success_count + fail_count + skipped_count
 
             if downloaded is not None:
@@ -946,7 +978,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                   % (total_completed, total_panos, success_count, fallback_success_count, fail_count, skipped_count))
             print("--- %s seconds ---" % (time.time() - start_time))
 
-    verdict_tripped = tripped - refused
+    # Only the sources #113's breaker tripped: not #162's GSV refusal, and not #239's Mapillary refusal, which
+    # ledgered nothing false either. (#113 cannot also trip a source the push-back stop already tripped: a
+    # tripped source's remaining panos are never attempted.)
+    verdict_tripped = tripped - refused - ({'mapillary'} if mapillary_refused else set())
     if verdict_tripped:
         # Both channels, like the per-trip message above: this is the half that carries the unattempted count
         # and the repair pointer, which is exactly what someone needs a week later reading scrape.log while
@@ -978,6 +1013,17 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    "unattempted and nothing was ledgered for them, so they retry next run. No ledger repair "
                    "is needed. Check this host for a rate limit before the next run; %s."
                    % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
+        logging.error("%s", summary)
+        print(summary)
+
+    if mapillary_refused:
+        if last_mapillary_pushback == 'token refused':
+            check = "Replace MAPILLARY_ACCESS_TOKEN before the next run"
+        else:
+            check = "Wait before the next run; a standalone run is safe to resume, since nothing was ledgered"
+        summary = ("IMAGEDOWNLOAD: WARNING - Mapillary refused this run (%s); %d pano(s) were left unattempted "
+                   "and nothing was ledgered for them, so they retry next run. No ledger repair is needed. %s."
+                   % (last_mapillary_pushback, unattempted['mapillary'], check))
         logging.error("%s", summary)
         print(summary)
 

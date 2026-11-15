@@ -650,7 +650,7 @@ def arm_width_alarm(path):
         return True
 
 
-def retrying_session():
+def retrying_session(respect_retry_after=True):
     """A requests.Session with the retry policy both HTTP downloaders use.
 
     Lives here rather than in one of them because it was about to be a second byte-identical copy, and the
@@ -661,9 +661,16 @@ def retrying_session():
 
     gsv.py deliberately does not use it - the tile fan-out is aiohttp + backoff, a different concurrency
     model with its own retry decisions.
+
+    `respect_retry_after=False` makes a 429 back off on the fixed schedule (about 30 s over the five retries)
+    instead of sleeping for whatever its Retry-After header asks. urllib3 honours that header by default, up
+    to six hours per retry in 2.x, inside one request, where neither --max-runtime (checked between panos)
+    nor a push-back counter can see it. Mapillary passes False (#239: a refusal must reach its push-back stop
+    in seconds, not hours); Panoramax keeps the default.
     """
     session = requests.Session()
-    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+    retry = Retry(total=5, connect=5, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1,
+                  respect_retry_after_header=respect_retry_after)
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)

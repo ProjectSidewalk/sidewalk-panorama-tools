@@ -517,17 +517,25 @@ class TestMapillaryErrorEnvelopes:
         assert envelope['error']['type'] in str(excinfo.value)
         assert '190' in str(excinfo.value)
 
-    @pytest.mark.parametrize('condition', sorted(OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05))
+    @pytest.mark.parametrize('condition', sorted(c for c, (status, _) in OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05
+                                                 .items() if status < 500))
     def test_every_measured_auth_failure_is_refused_as_measured(self, monkeypatch, tmp_path, mapillary_token,
                                                                 condition):
-        """As measured, each one is a non-200, refused at the status before the body is read. The test above
-        is what covers the shape nobody has measured."""
+        """As measured, each one is a non-200 carrying the auth signature. Since #239 the body is read before the
+        status is raised for, so each is MapillaryTokenRefused - what the push-back stop counts as 'token
+        refused' - rather than a bare HTTPError. Still a raise, so still unledgered. The test above is what
+        covers the shape nobody has measured. The 500 is left out: FakeSession bypasses the retry adapter, and
+        in production a 500 exhausts it and arrives as a RetryError, which is not counted (see
+        test_a_refused_token_answering_500_is_a_retry_error_and_not_counted)."""
         status, envelope = OBSERVED_MAPILLARY_AUTH_FAILURES_2026_09_05[condition]
         monkeypatch.setattr(downloaders.mapillary, '_session',
                             lambda: FakeSession(FakeResponse(status_code=status, payload=envelope)))
 
-        with pytest.raises(requests.HTTPError):
+        with pytest.raises(downloaders.mapillary.MapillaryTokenRefused) as excinfo:
             downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert downloaders.mapillary.pushback_reason(excinfo.value) == 'token refused'
+        assert '190' in str(excinfo.value)
 
     @pytest.mark.parametrize('body', [{}, {'thumb_original_url': None}, {'id': '999999999999999'},
                                       {'data': []}], ids=['empty', 'null url, no id', 'another image', 'a list'])
@@ -880,6 +888,109 @@ class TestMapillarySessionRetryPolicy:
 
         assert session.get_adapter('http://cdn.example/x.jpg') is \
             session.get_adapter('https://cdn.example/x.jpg')
+
+    def test_mapillary_ignores_retry_after_and_panoramax_does_not(self):
+        """#239: honouring Retry-After can hold one request for hours (urllib3 2.x caps it at six), past
+        --max-runtime and the push-back stop alike. Mapillary opts out; the shared default is unchanged."""
+        mapillary_retries = downloaders.mapillary._session().get_adapter('https://graph.mapillary.com/1').max_retries
+        default_retries = downloaders.common.retrying_session().get_adapter('https://x/').max_retries
+
+        assert mapillary_retries.respect_retry_after_header is False
+        assert default_retries.respect_retry_after_header is True
+
+
+class TestMapillaryPushbackReason:
+    """#239: what the image loop's Mapillary push-back stop counts - the run being refused, never one image's
+    answer and never this box's network."""
+
+    @staticmethod
+    def http_error(status):
+        response = requests.Response()
+        response.status_code = status
+        return requests.HTTPError(response=response)
+
+    def test_a_429_past_the_retry_adapter_is_a_refusal(self):
+        from test_gsv_stitcher import probe_retry_error
+        assert downloaders.mapillary.pushback_reason(probe_retry_error(429)) == 'HTTP 429'
+
+    @pytest.mark.parametrize('status', [500, 502, 503, 504])
+    def test_a_5xx_storm_is_not_a_refusal(self, status):
+        from test_gsv_stitcher import probe_retry_error
+        assert downloaders.mapillary.pushback_reason(probe_retry_error(status)) is None
+
+    def test_an_http_error_carrying_429_is_a_refusal(self):
+        assert downloaders.mapillary.pushback_reason(self.http_error(429)) == 'HTTP 429'
+
+    @pytest.mark.parametrize('status', [400, 403, 404, 500])
+    def test_other_http_errors_are_not(self, status):
+        """400 includes code 100 / subcode 33, which every retired image sends every night."""
+        assert downloaders.mapillary.pushback_reason(self.http_error(status)) is None
+
+    def test_a_refused_token_is_a_refusal(self):
+        exc = downloaders.mapillary.MapillaryTokenRefused('refused')
+        assert downloaders.mapillary.pushback_reason(exc) == 'token refused'
+
+    @pytest.mark.parametrize('exc', [downloaders.mapillary.MapillaryErrorResponse('not a JPEG'),
+                                     requests.ConnectionError('reset'), requests.Timeout('slow'),
+                                     ValueError('not JSON')],
+                             ids=['other body', 'reset', 'timeout', 'not json'])
+    def test_everything_else_is_not(self, exc):
+        assert downloaders.mapillary.pushback_reason(exc) is None
+
+    def test_a_retired_images_400_is_raised_and_not_a_refusal(self, monkeypatch, tmp_path, mapillary_token,
+                                                              caplog):
+        """The measured 100/33 body: still an HTTPError, still not counted, and its envelope code is logged
+        so the first rate-limit envelope Mapillary sends is measured (#239 plan, D2)."""
+        body = {'error': {'message': 'Unsupported get request.', 'type': 'GraphMethodException', 'code': 100,
+                          'error_subcode': 33}}
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=400, payload=body)))
+
+        with caplog.at_level(logging.INFO), pytest.raises(requests.HTTPError) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert downloaders.mapillary.pushback_reason(excinfo.value) is None
+        assert any('Mapillary answered 400' in r.getMessage() and 'code=100' in r.getMessage()
+                   for r in caplog.records)
+
+    @pytest.mark.parametrize('status', [400, 403])
+    def test_an_oauth_rate_limit_is_not_a_refused_token(self, monkeypatch, tmp_path, mapillary_token, caplog,
+                                                        status):
+        """Meta files rate limits (code 4, 17, 32, 613) under type OAuthException. Decision D2: logged, not
+        counted - and above all never reported as a token to replace."""
+        body = {'error': {'message': 'Application request limit reached', 'type': 'OAuthException', 'code': 4}}
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=status, payload=body)))
+
+        with caplog.at_level(logging.INFO), pytest.raises(requests.HTTPError) as excinfo:
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+
+        assert not isinstance(excinfo.value, downloaders.mapillary.MapillaryTokenRefused)
+        assert downloaders.mapillary.pushback_reason(excinfo.value) is None
+        assert any('code=4' in r.getMessage() for r in caplog.records), 'the D2 measurement line'
+
+    def test_an_oauth_rate_limit_on_a_200_or_a_404_is_not_a_refused_token(self, monkeypatch, tmp_path,
+                                                                         mapillary_token):
+        body = {'error': {'message': 'Application request limit reached', 'type': 'OAuthException', 'code': 4}}
+        for status in (200, 404):
+            monkeypatch.setattr(downloaders.mapillary, '_session',
+                                lambda: FakeSession(FakeResponse(status_code=status, payload=body)))
+            with pytest.raises(downloaders.mapillary.MapillaryErrorResponse) as excinfo:
+                downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
+            assert not isinstance(excinfo.value, downloaders.mapillary.MapillaryTokenRefused), status
+
+    def test_a_refused_token_answering_500_is_a_retry_error_and_not_counted(self):
+        """Pinned as a known limit: 500 is in the forcelist, so the body is never read."""
+        from test_gsv_stitcher import probe_retry_error
+        assert downloaders.mapillary.pushback_reason(probe_retry_error(500)) is None
+
+    def test_an_auth_envelope_on_a_200_is_a_refused_token(self, monkeypatch, tmp_path, mapillary_token):
+        body = {'error': {'message': 'Invalid OAuth access token', 'type': 'OAuthException', 'code': 190}}
+        monkeypatch.setattr(downloaders.mapillary, '_session',
+                            lambda: FakeSession(FakeResponse(status_code=200, payload=body)))
+
+        with pytest.raises(downloaders.mapillary.MapillaryTokenRefused):
+            downloaders.mapillary.download_single_pano(str(tmp_path), MAPILLARY_PANO)
 
 
 class TestAnImageAlreadyOnDiskIsItsOwnResumeMarker:

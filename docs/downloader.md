@@ -156,26 +156,26 @@ Four things to know before a long run:
   For each file it lists, first delete that pano's row from `pano_id_log.csv`, then move the file out of the
   storage directory; the next run fetches it again. (In the other order, an interrupted repair leaves a `1`
   row with no file, which is never refetched.)
-* **There is no Mapillary stop for rate limiting, and `--max-runtime` does not bound a refused run.** A 429
-  is retried inside the request up to 5 times. Without a `Retry-After` header that costs about 30 s per pano,
-  after which the pano is counted as failed, left unledgered, and the loop moves on. With one, each retry
-  sleeps as long as the header asks, up to 6 hours, inside a single request. `--max-runtime` is checked only
-  between panos, so it cannot interrupt that. Whether Mapillary sends the header is unmeasured. (Google has
-  a push-back breaker; Mapillary does not.) So **run a long list in pieces with `--max-runtime`**: each piece
-  resumes from the ledger, so nothing is fetched twice. A piece that stops printing `IMAGEDOWNLOAD:` lines
-  for minutes is most likely waiting on a refusal (a dead connection looks the same); stop it and wait
-  before the next piece. The loop is serial with no
-  fixed delay, about two requests per Mapillary pano (#239's Sacramento run measured about 0.5 s per pano).
-  Between pieces, read field 20 of the piece's `log.csv` row: the attempts that raised. It is blank for a
-  piece that was stopped before the image phase finished; read that piece's `Failed to download pano` lines
-  in `scrape.log` instead. (The `failed` figure on stdout starts from the ledger's `0` rows, so it is not
-  that run's alone.) A handful is normal; ids
-  Mapillary no longer has answer 400 and are asked again on every run. If most of a piece raised, read
+* **Mapillary stops itself when it is refused** ([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)).
+  A 429 is retried inside the request up to 5 times on a fixed schedule, about 30 s per pano; Mapillary's
+  `Retry-After` header is ignored, because honouring it could hold one request for hours where
+  `--max-runtime`, checked only between panos, cannot reach it. Three Mapillary panos in a row refused that
+  way, or refused because the token is (the auth error, code 190), stop Mapillary for the rest of the run:
+  its remaining panos are left unattempted and unledgered, the run prints
+  `WARNING - Mapillary refused N panos in a row` and a summary saying what to check, and exits 1. Nothing is
+  ledgered, so the next piece resumes cleanly. Other answers (a 5xx storm, a timeout, a retired image's 400)
+  neither count nor reset. Still **run a long list in pieces with `--max-runtime`**: each piece resumes from
+  the ledger, so nothing is fetched twice. The loop is serial with no fixed delay, about two requests per
+  Mapillary pano (#239's Sacramento run measured about 0.5 s per pano). Between pieces, read field 20 of the
+  piece's `log.csv` row: the attempts that raised. It is blank for a piece that was stopped before the image
+  phase finished; read that piece's `Failed to download pano` lines in `scrape.log` instead. (The `failed`
+  figure on stdout starts from the ledger's `0` rows, so it is not that run's alone.) A handful is normal;
+  ids Mapillary no longer has answer 400 and are asked again on every run. If most of a piece raised, read
   `scrape.log` before running again.
 * **The exit code says less than it does under the queue.** A standalone run exits 1 when a source breaker
   trips, on the first frame wider than the viewer ceiling that this host has seen, or on an uncaught error
-  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 on `SIGTERM` (a Ctrl-C is a `KeyboardInterrupt`; the `log.csv` row is
-  written either way). The run
+  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 on `SIGTERM` (a Ctrl-C is a `KeyboardInterrupt`; the
+  `log.csv` row is written either way). The run
   conditions, among them "every attempt raised" and `mapillary-token-missing`, are `WARNING` lines and
   entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
   pass `--run-summary-file`.

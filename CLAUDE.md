@@ -114,7 +114,7 @@ The frontmatter is the definition of when each file loads; the table says what i
 
 | File | Covers | Loads for (summary) |
 |---|---|---|
-| `.claude/rules/downloader.md` | the nightly run, the image phase, the per-source verdict contracts, store mode, the two breakers | the runner, `downloaders/`, `config.py` |
+| `.claude/rules/downloader.md` | the nightly run, the image phase, the per-source verdict contracts, store mode, the breakers | the runner, `downloaders/`, `config.py` |
 | `.claude/rules/depth.md` | adaptive pacing, the block latch, the artifact format and its migrator | `downloaders/gsv.py`, the runner, the depth migrator |
 | `.claude/rules/cropper.md` | the crop pipeline end to end, the label-type table | `CropRunner.py`, its migrator and schema tripwire, `samples/` |
 | `.claude/rules/tilt.md` | the #54 frames and signs, the adjudication data, the crop-time correction, the installable geometry package | `CropRunner.py`, the package's geometry modules, `pyproject.toml`, the tilt scripts (never inside a judge folder) |
