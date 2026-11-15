@@ -19,7 +19,8 @@ Seven modules:
   tie policy) and ``is_validated`` (required thresholds).
 * :mod:`sidewalk_panorama_tools.gsv_tiles` - optional (the ``[gsv]`` extra): the GSV tile fetcher the nightly
   scraper runs - the zoom probe, the frame check and the cbk fan-out and stitch, with Google's refusals
-  classified. Never imported here, so the base install needs no network stack.
+  classified. ``fetch_equirect`` is the one call (``fetch_equirect_async`` inside an event loop). Never
+  imported here, so the base install needs no network stack.
 * :mod:`sidewalk_panorama_tools.torch_geometry` - optional (the ``[torch]`` extra): the same sampling grid
   built with torch on any device, and the ``grid_sample`` normalization for a wrap-padded pano.
 
@@ -32,4 +33,4 @@ Usage::
     crop = render_view(pano, view, tilt)
 """
 
-__version__ = '1.2.0'
+__version__ = '1.3.0'

@@ -4,8 +4,8 @@ One shared implementation of "render a perspective (gnomonic) view of a Project 
 equirectangular panorama, with rig-tilt correction", installable with pip so other projects pin it instead of
 copying it. The geometry is numpy-only and has no I/O; since 1.1.0 the package also carries
 [the pano store's layout](#the-pano-store--sidewalk_panorama_toolsstore), the one module that touches files, and
-since 1.2.0 [the GSV tile fetcher](#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles), the one that
-touches the network (behind the `[gsv]` extra). Two projects use the geometry:
+since 1.2.0 [the GSV tile fetcher](#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles) (one call since
+1.3.0), the one that touches the network (behind the `[gsv]` extra). Two projects use the geometry:
 
 * **sidewalk-validator-ai**, the training pipeline, which cuts its training views with it.
 * **sidewalk-ai-api**, the production API, which renders the same view of a label at inference time.
@@ -277,9 +277,85 @@ extra raises an `ImportError` that names it:
 pip install "sidewalk-panorama-tools[gsv] @ git+https://github.com/ProjectSidewalk/sidewalk-panorama-tools@<tag>"
 ```
 
+**The one call** (since 1.3.0, #236):
+
 ```python
+import numpy
 from sidewalk_panorama_tools import gsv_tiles
 
+stitched = gsv_tiles.fetch_equirect(pano_id, width, height)       # probe, frame check, tiles, stitch
+image = stitched.image                                            # a PIL RGB image at exactly (width, height)
+pixels = numpy.asarray(stitched.image)                            # H x W x 3, uint8, RGB
+
+small = gsv_tiles.fetch_equirect(pano_id, width, height, max_width=8192)   # aspect kept, one LANCZOS resample
+```
+
+In an async handler, await the primitive instead; the sync name raises `RuntimeError` inside a running event
+loop (it calls `asyncio.run`):
+
+```python
+stitched = await gsv_tiles.fetch_equirect_async(pano_id, width, height)
+```
+
+It returns `StitchedPano(image, undersized_tiles, upscaled)`, the type `fetch_pano_image` returns.
+`undersized_tiles` counts tile bodies below the nominal 512 px (expected 0; a tripwire, #73). `upscaled` is true
+when the returned image holds less imagery than its size says: the zoom fetched is narrower than the returned
+width, so it was LANCZOS-upscaled. It never writes a file and never retries anything it raises.
+
+**What it costs**, in URLs asked (before urllib3's retries of a 429 or 5xx on the probe and the frame check, and
+backoff's retries of a failed tile): 2 for the probe + 3 for the frame check + the grid. A 16384x8192 frame at
+zoom 5 is 32x16 = 512 tiles, 517 in all; 13312x6656 at zoom 5 is 26x13 = 338, 343; 16384x8192 at an explicit
+`zoom=3` is 8x4 = 32, 37. No photometa request, ever.
+
+**What it raises**, and what to do:
+
+| Exception | When | Requests | What to do |
+|---|---|---|---|
+| `ValueError` | a bad `pano_id` (not a non-empty `str` of `A-Z a-z 0-9 _ -`), `width`, `height`, `zoom` or `max_width` | 0 | fix the call |
+| `PhotosphereUnsupportedError` (a `ValueError`) | the id starts with `CAoS`, a user photosphere, which cbk does not serve as tiles (#223) | 0 | not fetchable here |
+| `RuntimeError` | `fetch_equirect` called while an event loop runs in this thread | 0 | `await fetch_equirect_async(...)` |
+| `PanoGoneError` (a `ValueError`) | the probe got tile (0, 0) exactly black on a 200 at zooms 3 and 5: cbk's answer for a retired pano, the same evidence the scraper's permanent "no imagery" verdict rests on | 2 | never retry |
+| `ZoomDisagreementError` (a `ValueError`) | `zoom=5`, but the probe found the zoom-5 corner tile black and imagery at zoom 3 | 2 | `zoom=None` or `zoom=4` |
+| `FrameDisagreementError` | Google serves the pano larger than `(width, height)` (3 or 4 requests) or smaller (5) | 3-5 | see below; not until the frame is corrected |
+| `requests.HTTPError`, `requests.exceptions.RetryError` | a probe or frame-check tile was refused (a 403 arrives as the first, an exhausted 429 as the second) or failed | 1-5 | ask `pushback_reason(exc)`: non-`None` means stop |
+| `TilePushbackError` | a tile answered 429 or 403, or landed on the interstitial; the rest of the grid is abandoned | 5 + up to `CONCURRENCY` | stop; never retry |
+| `aiohttp.ClientError`, `asyncio.TimeoutError`, `requests.ConnectionError`, `requests.Timeout` | the network failed (a tile after its retries) | varies | try later |
+| `StitchedPanoMostlyBlackError` | the stitch is more than half exactly black | 5 + grid | try later |
+
+**`width` and `height` are required**: the pano's frame as the Project Sidewalk app records it. The probe returns
+only a zoom and cannot tell a 16384-wide pano from a 13312-wide one, and this module does not ask photometa (the
+scraper's `downloaders/gsv.py` does, through `streetlevel`, which stays out of the package). **`zoom`**: `None`
+(the default) fetches at the probe's answer. If you have photometa's level sizes, `choose_zoom(sizes, width,
+height)` picks it. Pass `zoom=4` for a five-level pano (5376x2688; the probe can only say 3 there) and for an
+8192x4096 frame of a pano Google serves at 16384. A lower zoom fetches fewer tiles, and with `max_width` at or
+below that level's width the output is one resample of native imagery and is not flagged `upscaled`: a 16384x8192
+frame at `zoom=3, max_width=4096` is 37 requests. Only `zoom=5` against a probe of 3 is refused before the frame
+check; any other explicit zoom (3, 4 or 5) goes to the frame check, which refuses a grid that is not the pano's in
+either direction.
+
+**`max_width`**: when it is below `width`, the tiles are stitched at the zoom's own frame and resampled ONCE, with
+LANCZOS, to `max_width` wide and the nearest whole pixel high (aspect kept). At or above `width` nothing is
+resized. A native 16384x8192 fetch still holds a 512 MiB image while it stitches (Pillow stores RGB at four bytes
+a pixel), with or without `max_width`; a lower `zoom` is how to fetch less.
+
+**When the frame is refused.** A copied fetcher with no frame check stitched the top-left corner of a pano Google
+serves larger than the app's frame and returned it with nothing to show it; `fetch_equirect` refuses that
+(`FrameDisagreementError`, "larger"), because a consumer has no ledger to put it in. An 8192x4096 frame of a
+16384 pano: pass `zoom=4`. A 13312x6656 frame (what the app recorded for every pano before SidewalkWebpage
+evolution 135, 2022-03) of a 16384 pano: no level matches, so it needs a corrected frame; the package has no
+remedy. "Smaller" is the other direction: the grid's own last column is black, and the stitch would be a third
+black.
+
+**Async callers.** Never call the sync name in a handler. `fetch_equirect_async` runs the probe, the frame
+check and the stitch in a worker thread (`asyncio.to_thread`) and the tile fan-out on your loop, so N concurrent
+calls keep N x `CONCURRENCY` tiles in flight and use N worker threads of the loop's default executor; there is no
+limiter across calls. Cancelling the awaiting task cancels the tile tasks and closes the aiohttp session; a
+probe, frame check or stitch already running in its thread finishes in the background.
+
+**The pieces.** `fetch_equirect` runs these three, in this order; compose them yourself when you have photometa
+or want the scraper's control:
+
+```python
 zoom = gsv_tiles.probe_zoom(pano_id)                  # 5, 3, or None
 if zoom is None:
     ...                                               # no imagery at either zoom: the pano is gone
@@ -289,8 +365,6 @@ else:
     stitched = gsv_tiles.fetch_pano_image(pano_id, width, height, zoom)
     image = stitched.image                            # a PIL image at exactly (width, height)
 ```
-
-The composition, and what each answer means:
 
 1. **`probe_zoom(pano_id)`** asks for tile (0, 0) at zoom 3 and zoom 5 (two requests). `None` means both came
    back exactly black on a 200, which is how cbk answers a retired pano: the pano is gone. Any status but 200
@@ -305,12 +379,7 @@ The composition, and what each answer means:
    flight), stitches them, and returns `StitchedPano(image, undersized_tiles, upscaled)`. `upscaled` is true when
    only a lower zoom covered the frame and the image was LANCZOS-upscaled to `(width, height)`; it holds less
    imagery than its size says. A failed tile, or a stitch more than half exactly black, raises: transient, try
-   another day.
-
-`width` and `height` are yours to supply - the pano's frame as the Project Sidewalk app records it. The probe
-cannot tell a 16384-wide pano from a 13312-wide one, and this module does not ask photometa (the scraper's
-`downloaders/gsv.py` does, through `streetlevel`, which stays out of the package). `choose_zoom(sizes, width,
-height)` picks the zoom from photometa's level sizes if you have them.
+   another day. It calls `asyncio.run`, so it is for synchronous code only.
 
 **Push-back.** A tile that answers 429 or 403, or lands on Google's interstitial at any status, raises
 `TilePushbackError`, which the tile retry policy never retries, and the pano's remaining tiles are abandoned at
@@ -322,7 +391,8 @@ requests.
 
 **What it does not do.** It never writes a file, keeps no ledger, has no breaker and no block latch, and makes
 no display copy: those are the nightly scraper's policy, in `downloaders/gsv.py`, which composes these same
-functions with them. **Never write what you fetch over a stored pano.** The store is an archive, not a cache
+functions with them. It fetches no photospheres: a `CAoS` id is refused by name (`PhotosphereUnsupportedError`,
+#223; `is_photosphere_id` is the test), where the scraper fetches one from the photo host. **Never write what you fetch over a stored pano.** The store is an archive, not a cache
 (`docs/ops.md`): about half of the labelled panos are already retired at Google and about a quarter of the rest
 come back re-rendered, so the stored file is usually the only copy of that picture.
 
@@ -349,6 +419,15 @@ that they match), tag it, and say in the release what a consumer will see change
 
 **Releases.**
 
+* **1.3.0** (2026-11-15, #236): adds `gsv_tiles.fetch_equirect`, the one-call fetch (probe, frame check, tile
+  fan-out, optional `max_width`), and its awaitable form `fetch_equirect_async`; three refusals a consumer can
+  catch by name (`PanoGoneError`, `ZoomDisagreementError`, `PhotosphereUnsupportedError`, each a `ValueError`);
+  and `is_photosphere_id` (moved from `downloaders/gsv.py`, which re-exports it). A consumer replacing a copied
+  fetcher should expect `FrameDisagreementError` where its copy returned a silently cropped pano (the frame check;
+  see the section above). Otherwise additions only: `fetch_pano_image`, `probe_zoom` and `frame_covers_pano`
+  behave as in 1.2.0, the `[gsv]` extra and the base dependencies are unchanged, and nothing in `geometry`,
+  `pose`, `torch_geometry`, `ps_math`, `labels` or `store` changed, so a consumer re-pinning sees the same views
+  byte for byte.
 * **1.2.0** (2026-11-06, #222 step 2): adds `gsv_tiles`, the GSV tile fetcher the nightly scraper runs
   (moved from `downloaders/gsv.py`, which re-exports it), behind the new `[gsv]` extra (`requests`, `urllib3`,
   `aiohttp`, `backoff`), and `store.black_fraction` (moved from `downloaders/common.py`, which re-exports it).
