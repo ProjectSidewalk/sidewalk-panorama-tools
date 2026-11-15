@@ -81,9 +81,11 @@ from sidewalk_panorama_tools.gsv_tiles import (  # noqa: E402,F401  (re-exports)
     _generate_tile_urls,          # defined in sidewalk_panorama_tools/gsv_tiles.py
     _get_response,                # defined in sidewalk_panorama_tools/gsv_tiles.py
     _is_exactly_black,            # defined in sidewalk_panorama_tools/gsv_tiles.py
+    is_photosphere_id,            # defined in sidewalk_panorama_tools/gsv_tiles.py
     _normalize_proxies,           # defined in sidewalk_panorama_tools/gsv_tiles.py
     _pano_max_zoom,               # defined in sidewalk_panorama_tools/gsv_tiles.py
     _partition_tile_results,      # defined in sidewalk_panorama_tools/gsv_tiles.py
+    PHOTOSPHERE_ID_PREFIX,        # defined in sidewalk_panorama_tools/gsv_tiles.py
     _probe_zoom,                  # defined in sidewalk_panorama_tools/gsv_tiles.py
     pushback_reason,              # defined in sidewalk_panorama_tools/gsv_tiles.py
     _random_header,               # defined in sidewalk_panorama_tools/gsv_tiles.py
@@ -117,9 +119,9 @@ gsv_tiles.configure(headers=config.headers_list, proxies=config.proxies, concurr
 RE_EXPORTED_FROM_GSV_TILES = (
     '_black_fraction', '_BLOCK_URL_MARKERS', 'CBK_BASE_URL', 'choose_zoom', '_dims_at_zoom', '_download_tile',
     '_download_tiles', 'fetch_pano_image', '_fetch_tile', 'frame_covers_pano', 'FrameDisagreementError',
-    '_generate_tile_urls', '_get_response', '_is_exactly_black', '_normalize_proxies', '_pano_max_zoom',
-    '_partition_tile_results', '_probe_zoom', 'pushback_reason', '_random_header', '_reject_mostly_black_stitch',
-    '_request_session', '_stitch_cell_size', 'STITCH_MAX_BLACK_FRACTION', '_stitch_tiles', 'StitchedPano',
+    '_generate_tile_urls', '_get_response', '_is_exactly_black', 'is_photosphere_id', '_normalize_proxies',
+    '_pano_max_zoom', '_partition_tile_results', 'PHOTOSPHERE_ID_PREFIX', '_probe_zoom', 'pushback_reason',
+    '_random_header', '_reject_mostly_black_stitch', '_request_session', '_stitch_cell_size', 'STITCH_MAX_BLACK_FRACTION', '_stitch_tiles', 'StitchedPano',
     'StitchedPanoMostlyBlackError', '_tile_error_is_final', '_TILE_FANOUT', '_tile_grid', 'TILE_MAX_TRIES',
     'TILE_PUSHBACK_STATUSES', '_TILE_RETRY_ERRORS', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT',
     '_tile_retry_waits', 'TILE_SIZE', '_TileAbandonedError', 'TilePushbackError', 'tile_url', '_TimeoutHTTPAdapter',
@@ -673,8 +675,9 @@ def _flag_deep_edge_band(image, pano_id):
 # base64url of a small protobuf whose field 2 is the photo host's own photo id, and the photo host serves the
 # full-size equirectangular original for it, so a photosphere is fetched from there in ONE request and never
 # touches photometa, the probe, the tile fan-out, the block latch or the pace file.
-
-PHOTOSPHERE_ID_PREFIX = 'CAoS'
+#
+# The prefix and the predicate (PHOTOSPHERE_ID_PREFIX, is_photosphere_id) are defined in the package since #236,
+# so its fetch_equirect refuses by the same test, and re-exported above; everything else here stays here.
 
 # `=s0` is the original size; `=w{W}-h{H}` returned the same bytes (#223). Measured on the AF1Qip form: 200,
 # image/jpeg, header dims equal to /adminapi/panos' width/height in 24 of 24 (21 on 2026-10-21, 3 on 2026-11-04).
@@ -750,11 +753,6 @@ def is_photo_host_answer(error):
     return isinstance(error, PhotosphereHostError) and 400 <= error.status_code < 500
 
 
-def is_photosphere_id(pano_id):
-    """Whether `pano_id` is a GSV user photosphere (#223): the `CAoS` prefix, nothing more."""
-    return pano_id.startswith(PHOTOSPHERE_ID_PREFIX)
-
-
 def photosphere_photo_id(pano_id):
     """The photo host's photo id wrapped in a CAoS pano id, or None when the id is not exactly that shape.
 
@@ -771,7 +769,7 @@ def photosphere_photo_id(pano_id):
     answer depends on it. None sends the pano down the cbk path, unchanged - which is exactly what every CAoS id
     got before #223.
     """
-    if not is_photosphere_id(pano_id) or not _PHOTOSPHERE_ID_CHARS.fullmatch(pano_id):
+    if not gsv_tiles.is_photosphere_id(pano_id) or not _PHOTOSPHERE_ID_CHARS.fullmatch(pano_id):
         return None
     text = pano_id.replace('.', '=')
     text += '=' * (-len(text) % 4)
@@ -940,7 +938,7 @@ def download_single_pano(storage_path, pano_info):
     # A user photosphere has no cbk tiles; it comes from the photo host in one request, after the skip check
     # (so a stored one still costs nothing) and before photometa and the probe, neither of which can fetch it
     # (#223). An id that does not decode to the photosphere protobuf goes down the cbk path below, unchanged.
-    if is_photosphere_id(pano_id):
+    if gsv_tiles.is_photosphere_id(pano_id):
         photo_id = photosphere_photo_id(pano_id)
         if photo_id is not None:
             return _download_photosphere(pano_info, photo_id, out_image_name)

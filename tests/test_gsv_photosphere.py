@@ -149,6 +149,12 @@ class TestPhotosphereIds:
         assert not gsv.is_photosphere_id('stitchPanoAAAAAAAAAAAA')
         assert not gsv.is_photosphere_id('caoSLEFGMVFp'), 'case matters: base64 is case-sensitive'
 
+    def test_the_predicate_is_the_packages_object(self):
+        """Defined once, in the package, since 1.3.0 (#236): fetch_equirect refuses by the same predicate the
+        nightly branches on, and gsv re-exports it."""
+        assert gsv.is_photosphere_id is gsv_tiles.is_photosphere_id
+        assert gsv.PHOTOSPHERE_ID_PREFIX == gsv_tiles.PHOTOSPHERE_ID_PREFIX == 'CAoS'
+
     @pytest.mark.parametrize('pano_id,photo_id', [(AF1Q_PANO, AF1Q_PHOTO), (CIHM_PANO, CIHM_PHOTO)],
                              ids=['AF1Qip-form', 'CIHM-form'])
     def test_both_measured_forms_decode_to_their_photo_id(self, pano_id, photo_id):

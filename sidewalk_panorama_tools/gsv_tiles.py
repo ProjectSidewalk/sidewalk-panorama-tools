@@ -53,11 +53,11 @@ except ImportError as e:
 
 from . import store
 
-__all__ = ['CBK_BASE_URL', 'CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS', 'PROXIES',
-           'STITCH_MAX_BLACK_FRACTION', 'StitchedPano', 'StitchedPanoMostlyBlackError', 'TILE_MAX_TRIES',
-           'TILE_PUSHBACK_STATUSES', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT', 'TILE_SIZE',
-           'TilePushbackError', 'choose_zoom', 'configure', 'fetch_pano_image', 'frame_covers_pano',
-           'probe_zoom', 'pushback_reason', 'tile_url']
+__all__ = ['CBK_BASE_URL', 'CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS',
+           'PHOTOSPHERE_ID_PREFIX', 'PROXIES', 'STITCH_MAX_BLACK_FRACTION', 'StitchedPano',
+           'StitchedPanoMostlyBlackError', 'TILE_MAX_TRIES', 'TILE_PUSHBACK_STATUSES', 'TILE_RETRY_MAX_SECONDS',
+           'TILE_RETRY_MAX_WAIT', 'TILE_SIZE', 'TilePushbackError', 'choose_zoom', 'configure', 'fetch_pano_image',
+           'frame_covers_pano', 'is_photosphere_id', 'probe_zoom', 'pushback_reason', 'tile_url']
 
 
 # --- settings: read at call time; change them with configure() ------------------------------------------------
@@ -337,6 +337,15 @@ def tile_url(pano_id, zoom, x, y):
     '&zoom=5&x=1&y=2&panoid=abc'
     """
     return f'{CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
+
+
+# Moved from downloaders/gsv.py (#236), which re-exports both; the decode and the photo-host fetch stay there.
+PHOTOSPHERE_ID_PREFIX = 'CAoS'
+
+
+def is_photosphere_id(pano_id):
+    """Whether `pano_id` is a GSV user photosphere (#223): the `CAoS` prefix, nothing more."""
+    return pano_id.startswith(PHOTOSPHERE_ID_PREFIX)
 
 
 # Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
