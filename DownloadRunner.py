@@ -70,10 +70,17 @@ CONDITION_EDGE_BAND = 'edge-band'
 # The twin of gsv.DEPTH_CONDITION_LEDGER (#189), and its own code because the remedy is a different file. Nothing
 # repairs the ledger for us (it is store state), so this recurs every night until someone does (docs/ops.md).
 CONDITION_IMAGE_LEDGER = 'image-ledger-unusable'
+# A .jpg an image phase found on disk without a ledger row - one this run did not write - is not a whole JPEG
+# (#239): common.stored_jpeg_verdict refused it on the cheap check AND on a full decode. It is NOT ledgered and
+# NOT touched - the store is an archive, so the runner never moves or deletes a stored file on its own
+# judgement - and it is counted in field 9 (failed). Nothing refetches it (the file is still the resume
+# marker), so it recurs every run until an operator acts: verify_store.py --quarantine, or a hand-appended `1`
+# row for a file checked by eye (docs/ops.md, "A stored file that is not a whole JPEG").
+CONDITION_INCOMPLETE_ON_DISK = 'incomplete-on-disk'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
     CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT,
-    CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER})
+    CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER, CONDITION_INCOMPLETE_ON_DISK})
 
 # What makes the image ledger unusable rather than one row bad (#203): gsv.DEPTH_LEDGER_UNUSABLE_ERRORS' twin, for
 # the same reasons. OSError: it could not be read. csv.Error: a field over csv.field_size_limit(), the one damage
@@ -616,6 +623,40 @@ MAPILLARY_MAX_CONSECUTIVE_PUSHBACK = 3
 STOP_BLOCKED = 'blocked'
 
 
+def _found_file_is_whole(storage_path, pano_id, tag):
+    """Whether the .jpg an image phase found on disk, unledgered, is a whole JPEG (#239).
+
+    Only reached for a file this run did not write and no earlier run ledgered: the runner's own writes are
+    atomic and checked before the rename, so this is a file another tool put there (a store assembled partly by
+    another downloader, a copy that died partway), or one whose ledger row was lost. Before #239 it was ledgered
+    `1` on os.path.isfile alone, and a truncated one became permanent. A file only a full decode accepts is
+    whole, with an INFO line; one both refuse gets one ERROR line naming the path.
+    """
+    path = store_sftp.local_final_path(storage_path, pano_id, store_sftp.IMAGE_SUFFIX)
+    if not os.path.isfile(path):
+        # Nothing on disk to judge. Every downloader returns `skipped` only after os.path.isfile, so this is a
+        # file removed since (its row is then the pre-#239 behaviour) or a test double's skip.
+        return True
+    verdict = common.stored_jpeg_verdict(path)
+    if verdict == common.STORED_JPEG_DECODED:
+        logging.info("%s: %s fails the end-of-image check but decodes in full; ledgered as whole", tag, path)
+    elif verdict == common.STORED_JPEG_INCOMPLETE:
+        logging.error("%s: %s is on disk but is not a whole JPEG; not ledgered, file left in place (#239)",
+                      tag, path)
+        return False
+    return True
+
+
+def _report_incomplete_on_disk(stop_reasons, tag, count, first_path):
+    """The end-of-phase report for _found_file_is_whole's refusals: both channels, and the run condition."""
+    message = ("%s: WARNING - %d file(s) found on disk are not whole JPEGs (first: %s). They were not ledgered "
+               "and were left in place; run verify_store.py, or see docs/ops.md, 'A stored file that is not a "
+               "whole JPEG'." % (tag, count, first_path))
+    logging.error("%s", message)
+    print(message)
+    note_condition(stop_reasons, CONDITION_INCOMPLETE_ON_DISK, '%d file(s), first %s' % (count, first_path))
+
+
 def _read_image_ledger(storage_path, stop_reasons, tag):
     """Construct the phase's ImageLedger, or report why it cannot be and return None (#203).
 
@@ -745,6 +786,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # Panos refused for a frame disagreement (#185), and the first one's text for the condition's detail.
     frame_refusals, first_frame_refusal = 0, None
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
+    # Files found on disk that are not whole JPEGs (#239), and the first one's path for the condition's detail.
+    incomplete_count, first_incomplete = 0, None
     # #184: dimensionless GSV panos, counted by gsv on its per-run memory; read as a difference so a caller that
     # runs the phase twice in one process (the tests, a second city in-process) reports only this phase's.
     photometa_run = gsv._photometa_run
@@ -782,9 +825,22 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             print("IMAGEDOWNLOAD: Processing pano %s " % (pano_id))
             pushback = None
             mapillary_pushback = None
+            incomplete_on_disk = False
             try:
                 result_code = download_pano(storage_path, pano_info)
-                if result_code == DownloadResult.success:
+                # A skip is a file on disk with no ledger row (candidates exclude ledgered ids), so it is the one
+                # outcome where the phase is about to ledger bytes it did not write (#239). result_code stays
+                # `skipped`, so every counter and breaker below treats it as a skip: neither a raise nor an
+                # answer, and it neither counts toward nor resets any breaker.
+                incomplete_on_disk = (result_code == DownloadResult.skipped
+                                      and not _found_file_is_whole(storage_path, pano_id, 'IMAGEDOWNLOAD'))
+                if incomplete_on_disk:
+                    fail_count += 1
+                    incomplete_count += 1
+                    if first_incomplete is None:
+                        first_incomplete = store_sftp.local_final_path(storage_path, pano_id,
+                                                                       store_sftp.IMAGE_SUFFIX)
+                elif result_code == DownloadResult.success:
                     success_count += 1
                 elif result_code == DownloadResult.fallback_success:
                     fallback_success_count += 1
@@ -792,7 +848,10 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     skipped_count += 1
                 elif result_code == DownloadResult.failure:
                     fail_count += 1
-                downloaded = 0 if result_code == DownloadResult.failure else 1
+                if incomplete_on_disk:
+                    downloaded = None   # not ledgered: the file is left as it is, and reported
+                else:
+                    downloaded = 0 if result_code == DownloadResult.failure else 1
 
             except Exception as e:
                 # Transient (network, storage, a bug): counted in THIS run's failures but NOT ledgered, so
@@ -1015,6 +1074,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    % (last_pushback, sum(unattempted[s] for s in refused), latch_said))
         logging.error("%s", summary)
         print(summary)
+
+    if incomplete_count:
+        _report_incomplete_on_disk(stop_reasons, 'IMAGEDOWNLOAD', incomplete_count, first_incomplete)
 
     if mapillary_refused:
         if last_mapillary_pushback == 'token refused':
@@ -1244,8 +1306,16 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
     fail_count += len(unsafe)
     random.shuffle(to_pull)
 
+    # #239: a file on disk is checked before it is ledgered. Here, not inside _partition_for_pull, which the depth
+    # pull shares with DEPTH_SUFFIX - a JPEG check there would refuse every .depth.npz.
+    incomplete = [pano_id for pano_id in local if not _found_file_is_whole(storage_path, pano_id, 'STOREPULL')]
+    fail_count += len(incomplete)
+    incomplete_ids = set(incomplete)
+
     with ledger:
         for pano_id in local:
+            if pano_id in incomplete_ids:
+                continue        # not ledgered, not touched, reported below
             # The scrape's `skipped`: the file is the resume marker, so register it with a blank stamp.
             skipped_count += 1
             ledger.record(pano_id, 1, '')
@@ -1277,6 +1347,9 @@ def pull_panos_from_store(storage_path, pano_infos, settings, run_start_monotoni
         logging.warning("%s", message)
         print(message)
     _report_pull_trouble('STOREPULL', 'pano(s)', outcome_counts)
+    if incomplete:
+        _report_incomplete_on_disk(stop_reasons, 'STOREPULL', len(incomplete),
+                                   store_sftp.local_final_path(storage_path, incomplete[0], store_sftp.IMAGE_SUFFIX))
     if unsafe:
         message = ("STOREPULL: WARNING - %d pano id(s) cannot be written into an sftp batch and were skipped; "
                    "see scrape.log" % len(unsafe))

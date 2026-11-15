@@ -53,6 +53,8 @@ PRODUCTION_MODULES = {
     'sidewalk_panorama_tools/gsv_tiles.py',
     # Measured in CI: requirements.txt installs torch (streetlevel -> pyequilib), so its test runs there.
     'sidewalk_panorama_tools/torch_geometry.py',
+    # The store completeness sweep (#239).
+    'verify_store.py',
 }
 
 # Walked but never measured, and not worth listing in .coveragerc's omit: no .py lives under them.

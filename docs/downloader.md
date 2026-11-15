@@ -141,21 +141,21 @@ since those sources read the size from the image. The depth phase only ever cove
 
 Four things to know before a long run:
 
-* **Files already on disk are trusted without being opened.** The skip is `os.path.isfile` and nothing
-  else, so a file placed there by another downloader is ledgered `1` unread, and a truncated one becomes
-  permanent: it is the resume marker, and the cropper fails on it every time. Check a store assembled
-  partly by another tool before relying on it (from the repo root; reads only):
+* **Files already on disk are checked before they are ledgered**
+  ([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). A `.jpg` the run finds with
+  no ledger row was not written by it, so it must be a whole JPEG (a header and an end-of-image marker that
+  closes the image, or failing that, a full decode) before it is ledgered `1`. One that is not whole is left
+  in place, unledgered, counted as failed, and reported as the `incomplete-on-disk` condition: see
+  [Operations](ops.md#a-stored-file-that-is-not-a-whole-jpeg). Files **already ledgered** are never looked at
+  again, so a store assembled partly by another tool and already scraped needs the sweep (from the repo root;
+  read-only unless `--quarantine`):
 
-  ```python
-  from downloaders import common, store_sftp
-  bad = [p for p in common.walk_store_panos('/srv/panos/sacramento-ca') if not store_sftp.is_complete_jpeg(p)]
-  print(len(bad), bad[:10])
+  ```bash
+  python3 verify_store.py /srv/panos/sacramento-ca --report not-whole.csv
+  python3 verify_store.py /srv/panos/sacramento-ca --quarantine /srv/panos-quarantine/sacramento-ca
   ```
 
-  This proves each file is a whole JPEG, not that it is the original rendition: a complete thumbnail passes.
-  For each file it lists, first delete that pano's row from `pano_id_log.csv`, then move the file out of the
-  storage directory; the next run fetches it again. (In the other order, an interrupted repair leaves a `1`
-  row with no file, which is never refetched.)
+  The check proves a whole JPEG, not the original rendition: a complete thumbnail passes.
 * **Mapillary stops itself when it is refused** ([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)).
   A 429 is retried inside the request up to 5 times on a fixed schedule, about 30 s per pano; Mapillary's
   `Retry-After` header is ignored, because honouring it could hold one request for hours where
@@ -559,6 +559,7 @@ silenced by it.
 | `frame-disagreement` | One or more GSV panos were refused for a [frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) ([#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185)): the app's `width`/`height` is not a frame Google serves. No floor: none of the 651 panos in the 2026-08-09 census disagreed, so one is news. The detail reads `N pano(s) refused; first: <that refusal's text>`, and the run summary carries the count as `frame_refusals` (written only when nonzero). Counted by exception type at the image loop's catch site, so every refusal arm (photometa, the tile probe) shares one counter | [ops: frame disagreement](ops.md#a-gsv-pano-refused-for-a-frame-disagreement) |
 | `edge-band` | One or more GSV stitches were **saved** with an exact-black band deeper than `EDGE_BAND_MAX_FRACTION` (5% of the frame) along the bottom or right edge ([#179](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/179)). The pano is on the store and ledgered `downloaded=1`, so it fires this once, the night it is downloaded, and costs nothing afterwards. The limit is uncalibrated; the detail names the first pano. It is not a frame disagreement and is not in that count. Judge it against `scan_black_bands.py`'s ledger | [ops: Edge black bands](ops.md#edge-black-bands) |
 | `image-ledger-unusable` | `pano_id_log.csv` could not be read or parsed (a field over `csv.field_size_limit()`, [#203](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/203)); the image phase, or the store pull, sat the run out without attempting a pano, and fields 7–11 of the `log.csv` row are blank. The depth phase is unaffected. A bad byte, a NUL or a stray quote costs one row and is not this | [ops: repairing the image ledger](ops.md#repairing-an-image-ledger-the-phase-cannot-read) |
+| `incomplete-on-disk` | A `.jpg` the image phase or the store pull found on disk with no ledger row is not a whole JPEG (it failed the end-of-image check and a full decode, [#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). It was not ledgered and was left in place, and it is counted in field 9; the detail is the count and the first path. It recurs every run until someone acts | [ops: a stored file that is not a whole JPEG](ops.md#a-stored-file-that-is-not-a-whole-jpeg) |
 | `pano-list-empty` | The pano list was empty as served (a list the source filter emptied is that filter's condition instead) for a store whose ledgers show it has scraped before | the server's `/adminapi/panos` |
 | `no-run-summary` | *(the queue's own)* An `ok` run left no readable run summary, so its conditions are unknown — a check that did not run has not passed. Also what an operator's own `--run-summary-file` after `--` produces, so do not pass one through the queue | [Extra passes](#extra-passes) |
 | `conditions-unreadable` | *(the queue's own)* The summary's `conditions` was present but not a list of objects with a non-blank string `code`. (An unknown code is kept, with its whitespace collapsed to single spaces, so a newer runner can still fail the night on one line.) | — |

@@ -219,6 +219,85 @@ def jpeg_is_complete(f, size):
     return b'\xff\xd9' in f.read(size - window_start)
 
 
+def is_complete_jpeg(path):
+    """A readable SOF header AND an end-of-image marker (FF D9) that closes the main image.
+
+    The header alone is not enough: a transfer or a copy that dies partway leaves a file whose SOF header is
+    intact and reports full dimensions. Two small reads (the header, then near the end), never a decode, so a
+    store-wide sweep is cheap. A false refusal is possible - a real JPEG with more than TRAILING_BYTES_WINDOW
+    after its EOI - which is why stored_jpeg_verdict adds a decode as a second opinion before anything is
+    refused. Moved here from store_sftp (which re-exports it) for #239, so the image loop's check of a file it
+    finds on disk does not import the SFTP module.
+    """
+    if jpeg_dimensions(path) is None:
+        return False
+    # A readable SOF means the file is far longer than two bytes, so the seeks cannot fail on a short file.
+    with open(path, 'rb') as f:
+        return jpeg_is_complete(f, os.path.getsize(path))
+
+
+#: stored_jpeg_verdict's answers.
+STORED_JPEG_COMPLETE = 'complete'       # a header and a closing EOI: the cheap check passed
+STORED_JPEG_DECODED = 'decoded'         # the cheap check refused it, and a full decode did not
+STORED_JPEG_INCOMPLETE = 'incomplete'   # both refused it, or it cannot be read at all
+
+
+def stored_jpeg_verdict(path):
+    """Is the JPEG at `path` whole? For a file the scraper did not write itself (#239).
+
+    is_complete_jpeg first; only a file it refuses is decoded in full, as a second opinion -
+    Image.open(...).load(), because open alone reads only the header and verify() does not catch a JPEG cut
+    short. The trailer rule has refused whole files before (7 of 7 photospheres, nightly, until the 64 KB
+    window), so a file that decodes is not refused on the cheap check's word alone. The decode costs one full
+    raster, and only for a file the cheap check refused. The caller must have raised the decompression-bomb
+    ceiling (raise_decompression_bomb_ceiling), or a large pano is refused here for its size.
+
+    @return STORED_JPEG_COMPLETE, STORED_JPEG_DECODED or STORED_JPEG_INCOMPLETE.
+    """
+    try:
+        if is_complete_jpeg(path):
+            return STORED_JPEG_COMPLETE
+    except OSError:
+        return STORED_JPEG_INCOMPLETE
+    # A decode alone is not proof (#242 review): libjpeg reads a zero-filled tail as scan data, so a baseline file
+    # cut short and padded with zeros - what a preallocating copy that dies leaves - decodes without an error.
+    # A whole file still has an end-of-image marker somewhere after its first scan, beyond the 64 KB window the
+    # cheap check looks in; a cut one cannot (byte stuffing keeps FF D9 out of scan data). Checked BEFORE the
+    # decode, so a plain cut is refused on one read rather than a full raster, every run it is reported.
+    try:
+        if not _eoi_after_first_scan(path):
+            return STORED_JPEG_INCOMPLETE
+    except OSError:
+        return STORED_JPEG_INCOMPLETE
+    try:
+        with Image.open(path) as image:
+            # A PNG, GIF, WebP... named .jpg decodes and is not a JPEG. MPO is Pillow's name for a multi-picture
+            # JPEG (a camera's primary image plus a second), which is a JPEG for every purpose here.
+            if image.format not in ('JPEG', 'MPO'):
+                return STORED_JPEG_INCOMPLETE
+            image.load()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        return STORED_JPEG_INCOMPLETE
+    return STORED_JPEG_DECODED
+
+
+def _eoi_after_first_scan(path, chunk_size=1 << 20):
+    """Whether an FF D9 marker occurs anywhere after the start of the JPEG's first scan. Reads the whole file."""
+    with open(path, 'rb') as f:
+        scan_start = _first_scan_offset(f)
+        if scan_start is None:
+            return False
+        f.seek(scan_start)
+        previous = b''
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                return False
+            if b'\xff\xd9' in previous[-1:] + chunk:
+                return True
+            previous = chunk
+
+
 
 # --- Edge black bands (#179) ----------------------------------------------------------------------------------
 #

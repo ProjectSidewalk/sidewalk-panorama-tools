@@ -3850,8 +3850,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
                 DownloadRunner.CONDITION_PANO_LIST_EMPTY, DownloadRunner.CONDITION_IMAGES_NO_SUCCESS,
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
                 DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
-                DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 13
+                DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER,
+                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 14
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:
@@ -5481,3 +5482,113 @@ class TestMapillaryRefusingStopsMapillary(_PushbackHarness):
 
         assert tripped == {'gsv'}
         assert [c for c in calls if c.startswith('mly')] == ['mly-0', 'mly-1', 'mly-2']
+
+
+class TestAFileFoundOnDiskIsCheckedBeforeItIsLedgered:
+    """#239: a .jpg an image phase finds on disk with no ledger row was not written by this run, so it is
+    checked (common.stored_jpeg_verdict) before it is ledgered `1`. One that is not whole is not ledgered, not
+    touched, counted in field 9, and reported once as `incomplete-on-disk`; it is neither a raise nor an answer.
+    A file already in the ledger is never reached (candidates exclude ledgered ids), deliberately."""
+
+    @staticmethod
+    def jpeg(cut=False, trailer=0):
+        import io as _io
+        from PIL import Image as _Image
+        buf = _io.BytesIO()
+        _Image.new('RGB', (64, 32), (90, 120, 150)).save(buf, 'JPEG', quality=90)
+        data = buf.getvalue()
+        if cut:
+            return data[:len(data) // 2]
+        return data + b'\x00' * trailer
+
+    @staticmethod
+    def put(storage, pano_id, data):
+        shard = storage / pano_id[:2]
+        shard.mkdir(parents=True, exist_ok=True)
+        (shard / (pano_id + '.jpg')).write_bytes(data)
+        return shard / (pano_id + '.jpg')
+
+    def scrape(self, storage, panos):
+        stop_reasons, image_stats = {'image_stop': None, 'depth_stop': None}, {}
+        result = DownloadRunner.download_panorama_images(str(storage), panos, stop_reasons=stop_reasons,
+                                                         image_stats=image_stats)
+        return result, stop_reasons, image_stats
+
+    def test_a_cut_file_is_not_ledgered_and_is_left_byte_for_byte(self, tmp_path, capsys):
+        cut = self.jpeg(cut=True)
+        path = self.put(tmp_path, 'mlyCUT', cut)
+        self.put(tmp_path, 'mlyOK', self.jpeg())
+        panos = [{'pano_id': 'mlyCUT', 'source': 'mapillary'}, {'pano_id': 'mlyOK', 'source': 'mapillary'}]
+
+        result, stop_reasons, image_stats = self.scrape(tmp_path, panos)
+
+        assert path.read_bytes() == cut
+        assert ledger_verdict_rows(tmp_path) == ['mlyOK,1']
+        assert result == (0, 0, 1, 1, 2), 'field 9 (failed) holds it; field 10 (skipped) holds the whole one'
+        assert image_stats['raised'] == 0, 'not a raise, so field 20 and images-no-success are unchanged'
+        codes = [c['code'] for c in stop_reasons['conditions']]
+        assert codes == [DownloadRunner.CONDITION_INCOMPLETE_ON_DISK]
+        assert '1 file(s), first ' in stop_reasons['conditions'][0]['detail']
+        assert 'mlyCUT.jpg' in stop_reasons['conditions'][0]['detail']
+        assert 'found on disk are not whole JPEGs' in capsys.readouterr().out
+
+    def test_a_long_trailer_that_decodes_is_ledgered(self, tmp_path, caplog):
+        self.put(tmp_path, 'mlyTR', self.jpeg(trailer=downloaders.common.TRAILING_BYTES_WINDOW + 1024))
+        with caplog.at_level(logging.INFO):
+            _, stop_reasons, _ = self.scrape(tmp_path, [{'pano_id': 'mlyTR', 'source': 'mapillary'}])
+
+        assert ledger_verdict_rows(tmp_path) == ['mlyTR,1']
+        assert not stop_reasons.get('conditions')
+        assert any('decodes in full' in r.getMessage() for r in caplog.records)
+
+    def test_a_cut_file_already_ledgered_is_not_reached(self, tmp_path):
+        self.put(tmp_path, 'mlyCUT', self.jpeg(cut=True))
+        (tmp_path / 'pano_id_log.csv').write_text('pano_id,downloaded,fetched_at\nmlyCUT,1,\n', newline='')
+
+        _, stop_reasons, _ = self.scrape(tmp_path, [{'pano_id': 'mlyCUT', 'source': 'mapillary'}])
+
+        assert not stop_reasons.get('conditions'), 'verify_store.py is the tool for ledgered files'
+
+    def test_a_cut_file_neither_counts_toward_nor_resets_a_breaker(self, tmp_path, monkeypatch):
+        """Between two permanent verdicts and a third, an unledgered cut file must not reset #113's count."""
+        self.put(tmp_path, 'mly-1', self.jpeg(cut=True))
+        calls = []
+
+        def fake(storage_path, pano_info):
+            calls.append(pano_info['pano_id'])
+            if pano_info['pano_id'] == 'mly-1':
+                return downloaders.DownloadResult.skipped
+            return downloaders.DownloadResult.failure
+        monkeypatch.setattr(DownloadRunner, 'download_pano', fake)
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        tripped = set()
+        panos = [{'pano_id': 'mly-%d' % n, 'source': 'mapillary'} for n in range(5)]
+
+        DownloadRunner.download_panorama_images(str(tmp_path), panos, tripped_sources=tripped)
+
+        assert calls == ['mly-0', 'mly-1', 'mly-2', 'mly-3'] and tripped == {'mapillary'}
+
+    def test_store_mode_checks_its_local_files_too(self, tmp_path, capsys):
+        cut = self.jpeg(cut=True)
+        path = self.put(tmp_path, 'gsvCUT', cut)
+        self.put(tmp_path, 'gsvOK', self.jpeg())
+        stop_reasons = {'image_stop': None, 'depth_stop': None}
+        panos = [{'pano_id': 'gsvCUT', 'source': 'gsv'}, {'pano_id': 'gsvOK', 'source': 'gsv'}]
+
+        result = DownloadRunner.pull_panos_from_store(str(tmp_path), panos, settings=None,
+                                                      stop_reasons=stop_reasons)
+
+        assert path.read_bytes() == cut
+        assert ledger_verdict_rows(tmp_path) == ['gsvOK,1']
+        assert result == (0, 0, 1, 1, 2)
+        assert [c['code'] for c in stop_reasons['conditions']] == [DownloadRunner.CONDITION_INCOMPLETE_ON_DISK]
+        assert 'STOREPULL: WARNING - 1 file(s) found on disk' in capsys.readouterr().out
+
+    def test_the_depth_pull_does_not_judge_npz_files_as_jpegs(self, tmp_path):
+        """_partition_for_pull is shared with the depth pull; the check lives outside it."""
+        shard = tmp_path / 'gs'
+        shard.mkdir()
+        (shard / 'gsvA.depth.npz').write_bytes(b'not a jpeg')
+        to_pull, local, unsafe = DownloadRunner._partition_for_pull(
+            str(tmp_path), ['gsvA'], downloaders.store_sftp.DEPTH_SUFFIX, 'STOREDEPTH')
+        assert local == ['gsvA']

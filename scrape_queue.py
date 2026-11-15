@@ -148,6 +148,7 @@ CONDITION_LABELS = OrderedDict([
     ('frame-disagreement', 'GSV panos refused for a frame disagreement; not ledgered'),
     ('edge-band', 'GSV stitches saved with a deep exact-black edge band; check the work-list'),
     ('image-ledger-unusable', 'image ledger unreadable or unparseable; image phase skipped'),
+    ('incomplete-on-disk', 'files on disk that are not whole JPEGs; not ledgered, left in place'),
     ('mapillary-token-missing', 'Mapillary panos skipped: MAPILLARY_ACCESS_TOKEN not set'),
     ('unsupported-source', 'panos with an unsupported source skipped'),
     ('depth-refused', 'Google refused the depth phase; latch written'),

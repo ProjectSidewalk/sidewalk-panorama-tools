@@ -40,6 +40,9 @@ from typing import NamedTuple, Optional
 # store-mode tests still reach them through this module.
 from .common import (TRAILING_BYTES_WINDOW, _first_scan_offset, atomic_output_path,  # noqa: F401
                      jpeg_dimensions, jpeg_is_complete)
+# Defined in common since #239 (the image loop checks files it finds on disk with it); re-exported because
+# store mode's verifier is what it was written for, and the store-mode tests reach it here.
+from .common import is_complete_jpeg  # noqa: F401
 
 # The log analyzer's names, copied on purpose: log_analyzer/analyze.py::resolve_sftp is the twin, and
 # tests/test_store_sftp.py asserts the two lists agree, so a collaborator's one set of variables serves both.
@@ -360,22 +363,6 @@ def run_sftp_batch(settings, batch_text):
     return subprocess.CompletedProcess(result.args, result.returncode,
                                        result.stdout.decode('utf-8', errors='replace'),
                                        result.stderr.decode('utf-8', errors='replace'))
-
-
-def is_complete_jpeg(path):
-    """A readable SOF header AND an end-of-image marker (FF D9) that closes the main image.
-
-    The header alone is not enough here. The HTTP downloaders never see a short file (a short read raises
-    out of iter_content before any check), but a `get` that dies mid-transfer leaves a half file whose SOF
-    header is intact and reports full dimensions. A false refusal is the harmless direction: a transient
-    failure, retried next run, never a resume marker. The end-of-image rule is common.jpeg_is_complete,
-    shared since 2026-11-09 with the photosphere download, whose camera originals carry trailers too.
-    """
-    if jpeg_dimensions(path) is None:
-        return False
-    # A readable SOF means the file is far longer than two bytes, so the seeks cannot fail on a short file.
-    with open(path, 'rb') as f:
-        return jpeg_is_complete(f, os.path.getsize(path))
 
 
 def is_complete_npz(path):
