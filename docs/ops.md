@@ -1504,7 +1504,9 @@ dropped mid-night.
    ([#159](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/159)). A `#` row there means
    two things at once: the analyzer stops monitoring the city, **and** `CropRunner` stops accepting it. So
    do not comment a city out of `cities.csv` to quiet the analyzer if its crops are still wanted.
-4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run.
+4. Nothing else: `DownloadRunner` creates `<store-root>/<city_id>` on its first run. A city whose folder was
+   [pre-fetched before it had a server](downloader.md#pre-fetching-a-city-that-has-no-server-yet) already has
+   ledger history, so its nights fail as `pano-list-empty` until the deployment serves panos.
 
 ### Hearing about a bad night
 

@@ -108,6 +108,92 @@ Three consequences worth knowing:
 
 `--min-depth-runtime` is ignored without `--max-runtime`, and with `--skip-depth`.
 
+## Pre-fetching a city that has no server yet
+
+A city can be scraped before it has a Project Sidewalk deployment, so the imagery is already on hand if it
+is deployed later. Give the pano list as a CSV and any placeholder for the host
+([#239](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/239)). For a Mapillary city, the
+token must be set; without it every Mapillary row is skipped and nothing is downloaded (see
+[Imagery sources](#imagery-sources)):
+
+```bash
+read -rs MAPILLARY_ACCESS_TOKEN && export MAPILLARY_ACCESS_TOKEN
+python3 DownloadRunner.py unused.invalid /srv/panos/sacramento-ca -c pano_list.csv --max-runtime 20
+```
+
+With `-c` the host is only printed in the run's opening line; `/adminapi/panos` is never requested. The CSV
+needs a `pano_id` and a `source` column. Other columns are those of `/adminapi/panos` (see `samples/`). A CSV
+without `has_labels` has every row downloaded, with or without `--all-panos`. A CSV without `width`/`height`
+prints a `WARNING` about records with no width/height; for a Mapillary or Panoramax list it is harmless,
+since those sources read the size from the image. The depth phase only ever covers GSV panos, so
+`--skip-depth` matters only for a GSV list.
+
+**A later nightly scrape resumes from what the pre-fetch leaves**: the ledger rows, the `log.csv` row and
+`scrape.log` are the same files a nightly run writes.
+
+| Left by the pre-fetch | What a later nightly run does with it |
+|---|---|
+| `1` rows in `pano_id_log.csv`, stamped or blank | Skips those panos at zero requests. A blank `fetched_at` means the file was already on disk; its mtime is the only record of when it was fetched ([`fetched_at`](ops.md#fetched_at-and-the-two-row-widths)). |
+| `0` rows | Never asks the source for that pano again. For Mapillary those are a 404, or a record that names the image and has no original rendition ([below](#imagery-sources)). |
+| Files for panos the server never lists | Left on disk and in the ledger. The cumulative image counts in `log.csv` are seeded from the ledger, so they can exceed that night's corpus ([columns](ops.md#the-logcsv-columns)). |
+| Any ledger row at all | The store now has history, so a night on which the server serves an **empty** pano list is booked as the `pano-list-empty` condition and fails under the queue. A fresh store is exempt; a pre-fetched one is not. A new deployment that serves no panos yet will therefore fail its nights until it does. |
+| The folder name | Not checked by the runner, but it **must equal the deployment's `city_id`**, because the app reads `<store-root>/<city_id>`. If the id chosen at deployment differs, rename the folder; the ledgers hold pano ids, not paths. |
+
+Four things to know before a long run:
+
+* **Files already on disk are trusted without being opened.** The skip is `os.path.isfile` and nothing
+  else, so a file placed there by another downloader is ledgered `1` unread, and a truncated one becomes
+  permanent: it is the resume marker, and the cropper fails on it every time. Check a store assembled
+  partly by another tool before relying on it (from the repo root; reads only):
+
+  ```python
+  from downloaders import common, store_sftp
+  bad = [p for p in common.walk_store_panos('/srv/panos/sacramento-ca') if not store_sftp.is_complete_jpeg(p)]
+  print(len(bad), bad[:10])
+  ```
+
+  This proves each file is a whole JPEG, not that it is the original rendition: a complete thumbnail passes.
+  For each file it lists, first delete that pano's row from `pano_id_log.csv`, then move the file out of the
+  storage directory; the next run fetches it again. (In the other order, an interrupted repair leaves a `1`
+  row with no file, which is never refetched.)
+* **There is no Mapillary stop for rate limiting, and `--max-runtime` does not bound a refused run.** A 429
+  is retried inside the request up to 5 times. Without a `Retry-After` header that costs about 30 s per pano,
+  after which the pano is counted as failed, left unledgered, and the loop moves on. With one, each retry
+  sleeps as long as the header asks, up to 6 hours, inside a single request. `--max-runtime` is checked only
+  between panos, so it cannot interrupt that. Whether Mapillary sends the header is unmeasured. (Google has
+  a push-back breaker; Mapillary does not.) So **run a long list in pieces with `--max-runtime`**: each piece
+  resumes from the ledger, so nothing is fetched twice. A piece that stops printing `IMAGEDOWNLOAD:` lines
+  for minutes is most likely waiting on a refusal (a dead connection looks the same); stop it and wait
+  before the next piece. The loop is serial with no
+  fixed delay, about two requests per Mapillary pano (#239's Sacramento run measured about 0.5 s per pano).
+  Between pieces, read field 20 of the piece's `log.csv` row: the attempts that raised. It is blank for a
+  piece that was stopped before the image phase finished; read that piece's `Failed to download pano` lines
+  in `scrape.log` instead. (The `failed` figure on stdout starts from the ledger's `0` rows, so it is not
+  that run's alone.) A handful is normal; ids
+  Mapillary no longer has answer 400 and are asked again on every run. If most of a piece raised, read
+  `scrape.log` before running again.
+* **The exit code says less than it does under the queue.** A standalone run exits 1 when a source breaker
+  trips, on the first frame wider than the viewer ceiling that this host has seen, or on an uncaught error
+  such as a CSV with no `pano_id` column. It exits 2 on a usage error and 143 on `SIGTERM` (a Ctrl-C is a `KeyboardInterrupt`; the `log.csv` row is
+  written either way). The run
+  conditions, among them "every attempt raised" and `mapillary-token-missing`, are `WARNING` lines and
+  entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
+  pass `--run-summary-file`.
+* **Permissions are the copy's to set.** The runner creates shard folders `2775` (group-writable, setgid;
+  not on Windows), but the city folder itself is a plain `os.makedirs`, and a copy carries the source's modes.
+
+**Copying the folder to the lab pano store** is enough as it is, because the ledgers hold no paths, host or
+city names. Preserve modification times, since for every blank-stamp row the mtime is the only fetch
+record; never overwrite at the destination, because
+[the store is an archive](ops.md#the-store-is-an-archive-not-a-cache); and set modes for the account the
+app and the scraper run as rather than copying the source's. For example
+`rsync -rtp --ignore-existing --chmod=D2775,F664 sacramento-ca/ <store-root>/sacramento-ca/`; without
+`-p` rsync applies the receiver's umask instead and the `--chmod` has no effect. If the city
+folder already exists on the store, copy the image files only and leave its ledgers alone: the next nightly
+run finds each new file on disk and ledgers it at zero requests, but only for panos the server lists,
+that are selected (labelled, or `--all-panos`), and that have no `0` row there already. Jon or Mikey write
+the store, not an agent.
+
 ## Pulling from the Project Sidewalk pano store
 
 **The default is to download from the imagery provider yourself** — everything above. `--from-store CITY_ID`
