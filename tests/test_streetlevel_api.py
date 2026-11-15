@@ -22,6 +22,7 @@ dependency is exactly the case the variable exists for. tests/test_suite_isolati
 import dataclasses
 import importlib
 import inspect
+import json
 import os
 
 import numpy as np
@@ -361,3 +362,28 @@ def test_depth_map_still_exposes_data():
     if dataclasses.is_dataclass(panorama.DepthMap):
         fields = {f.name for f in dataclasses.fields(panorama.DepthMap)}
     assert 'data' in fields or hasattr(panorama.DepthMap, 'data'), "streetlevel renamed DepthMap.data"
+
+
+def test_the_real_find_panorama_by_id_uses_the_session_it_is_given():
+    """Every other test here stubs api.find_panorama_by_id itself, so streetlevel's own body (the URL builder,
+    util.get_json and the `)]}'` strip) never ran in CI. This runs it, network-free, with a requests-like session
+    that answers the "pano gone" envelope: the session the seam passes must be the one that is asked (a
+    session=None fallback would reach the network, which the suite's guard refuses), exactly once, at photometa.
+    Since #237 streetlevel is installed --no-deps, so this also proves the call path needs nothing that
+    requirements.txt leaves out."""
+    calls = []
+
+    class FakeResponse:
+        text = ")]}'" + json.dumps([None, [[[2]]]])
+
+    class FakeSession:
+        def get(self, url, headers=None, **kwargs):
+            calls.append(url)
+            return FakeResponse()
+
+    result = api.find_panorama_by_id('testPanoIdAbCdEfGhIj_-', download_depth=True, locale='en',
+                                     session=FakeSession())
+
+    assert result == [None, [[[2]]]]
+    assert len(calls) == 1
+    assert calls[0].startswith('https://www.google.com/maps/photometa/v1')
