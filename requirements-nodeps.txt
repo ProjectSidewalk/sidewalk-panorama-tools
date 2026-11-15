@@ -1,0 +1,8 @@
+# Installed with --no-deps, AFTER requirements.txt (#237):
+#
+#     pip install -r requirements.txt -c constraints.txt
+#     pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+#
+# Without --no-deps this line pulls pyequilib -> torch and the CUDA wheels. The requirements streetlevel
+# actually needs are in requirements.txt, with the measurement behind them.
+streetlevel>=0.12.11,<0.13

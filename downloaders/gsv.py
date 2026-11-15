@@ -2051,7 +2051,8 @@ def _run_depth_phase(storage_path, pano_infos, run_start_monotonic=None, max_run
         # Both channels (#161): this was logging-only, so the channel cron delivers said nothing at all - and
         # a pip install half-written mid-deploy stops every city's depth phase this way.
         print("DEPTHDOWNLOAD: WARNING - streetlevel is not importable (%s); the depth phase did not run. "
-              "Reinstall requirements.txt in this interpreter." % (e,))
+              "Reinstall requirements.txt, then requirements-nodeps.txt with --no-deps, in this interpreter "
+              "(docs/ops.md, Deploying)." % (e,))
         common.note_condition(stop_reasons, DEPTH_CONDITION_UNAVAILABLE, 'streetlevel not importable: %s' % (e,))
         _record(None)
         return 0, 0, 0, 0

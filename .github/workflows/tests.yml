@@ -8,8 +8,8 @@ on:
 
 jobs:
   pytest:
-    # Matches the production baseline: Ubuntu 22.04 / Python 3.10. Installing requirements.txt here also verifies that
-    # streetlevel's dependency tree still pip-installs cleanly on that baseline.
+    # Matches the production baseline: Ubuntu 22.04 / Python 3.10. streetlevel is installed the way the box
+    # installs it (#237), so a requirement a new release imports but requirements.txt lacks fails the hard import.
     runs-on: ubuntu-22.04
     # GitHub's default is 6 hours, so a hung subprocess or a test waiting on a lock would hold the check (and
     # a runner) that long before failing. Measured 2026-09-27: the job takes 5.5-6.5 minutes end to end
@@ -22,23 +22,38 @@ jobs:
         with:
           python-version: '3.10'
           cache: pip
-          # The default key is requirements*.txt alone; a refreshed constraints.txt must not reuse the old cache.
+          # The default key is requirements*.txt alone; a refreshed pin file must not reuse the old cache.
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-nodeps.txt
             constraints.txt
-      # -c pins every package the production box has to the versions it runs (#167): constraints.txt is the
-      # box's pip freeze, so this job tests what production runs rather than whatever PyPI served today.
-      # Packages the box does not have (the dev-only ones) resolve fresh. Drift against the latest releases is
-      # tests-latest.yml's job, weekly and not gating. Refreshing the pins: docs/ops.md, "Refreshing
-      # constraints.txt".
-      - run: pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+            constraints-ci.txt
+      # -c constraints.txt pins every package the production box has to the versions it runs (#167): it is the
+      # box's pip freeze. -c constraints-ci.txt pins what CI installs and the box does not: the pytest runner and
+      # the CPU-only torch below (#237). Other dev-only packages resolve fresh. Drift against the latest releases
+      # is tests-latest.yml's job, weekly and not gating. Refreshing: docs/ops.md, "Refreshing constraints.txt".
+      - run: pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt -c constraints-ci.txt
+      # streetlevel alone, with --no-deps, as the box installs it (#237): it declares pyequilib, which requires
+      # torch and through it triton and the nvidia-*/cuda-* wheels, about 4.7 GB no production module imports.
+      # What it does import is listed in requirements.txt. tests/test_constraints.py fails if this loses the flag.
+      - run: pip install --no-deps -r requirements-nodeps.txt -c constraints.txt -c constraints-ci.txt
+      # tests/test_torch_geometry.py needs torch, and .coveragerc measures torch_geometry.py in this job. Until
+      # #237 torch arrived through streetlevel; now it is installed on purpose, CPU-only, the way the package job
+      # does it: its requirements from PyPI, then the wheel from the CPU index with --no-deps.
+      - run: pip install -c constraints.txt -c constraints-ci.txt filelock typing_extensions sympy networkx jinja2 fsspec
+      - run: pip install -c constraints.txt -c constraints-ci.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
+      # A torch that cannot import would make test_torch_geometry.py skip, not fail, and the coverage gate would
+      # still pass without it: fail here instead.
+      - run: python -c "import torch; print(torch.__version__)"
+      # What was installed, in the log.
+      - run: pip freeze
       # Bare --cov takes its source and omissions from .coveragerc, so there is one place to change them.
       # skip-covered keeps the (already -v, 1400-test) log readable; the step summary below is not skipped,
       # so the PR view still shows every file including the ones at 100%.
       # SIDEWALK_REQUIRE_STREETLEVEL turns tests/test_streetlevel_api.py's importorskip into a hard import
-      # (#165): requirements.txt installs streetlevel here, so a missing transitive dependency must fail the
-      # run rather than skip every contract test behind a green check. --continue-on-collection-errors because
+      # (#165): streetlevel is installed above, so a missing transitive dependency must fail the run rather
+      # than skip every contract test behind a green check. --continue-on-collection-errors because
       # that failure is a collection error, and pytest's default on one is to run nothing else: the run still
       # exits nonzero, but with every other test's result instead of "1 error" (#171 review).
       - run: python -m pytest tests -v --continue-on-collection-errors --cov --cov-report=term-missing:skip-covered
@@ -53,9 +68,9 @@ jobs:
           python -m coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
 
   # The installable package as a consumer gets it (docs/geometry.md). The job above already runs
-  # tests/test_torch_geometry.py and gates its coverage: requirements.txt pulls torch in through streetlevel ->
-  # pyequilib (constraints.txt pins it). What it never does is build the wheel the consumers pin, or run the
-  # torch path on the CPU-only build an API box would install. This job does both, outside the checkout.
+  # tests/test_torch_geometry.py and gates its coverage, on a CPU-only torch it installs on purpose (#237). What
+  # it never does is build the wheel the consumers pin, or run the torch path without streetlevel and the rest of
+  # the scraper's requirements. This job does both, outside the checkout.
   package:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -65,11 +80,11 @@ jobs:
         with:
           python-version: '3.10'
       # tests/conftest.py imports CropRunner for every test, so the runtime requirements come too - all but
-      # streetlevel (which the conftest stubs), whose pyequilib dependency would pull the multi-GB CUDA torch.
-      # Then torch's own dependencies from PyPI at the production pins, and the CPU-only torch wheel at the
-      # pinned version with --no-deps: the CPU index does not carry every pinned dependency version.
-      - run: pip install -c constraints.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
-      - run: pip install -c constraints.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
+      # streetlevel, which the conftest stubs and this job does not need. Then torch's own dependencies from PyPI
+      # at the CI pins, and the CPU-only torch wheel at the pinned version with --no-deps: the CPU index does not
+      # carry every pinned dependency version.
+      - run: pip install -c constraints.txt -c constraints-ci.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
+      - run: pip install -c constraints.txt -c constraints-ci.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pytest tests/test_torch_geometry.py -v
       - name: Build the wheel and import it from a fresh venv
         run: |
