@@ -230,8 +230,8 @@ class TestTheSwitchIsOff:
         no_tiles(monkeypatch)
         touched = []
         with pytest.MonkeyPatch.context() as recorder:
-            for module, name in ((os.path, 'isfile'), (os.path, 'exists'), (os.path, 'lexists'), (os, 'stat'),
-                                 (os, 'lstat'), (builtins, 'open')):
+            for module, name in ((os.path, 'isfile'), (os.path, 'isdir'), (os.path, 'exists'), (os.path, 'lexists'),
+                                 (os, 'stat'), (os, 'lstat'), (builtins, 'open')):
                 real = getattr(module, name)
 
                 def recording(path, *args, _real=real, **kwargs):
@@ -245,8 +245,39 @@ class TestTheSwitchIsOff:
 
         assert str(native(tmp_path)) not in touched
         assert not any(p.endswith('.native') for p in touched)
+        # Measured on master (b2c8d58) for this refusal: the shard (it exists here) and the .jpg check, nothing else.
+        assert {p for p in touched if p.startswith(str(tmp_path))} == {str(shard(tmp_path)), str(jpg(tmp_path))}
         assert native(tmp_path).read_bytes() == original
         assert files_in_shard(tmp_path) == [PANO + '.native']
+
+    @pytest.mark.parametrize('switch', [False, True], ids=['off', 'on'])
+    def test_an_ordinary_pano_touches_only_its_own_files(self, tmp_path, monkeypatch, switch):
+        """A pano whose frame Google serves exactly - every night's common case - stats and writes nothing but
+        its shard, its .jpg and that file's .part, as on master. Off, that holds for every pano (the cases above);
+        on, the one addition is a stat of <id>.native (step 4)."""
+        monkeypatch.setattr(gsv, 'KEEP_SERVED_LARGER_ORIGINALS', switch)
+        stub_photometa(monkeypatch, SERVED)
+        deny_probe(monkeypatch)
+        colour_tiles(monkeypatch)
+        touched = set()
+        with pytest.MonkeyPatch.context() as recorder:
+            for module, name in ((os.path, 'isfile'), (os.path, 'isdir'), (os.path, 'exists'),
+                                 (os.path, 'lexists'), (os, 'stat'), (os, 'lstat'), (builtins, 'open')):
+                real = getattr(module, name)
+
+                def recording(path, *args, _real=real, **kwargs):
+                    touched.add(str(path))
+                    return _real(path, *args, **kwargs)
+
+                recorder.setattr(module, name, recording)
+
+            assert download(tmp_path, pano_info(*NATIVE, pano_id=PANO)) == DownloadResult.success
+
+        in_store = {p for p in touched if p.startswith(str(tmp_path))}
+        # The storage root itself: makedirs climbs to it on the shard's first pano.
+        expected = {str(tmp_path), str(shard(tmp_path)), str(jpg(tmp_path)), str(jpg(tmp_path)) + '.part'}
+        assert in_store == (expected | {str(native(tmp_path))} if switch else expected)
+        assert files_in_shard(tmp_path) == [PANO + '.jpg']
 
     def test_off_no_tripwire_fires_on_googles_width(self, tmp_path, monkeypatch):
         """The #121 tripwire reads the app's width in resolve_frame, as on master; Google's larger width is
