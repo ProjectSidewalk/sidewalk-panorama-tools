@@ -959,8 +959,6 @@ def fetch_pano_image(pano_id, width, height, zoom):
 
     @return StitchedPano(image, undersized_tiles, upscaled).
     """
-    final_im_dimension = (width, height)
-
     tiles = _generate_tile_urls(pano_id, width, height, zoom)
     # The fan-out's shared state (#162) - see _TILE_FANOUT for why it rides in a context variable. Reset in a
     # finally, so no later fan-out in this thread can inherit a refusal it did not see.
@@ -970,6 +968,40 @@ def fetch_pano_image(pano_id, width, height, zoom):
         results = asyncio.run(_download_tiles(tiles))
     finally:
         _TILE_FANOUT.reset(token)
+    return _stitch_fan_out(pano_id, width, height, zoom, tiles, results, fanout)
+
+
+async def _fetch_pano_image_async(pano_id, width, height, zoom):
+    """fetch_pano_image on the caller's event loop: the same tiles, fan-out state and stitch (#236).
+
+    Same contract as fetch_pano_image - never writes, raises for everything transient, returns
+    StitchedPano(image, undersized_tiles, upscaled) - but awaits the fan-out on the running loop instead of
+    calling asyncio.run, and runs the stitch (CPU work) in a worker thread with asyncio.to_thread. _TILE_FANOUT
+    is set and reset inside the awaiting task, so concurrent fetches in separate tasks keep separate fan-outs:
+    a refusal in one cannot abandon another's tiles.
+
+    Private: the probe and the frame check have no async form, so an async consumer wants the whole composition,
+    fetch_equirect_async, not this piece of it.
+    """
+    tiles = _generate_tile_urls(pano_id, width, height, zoom)
+    fanout = _TileFanOut()
+    token = _TILE_FANOUT.set(fanout)
+    try:
+        results = await _download_tiles(tiles)
+    finally:
+        _TILE_FANOUT.reset(token)
+    return await asyncio.to_thread(_stitch_fan_out, pano_id, width, height, zoom, tiles, results, fanout)
+
+
+def _stitch_fan_out(pano_id, width, height, zoom, tiles, results, fanout):
+    """Turn one fan-out's results into a StitchedPano, or raise: the one stitch path (#236).
+
+    Shared by fetch_pano_image and _fetch_pano_image_async, so the partition, the refusal counts, the failure
+    line, the black guard and the upscaled flag cannot drift between them (tests/test_gsv_equirect.py fails a
+    second stitch path). Extracted verbatim from fetch_pano_image.
+    """
+    final_im_dimension = (width, height)
+
     ok, failed = _partition_tile_results(tiles, results)
     if failed:
         refusals = [error for _cell, error in failed if isinstance(error, TilePushbackError)]
