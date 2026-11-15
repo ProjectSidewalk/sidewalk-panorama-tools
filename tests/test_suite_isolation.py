@@ -340,7 +340,7 @@ class TestStreetlevelMustImportWhenRequired:
 
     @pytest.mark.parametrize('require', [None, '', '0'], ids=['unset', 'empty', 'zero'])
     def test_without_the_variable_a_broken_import_skips_the_module(self, tmp_path, require):
-        """The dev-box behaviour, kept: a machine without a compiler for pyfrpc still runs the suite. Empty
+        """The dev-box behaviour, kept: a machine without streetlevel installed still runs the suite. Empty
         and `0` are off, as D6 says."""
         code, output, root = _run_contract_module(tmp_path, shadow=True, require=require)
         # 5 is pytest's "no tests collected": a module-level skip leaves the child with nothing to run. In a

@@ -2,19 +2,20 @@
 
 Every other test in this suite runs against conftest's stub, which swallows anything via **kwargs. That means
 a renamed parameter or a moved attribute anywhere in the >=0.12.11,<0.13 range would pass the whole suite and
-only surface on the scraper box. These tests import the real library instead, so CI (which installs
-requirements.txt) catches the drift.
+only surface on the scraper box. These tests import the real library instead, so CI (which installs it from
+requirements-nodeps.txt) catches the drift.
 
 Since #56, production uses only streetlevel's api half (gsv._fetch_pano_with_depth_planes fetches the raw
 photometa response and parses the fields it needs in-repo - the parse half's unguarded depth decode dies on
 ~1% of panos, see test_streetlevel_still_misreads_the_depth_offset), so the surface pinned here is
 api.find_panorama_by_id, the photometa response shape, and the depth decode's column order.
 
-Skipped when streetlevel isn't installed -- its pyfrpc dependency needs a compiler, so a dev box without one can
-still run the rest of the suite. Unless SIDEWALK_REQUIRE_STREETLEVEL is set (anything but empty or `0`), which
-CI does: there the import is a hard one, so a module missing anywhere in streetlevel's transitive tree (pyproj,
-scipy, bd09convertor, CoordinatesConverter - unpinned, and unused by the scraper) is a collection error that
-fails the run with the real message, rather than ten quiet skips and a green check (#165). importorskip
+Skipped when streetlevel isn't installed, so a dev box without it can still run the rest of the suite. Since #237
+streetlevel is installed with --no-deps and the requirements it imports (pyproj, scipy, bd09convertor,
+CoordinatesConverter, pyexiv2 among them) are listed in requirements.txt, so it installs without a compiler
+everywhere. Unless SIDEWALK_REQUIRE_STREETLEVEL is set (anything but empty or `0`), which CI does: there the
+import is a hard one, so a requirement missing from requirements.txt is a collection error that fails the run
+with the real message, rather than quiet skips and a green check (#165). importorskip
 skips only on ModuleNotFoundError since pytest 9 - a plain ImportError already errors - so an absent
 dependency is exactly the case the variable exists for. tests/test_suite_isolation.py pins both behaviours.
 """
@@ -34,7 +35,7 @@ if os.environ.get('SIDEWALK_REQUIRE_STREETLEVEL', '') not in ('', '0'):
     api = importlib.import_module('streetlevel.streetview.api')
 else:
     panorama = pytest.importorskip('streetlevel.streetview.panorama',
-                                   reason='streetlevel not installed (pyfrpc needs a compiler); CI installs it')
+                                   reason='streetlevel not installed (requirements-nodeps.txt); CI installs it')
     streetview = pytest.importorskip('streetlevel.streetview')
     api = pytest.importorskip('streetlevel.streetview.api')
 

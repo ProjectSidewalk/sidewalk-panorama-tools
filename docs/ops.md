@@ -986,7 +986,7 @@ city stays `ok`, but the queue exits 1 and the night's message carries one line 
 | `WARNING - Google refused 3 GSV panos in a row (HTTP 429)` earlier in the same run, then the latch line above | `depth-stood-down` | The **image phase's** push-back breaker tripped and set the latch itself ([below](#when-google-pushes-back-on-the-image-phase)). Unlike the other rows the city does not stay `ok`: the trip puts `gsv` in the tripped set, so it exits 1 and is booked `failed`. | As for the row above: the same host, the same refusal, seen from the tile endpoint instead. |
 | `WARNING - the depth phase stopped early after 25 consecutive failures (…)`, or `WARNING - the depth phase ran out of budget during N consecutive failures (… network; ended_on_budget)` | `depth-breaker` | 25 transient failures in a row, or, with `ended_on_budget` in the brackets, at least 5 network failures in a row still going when the budget stopped the phase (#177). The second is the shape a prompt failure takes inside a 12-minute slot: a Google 5xx storm (about 30 s per failure), a refused connection or a DNS error. A **timeout-shaped** outage (photometa blackholed, no answer at all) costs up to ~211 s per failure, reaches about 4 failures in a slot and stays below the floor of 5, so it is **not** booked and raises no condition; a full outage usually still alarms through the image phase (`images-no-success`), but a photometa-only blackhole does not. The breakdown in brackets says whether they were the store or the network. Either way the depth stop is `consecutive-failures`, so the depth phase does not earn the city an extra pass that night; an image-phase budget stop (`image_stop: max-runtime`) in the same run still does, by design. Neither one latches. | `storage` dominant: the store is full or unmounted. `network`/`unexpected`: look at the last error before blaming Google. `ended_on_budget`: check this host's network, then Google's status. A last error reading `too many 50x error responses` (urllib3 writes the actual status, e.g. `too many 503 error responses`) is Google's outage, not a refusal. |
 | `WARNING - cannot read the depth ledger` / `cannot write the depth ledger` | `depth-ledger-unusable` | `depth_log.csv` could not be opened **or parsed**: an I/O error, or a field longer than `csv.field_size_limit()` (131,072 characters by default), which is what a crash that wrote junk into the file looks like ([#189](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/189)). The phase sat the run out rather than re-request the whole corpus against a sick store; the image phase ran as usual. One undecodable byte or a run of NULs is not this, on any Python version: it costs that one row, and that pano is re-checked (one request only if the row was `unavailable`; a `saved` one re-ledgers from its artifact). | `cannot write`, or `cannot read` with an OS error: check the mount and the file's permissions. `cannot read` with `field larger than field limit`: [repair the ledger by hand](#repairing-a-ledger-the-phase-cannot-read). Nothing repairs it for you, so the condition recurs every night until you do. |
-| `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt` into `.venv` (see [Deploying](#deploying)). |
+| `WARNING - streetlevel is not importable` | `depth-unavailable` | The interpreter the runner ran under cannot import `streetlevel`: a missing or half-written install. | Reinstall `requirements.txt`, then `requirements-nodeps.txt` with `--no-deps`, into `.venv` (see [Deploying](#deploying)). |
 
 The latch is a file in the system temp directory, **not on the store** — it records this host's standing
 with Google, and the storage directory a run is given belongs to a single city. `--depth-block-latch PATH`
@@ -1421,7 +1421,9 @@ git status --short                                     # must be empty: a local 
 before=$(git rev-parse HEAD)
 git pull --ff-only
 git log --oneline -1                                   # what is live now
-git diff --stat "$before" HEAD -- requirements.txt constraints.txt   # non-empty -> .venv/bin/pip install -r requirements.txt -c constraints.txt
+git diff --stat "$before" HEAD -- requirements.txt requirements-nodeps.txt constraints.txt   # non-empty -> both installs:
+#   .venv/bin/pip install -r requirements.txt -c constraints.txt
+#   .venv/bin/pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
 .venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
 ```
@@ -1429,16 +1431,19 @@ git diff --stat "$before" HEAD -- requirements.txt constraints.txt   # non-empty
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
 fails the import first and reads as a broken deploy; and it diffs against a captured SHA rather than `HEAD@{1}`,
 because a pull that brought nothing leaves `HEAD@{1}` pointing at the deploy before, so the diff would report the
-previous deploy's changes again. The install takes `-c constraints.txt` so the box gets the versions CI tested
-([Refreshing `constraints.txt`](#refreshing-constraintstxt)). It is never `-U`: an upgrade is a change to the
+previous deploy's changes again. The installs are two lines, in that order: `requirements.txt`, then
+`streetlevel` alone from `requirements-nodeps.txt` with `--no-deps`, so that the torch and CUDA wheels it declares
+stay off the box ([#237](#moving-the-box-to-the---no-deps-install-237)). `constraints-ci.txt` is not in the diff:
+the box never reads it. Both take `-c constraints.txt` so the box gets the versions CI tested
+([Refreshing `constraints.txt`](#refreshing-constraintstxt)). Neither is ever `-U`: an upgrade is a change to the
 pins, made in a PR and tested by CI, not something the box picks up from PyPI on its own.
 
 - **Pulling while the queue is running is safe; a `pip install` is less so.** Every repo import is at module
   level, so a city already running keeps the code it loaded, the next city starts on the new tree, and the
   queue process itself keeps its old code until the next night. The 2026-09-17 deploy landed with the queue on
   its 30th city. `streetlevel` is the exception: it is imported lazily when the depth phase starts, so a city in
-  its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt` changed,
-  do the install between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
+  its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt`,
+  `requirements-nodeps.txt` or `constraints.txt` changed, do the two installs between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
   A half-written package that raises `ImportError` now says so on stdout and fails the night as
   `depth-unavailable` (#161) rather than skipping depth silently; one that raises something else still crashes
   the city and books it `failed`.
@@ -1463,9 +1468,10 @@ pins, made in a PR and tested by CI, not something the box picks up from PyPI on
 on every run, while the box kept whatever resolved when its venv was built and recorded it nowhere. CI never tested
 what production runs. `constraints.txt` is the box's `pip freeze`, committed:
 
-- **CI's gated job** (`tests.yml`) installs `-r requirements.txt -r requirements-dev.txt -c constraints.txt`, so
-  every PR is tested against production's versions. A constraint only pins a package something else asks for, so
-  the dev-only packages the box does not have (pandas, matplotlib, coverage, pytest-cov) still resolve fresh.
+- **CI's gated job** (`tests.yml`) installs `-r requirements.txt -r requirements-dev.txt -c constraints.txt -c
+  constraints-ci.txt`, then `streetlevel` with `--no-deps -r requirements-nodeps.txt` (#237), so every PR is tested
+  against production's versions. A constraint only pins a package something else asks for, so the dev-only
+  packages neither file pins (pandas, matplotlib, coverage, pytest-cov) still resolve fresh.
 - **A weekly job** (`tests-latest.yml`, Mondays 15:00 UTC, or by hand from the Actions tab) installs with no
   constraints and runs the same suite. It never runs on a pull request, so it gates nothing. A red run there
   means a new upstream release breaks the suite, and a fresh install would hit it. Its `pip freeze` step prints
@@ -1481,9 +1487,9 @@ what production runs. `constraints.txt` is the box's `pip freeze`, committed:
 1. On the box: `cd /srv/sidewalk-panorama-tools && .venv/bin/pip freeze > /tmp/box-freeze.txt` (and
    `.venv/bin/python --version`, `git log --oneline -1`, for the header).
 2. In a branch: keep `constraints.txt`'s comment header, update its `Source:` line (Python version, commit,
-   date), and replace everything below it with the freeze. That includes `pytest` and `pytest-asyncio`: they are
-   not leftovers, because `streetlevel` itself depends on them (CI's log shows `Collecting pytest-asyncio (from
-   streetlevel...)`).
+   date), and replace everything below it with the freeze. A freeze of a venv built since #237 has neither
+   `pytest` nor `pytest-asyncio`; one showing `torch`, `nvidia-*`, `pyequilib` or `pytest` predates #237 or
+   something re-added them, and `tests/test_constraints.py` fails on the GPU stack.
 3. Open a PR. CI installs exactly those pins. A red run means the box is running a set the suite fails on,
    which is worth knowing whichever way it is fixed.
 
@@ -1494,18 +1500,93 @@ Two gaps in this loop are known and accepted:
   constraint never installs anything, but the file slowly drifts from "what production needs" towards "what
   production has". When dropping a dependency, delete its pin (and any pins only it pulled in) by hand in the same
   PR, and `pip uninstall` it on the box at deploy.
-- **`setuptools` is not pinned.** `pip freeze` leaves out `pip`, `setuptools` and `wheel`, and torch declares
-  `setuptools>=77.0.3`, so it is the one runtime dependency that floats. `pip freeze --all` would record it.
-  Use that for a refresh if it ever matters.
+- **`setuptools` is not pinned.** `pip freeze` leaves out `pip`, `setuptools` and `wheel`. Nothing installed on
+  the box requires a floor of it since torch left with #237. `pip freeze --all` would record it; use that for a
+  refresh if it ever matters.
 
 **Changing a dependency** goes the other way: edit `requirements.txt` and `constraints.txt` together (pin the
 version you tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box
 to record what pip actually installed alongside it.
 
-The pins carry `torch`, `triton` and about 15 `nvidia-*`/`cuda-*` wheels, 4.9 GB of venv between them.
-`streetlevel` 0.12.11 pulls `pyequilib` 0.6.0, which requires `torch`, and no production module imports any of
-it. Installing `streetlevel` with `--no-deps` and listing its runtime dependencies would drop it; that is a
-measured follow-up and has not been done.
+#237 installs `streetlevel` with `--no-deps` and lists the requirements it imports in `requirements.txt`, which
+drops `torch`, `triton`, `pyequilib` and the `nvidia-*`/`cuda-*` wheels that no production module imports. A fresh
+install measured 65 distributions and 4,963 MB of venv before and 24 and 291-294 MB after
+([the report](../reports/2026-11-15-streetlevel-no-deps.md)).
+
+**`constraints-ci.txt`** pins what the gated CI job installs and the box does not: the pytest runner and the
+CPU-only torch `tests/test_torch_geometry.py` needs, at the versions CI ran before #237. It is not a freeze and
+does not come from the box; bump a pin there by PR when the weekly `tests-latest.yml` run shows a newer version
+passing.
+
+### Moving the box to the --no-deps install (#237)
+
+Since [#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237) `streetlevel` is installed
+on its own with `--no-deps` (`requirements-nodeps.txt`), so the venv no longer holds `torch`, `triton`,
+`pyequilib` and the `nvidia-*`/`cuda-*` wheels. **Merging that change does nothing to the box's existing venv.**
+Re-running the two install lines in the old venv is a no-op (measured), so an ordinary [deploy](#deploying) is
+safe and the box keeps its 4.9 GB until someone takes the deliberate step below. It builds a fresh venv and keeps
+the old one beside it, so rollback is a rename. The measurements behind it are in
+[the #237 report](../reports/2026-11-15-streetlevel-no-deps.md).
+
+**Do it in the daytime.** The queue runs from 19:00 to about 06:30 Pacific; do not start after 18:00. If the pull
+would also bring other merged PRs, deploy those first with the ordinary Deploying block and let a night pass, so a
+bad night is attributable.
+
+```bash
+cd /srv/sidewalk-panorama-tools
+pgrep -af 'scrape_queue\.py'                              # must print nothing
+df -h .                                                   # the new venv needs about 0.3 GB beside the old one
+du -sm .venv                                              # BEFORE: record it (4.9 GB on 2026-10-06)
+cat .venv/pyvenv.cfg; .venv/bin/pip --version             # record; build the new venv the same way
+.venv/bin/pip freeze > ~/box-freeze-before-237.txt
+git status --short && before=$(git rev-parse HEAD) && git pull --ff-only && git log --oneline -1
+
+mv .venv .venv-before-237                                 # kept whole for rollback (see the shebang note below)
+python3 -m venv .venv                                     # add --system-site-packages only if the old pyvenv.cfg says true
+.venv/bin/pip install -r requirements.txt -c constraints.txt
+.venv/bin/pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+
+.venv/bin/pip freeze | grep -i -E '^(torch|triton|pyequilib|nvidia|cuda)'   # must print nothing
+.venv/bin/pip freeze | wc -l                              # 24
+.venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
+.venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
+.venv/bin/python -c "from streetlevel import streetview; from streetlevel.streetview import api"
+.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run
+du -sm .venv                                              # AFTER: record it (291-294 MB measured off-box)
+.venv/bin/pip freeze > /tmp/box-freeze.txt; .venv/bin/python --version; .venv/bin/pip --version; git log --oneline -1
+```
+
+What to expect along the way:
+
+- **The dry run.** Its `streetlevel` probe must not print `streetlevel is not importable`.
+- **The new venv's pip.** Stock Ubuntu 22.04 gives pip 22.0.2, which warns that a newer pip exists. Off the box it
+  produced the identical 24 packages, building `CoordinatesConverter` with `setup.py install`. Do not upgrade it
+  unless the old venv's pip was upgraded. Record both versions.
+- **`pip check`** exits 1, naming `streetlevel`'s 7 uninstalled requirements. That is expected.
+- **If any check fails before the dry run, roll back now.** Do not debug with `.venv` half-built.
+- **Never run `.venv-before-237/bin/pip` while it is renamed.** A venv is not relocatable: its console scripts'
+  shebangs still point at `.venv/bin/python`, which is now the *new* venv. Use `.venv-before-237/bin/python -m
+  pip` if you must.
+- **Rollback**, any time, with the queue idle and no download running:
+  `mv .venv .venv-237-failed && mv .venv-before-237 .venv`. The rename restores every path. The old venv is a
+  superset of the new requirements, so the checkout need not move, and the "roll forward, never back" rule above
+  (about the checkout) is unaffected.
+- **Nothing else depends on `.venv`'s contents.** The crontab line, `cron_notify.py`, the SNS sink (a system
+  `aws`; the old venv's freeze has no `awscli` or `botocore`), the heartbeat and `BASH_ENV` all use absolute
+  `.venv/bin/python` paths or system tools, and the log analyzer does not run from this venv.
+- **The morning after.** `cron_notify.log`'s last line reads `exit 0`; `heartbeat.log` shows
+  `heartbeat published`; no SNS message arrived (production sends one only on a failure). If one did arrive, it
+  must not contain `depth-unavailable` or `streetlevel is not importable`. Then the usual checks: each GSV city's
+  `log.csv` row shows depth and image counts in their usual range (the [log analyzer](log-analyzer.md) is the
+  tool).
+- **Then, after a few clean nights:** remove `.venv-before-237` to actually free the 4.9 GB, and open the
+  follow-up PR that refreshes `constraints.txt` from `/tmp/box-freeze.txt` per
+  [Refreshing `constraints.txt`](#refreshing-constraintstxt): a new `Source:` line, and the temporary header
+  paragraph removed. `tests/test_constraints.py` fails that PR if the freeze came from the wrong venv.
+- **Record both `du -sm` figures on #237.** That closes its Part 1.
+
+The in-place alternative, `pip uninstall -y` of the 41 packages in the old venv, saves the 0.3 GB of overlap but
+turns rollback into a multi-GB reinstall; it is not recommended.
 
 ### The store marker
 

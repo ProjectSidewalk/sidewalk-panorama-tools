@@ -34,10 +34,13 @@ cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt -c constraints.txt
+pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 ```
 
 `-c constraints.txt` installs the exact versions production runs (Python 3.10). Drop it if a pin has no wheel
-for your Python: numpy 2.2.6 and scipy 1.15.3 stop at 3.13, so on 3.14 they would build from source. See
+for your Python: numpy 2.2.6 and scipy 1.15.3 stop at 3.13, so on 3.14 they would build from source. `streetlevel`
+is installed on its own, with `--no-deps`, so that the torch and CUDA wheels it declares but never imports are not
+([#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237)). See
 [docs/downloader.md](docs/downloader.md#install).
 
 Download a city's panoramas and depth maps into `/srv/panos/columbus-oh`:
@@ -69,8 +72,8 @@ needs a true perspective (gnomonic) view of a label instead, with the rig-tilt c
 framing. See [docs/geometry.md](docs/geometry.md).
 
 > **Requirements:** Python 3.10+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
-> supported production platform; macOS and Windows are fine for development, though the depth phase's
-> `pyfrpc` dependency ships wheels for Linux only. **No Docker** — the image and its sshfs entrypoint were
+> supported production platform; macOS and Windows are fine for development, and install without a
+> compiler. **No Docker** — the image and its sshfs entrypoint were
 > [retired from the repo in Aug 2026](docs/history.md#the-docker-image-aug-2026), and from the production box
 > in Sep 2026.
 
@@ -131,6 +134,7 @@ of them.
 
 ```bash
 pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+pip3 install --no-deps -r requirements-nodeps.txt -c constraints.txt
 python3 -m pytest tests
 ```
 

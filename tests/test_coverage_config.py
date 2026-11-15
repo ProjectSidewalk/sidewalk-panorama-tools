@@ -51,7 +51,7 @@ PRODUCTION_MODULES = {
     'sidewalk_panorama_tools/store.py',
     # The GSV tile fetcher (#222 step 2): downloaders/gsv.py re-exports and runs it every night.
     'sidewalk_panorama_tools/gsv_tiles.py',
-    # Measured in CI: requirements.txt installs torch (streetlevel -> pyequilib), so its test runs there.
+    # Measured in CI: the gated job installs CPU-only torch for its test (constraints-ci.txt, #237).
     'sidewalk_panorama_tools/torch_geometry.py',
     # The store completeness sweep (#239).
     'verify_store.py',
