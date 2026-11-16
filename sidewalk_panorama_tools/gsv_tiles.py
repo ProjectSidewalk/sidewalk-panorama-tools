@@ -1174,7 +1174,11 @@ async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=N
 
     pano_id   - a GSV pano id (A-Z, a-z, 0-9, _ and -). A `CAoS` id is a user photosphere: refused.
     width, height - the pano's full frame as the Project Sidewalk app records it; required, because the probe
-                returns only a zoom. Whole numbers of at least 1 (numpy integers are fine).
+                returns only a zoom. Whole numbers (numpy integers are fine), exactly 2:1 as every GSV frame
+                is, and width at most 2**17. The frame check compares TILE GRIDS (512 px at the fetched zoom):
+                a 2:1 frame less than one tile smaller than the pano's true frame passes it and comes back as
+                the pano's top-left corner at that size, with nothing to show it (16000x8000 of a 16384x8192
+                pano drops its right 384 columns and bottom 192 rows). Only photometa can catch that.
     zoom      - None (the default) fetches at the probe's answer, 5 or 3. An explicit 3, 4 or 5 is still
                 probed, and refused only when it is 5 and the probe saw imagery at zoom 3 alone
                 (ZoomDisagreementError); any other explicit zoom is left to the frame check. Pass 4 for a
@@ -1191,7 +1195,7 @@ async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=N
     3 for the frame check, then the grid - 517 for a 16384x8192 frame at zoom 5, 37 at zoom 3. No photometa.
 
     Raises, in the order they can happen:
-      ValueError - a bad argument; zero requests.
+      ValueError - a bad argument, a frame that is not 2:1 included; zero requests.
       PhotosphereUnsupportedError - a `CAoS` id; zero requests.
       PanoGoneError - two exactly black 200s from the probe, cbk's answer for a retired pano; 2 requests.
       ZoomDisagreementError - zoom=5 against a probe that saw imagery only at zoom 3; 2 requests.
@@ -1200,11 +1204,18 @@ async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=N
           pushback_reason(exc) says whether it was Google refusing this host.
       TilePushbackError - a tile was refused (429, 403, interstitial); the rest of the grid is abandoned.
       aiohttp.ClientError, asyncio.TimeoutError, StitchedPanoMostlyBlackError - transient; try another day.
+      PIL.UnidentifiedImageError (an OSError) - a 200 whose body is not an image, from the probe, the frame
+          check or a tile; transient, as in the nightly.
 
-    The probe, the frame check and the stitch run in a worker thread (asyncio.to_thread); the fan-out runs on
-    the caller's loop, CONCURRENCY tiles in flight per call. Cancelling the awaiting task cancels the tile tasks
-    and closes the aiohttp session; a probe, frame check or stitch already running in its thread finishes in
-    the background.
+    The probe, the frame check and the stitch run in a worker thread (asyncio.to_thread), so they use the loop's
+    DEFAULT EXECUTOR (min(32, CPUs + 4) threads), which asyncio also uses for DNS lookups (aiohttp's default
+    resolver) and every other to_thread in the application. A probe or frame-check thread is held for as long
+    as cbk takes: 30 s per request at most, and a 429 or 5xx is retried up to 5 times with backoff, so on a
+    slow or refusing cbk one call can hold a thread for minutes. N concurrent calls hold up to N threads; a
+    host application should cap concurrent calls (an asyncio.Semaphore) well below the executor's size. The
+    fan-out runs on the caller's loop, CONCURRENCY tiles in flight per call. Cancelling the awaiting task
+    cancels the tile tasks and closes the aiohttp session; a probe, frame check or stitch already running in
+    its thread finishes in the background.
     """
     if not isinstance(pano_id, str) or not pano_id:
         raise ValueError('pano_id must be a non-empty str, not %r' % (pano_id,))
@@ -1266,6 +1277,8 @@ def fetch_equirect(pano_id, width, height, *, zoom=None, max_width=None):
 
     It runs the coroutine with asyncio.run, so it cannot run while an event loop is running in this thread
     (inside an async handler): there it raises RuntimeError, before any request, naming fetch_equirect_async.
+    asyncio.run waits for the worker thread on the way out, so a Ctrl-C during the probe or the frame check
+    reaches the caller only when that thread's request returns (bounded by the timeouts above).
     """
     # Checked before the coroutine exists, so a refusal here leaves no never-awaited coroutine behind. The run is
     # outside the except clause, or every exception it raised would be chained to "no running event loop".

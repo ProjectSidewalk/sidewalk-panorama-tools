@@ -121,11 +121,11 @@ RE_EXPORTED_FROM_GSV_TILES = (
     '_download_tiles', 'fetch_pano_image', '_fetch_tile', 'frame_covers_pano', 'FrameDisagreementError',
     '_generate_tile_urls', '_get_response', '_is_exactly_black', 'is_photosphere_id', '_normalize_proxies',
     '_pano_max_zoom', '_partition_tile_results', 'PHOTOSPHERE_ID_PREFIX', '_probe_zoom', 'pushback_reason',
-    '_random_header', '_reject_mostly_black_stitch', '_request_session', '_stitch_cell_size', 'STITCH_MAX_BLACK_FRACTION', '_stitch_tiles', 'StitchedPano',
-    'StitchedPanoMostlyBlackError', '_tile_error_is_final', '_TILE_FANOUT', '_tile_grid', 'TILE_MAX_TRIES',
-    'TILE_PUSHBACK_STATUSES', '_TILE_RETRY_ERRORS', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT',
-    '_tile_retry_waits', 'TILE_SIZE', '_TileAbandonedError', 'TilePushbackError', 'tile_url', '_TimeoutHTTPAdapter',
-    '_undersized_tile_count',
+    '_random_header', '_reject_mostly_black_stitch', '_request_session', '_stitch_cell_size',
+    'STITCH_MAX_BLACK_FRACTION', '_stitch_tiles', 'StitchedPano', 'StitchedPanoMostlyBlackError',
+    '_tile_error_is_final', '_TILE_FANOUT', '_tile_grid', 'TILE_MAX_TRIES', 'TILE_PUSHBACK_STATUSES',
+    '_TILE_RETRY_ERRORS', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT', '_tile_retry_waits', 'TILE_SIZE',
+    '_TileAbandonedError', 'TilePushbackError', 'tile_url', '_TimeoutHTTPAdapter', '_undersized_tile_count',
 )
 
 # The two seams this module composes by its OWN binding - download_single_pano calls fetch_pano_image and

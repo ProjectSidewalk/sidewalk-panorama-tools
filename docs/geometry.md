@@ -311,7 +311,7 @@ zoom 5 is 32x16 = 512 tiles, 517 in all; 13312x6656 at zoom 5 is 26x13 = 338, 34
 
 | Exception | When | Requests | What to do |
 |---|---|---|---|
-| `ValueError` | a bad `pano_id` (not a non-empty `str` of `A-Z a-z 0-9 _ -`), `width`, `height`, `zoom` or `max_width` | 0 | fix the call |
+| `ValueError` | a bad `pano_id` (not a non-empty `str` of `A-Z a-z 0-9 _ -`), `width`, `height`, `zoom` or `max_width`; a frame that is not exactly 2:1, or wider than 2**17 | 0 | fix the call |
 | `PhotosphereUnsupportedError` (a `ValueError`) | the id starts with `CAoS`, a user photosphere, which cbk does not serve as tiles (#223) | 0 | not fetchable here |
 | `RuntimeError` | `fetch_equirect` called while an event loop runs in this thread | 0 | `await fetch_equirect_async(...)` |
 | `PanoGoneError` (a `ValueError`) | the probe got tile (0, 0) exactly black on a 200 at zooms 3 and 5: cbk's answer for a retired pano, the same evidence the scraper's permanent "no imagery" verdict rests on | 2 | never retry |
@@ -321,6 +321,10 @@ zoom 5 is 32x16 = 512 tiles, 517 in all; 13312x6656 at zoom 5 is 26x13 = 338, 34
 | `TilePushbackError` | a tile answered 429 or 403, or landed on the interstitial; the rest of the grid is abandoned | 5 + up to `CONCURRENCY` | stop; never retry |
 | `aiohttp.ClientError`, `asyncio.TimeoutError`, `requests.ConnectionError`, `requests.Timeout` | the network failed (a tile after its retries) | varies | try later |
 | `StitchedPanoMostlyBlackError` | the stitch is more than half exactly black | 5 + grid | try later |
+| `PIL.UnidentifiedImageError` (an `OSError`) | a 200 whose body is not an image, from the probe, the frame check or a tile | 1 or more | try later |
+
+The three new errors pickle intact (type, attributes, message), so a fetch in a process pool hands the worker's
+error back to the parent.
 
 **`width` and `height` are required**: the pano's frame as the Project Sidewalk app records it. The probe returns
 only a zoom and cannot tell a 16384-wide pano from a 13312-wide one, and this module does not ask photometa (the
@@ -346,11 +350,29 @@ evolution 135, 2022-03) of a 16384 pano: no level matches, so it needs a correct
 remedy. "Smaller" is the other direction: the grid's own last column is black, and the stitch would be a third
 black.
 
+**What the frame check cannot see.** It compares tile grids, so its granularity is one tile: 512 px at the
+fetched zoom. A frame inside the pano's own grid passes, and the stitch is cropped to it. So `fetch_equirect`
+refuses, at zero requests, a frame that is not exactly 2:1 (`width == 2 * height`, as every GSV frame is): a
+2048x800 frame of a 2048x1024 pano would otherwise come back as its top 800 rows, flagged nothing. **A 2:1 frame
+less than one tile smaller than the pano's true frame still passes and comes back as the pano's top-left corner**
+at that size, with nothing to show it: 16000x8000 of a 16384x8192 pano drops its right 384 columns and bottom 192
+rows. Only photometa's level sizes can catch that (`choose_zoom`), and the package does not ask photometa. The
+pre-2022 13312x6656 record of a 16384 pano is six tile columns off and is refused; this case needs a frame off by
+less than one tile. The other way
+round, a frame 2, 4 or 8 times the pano's size has the pano's grid at a lower level, so it is fetched and
+upscaled, and flagged `upscaled`.
+
 **Async callers.** Never call the sync name in a handler. `fetch_equirect_async` runs the probe, the frame
 check and the stitch in a worker thread (`asyncio.to_thread`) and the tile fan-out on your loop, so N concurrent
 calls keep N x `CONCURRENCY` tiles in flight and use N worker threads of the loop's default executor; there is no
-limiter across calls. Cancelling the awaiting task cancels the tile tasks and closes the aiohttp session; a
-probe, frame check or stitch already running in its thread finishes in the background.
+limiter across calls. That executor (`min(32, CPUs + 4)` threads) is shared with the rest of your application:
+asyncio uses it for DNS lookups (aiohttp's default resolver) and every other `to_thread`. A probe or frame-check
+thread is held for as long as cbk takes, up to 30 s per request, and a 429 or 5xx is retried up to five times
+with backoff, so on a slow or refusing cbk one call can hold a thread for minutes, and your own lookups queue
+behind it. Cap concurrent calls (an `asyncio.Semaphore`) well below the executor's size. Cancelling the
+awaiting task cancels the tile tasks and closes the aiohttp session; a probe, frame check or stitch already
+running in its thread finishes in the background. In the sync call, `asyncio.run` waits for that thread on the
+way out, so a Ctrl-C during the probe arrives when its request returns.
 
 **The pieces.** `fetch_equirect` runs these three, in this order; compose them yourself when you have photometa
 or want the scraper's control:
@@ -392,7 +414,8 @@ requests.
 **What it does not do.** It never writes a file, keeps no ledger, has no breaker and no block latch, and makes
 no display copy: those are the nightly scraper's policy, in `downloaders/gsv.py`, which composes these same
 functions with them. It fetches no photospheres: a `CAoS` id is refused by name (`PhotosphereUnsupportedError`,
-#223; `is_photosphere_id` is the test), where the scraper fetches one from the photo host. **Never write what you fetch over a stored pano.** The store is an archive, not a cache
+#223; `is_photosphere_id` is the test), where the scraper fetches one from the photo host. **Never write what
+you fetch over a stored pano.** The store is an archive, not a cache
 (`docs/ops.md`): about half of the labelled panos are already retired at Google and about a quarter of the rest
 come back re-rendered, so the stored file is usually the only copy of that picture.
 
@@ -424,7 +447,8 @@ that they match), tag it, and say in the release what a consumer will see change
   catch by name (`PanoGoneError`, `ZoomDisagreementError`, `PhotosphereUnsupportedError`, each a `ValueError`);
   and `is_photosphere_id` (moved from `downloaders/gsv.py`, which re-exports it). A consumer replacing a copied
   fetcher should expect `FrameDisagreementError` where its copy returned a silently cropped pano (the frame check;
-  see the section above). Otherwise additions only: `fetch_pano_image`, `probe_zoom` and `frame_covers_pano`
+  see the section above), and a `ValueError` at zero requests for a frame that is not exactly 2:1 or is wider
+  than 2**17. The three new errors pickle intact. Otherwise additions only: `fetch_pano_image`, `probe_zoom` and `frame_covers_pano`
   behave as in 1.2.0, the `[gsv]` extra and the base dependencies are unchanged, and nothing in `geometry`,
   `pose`, `torch_geometry`, `ps_math`, `labels` or `store` changed, so a consumer re-pinning sees the same views
   byte for byte.

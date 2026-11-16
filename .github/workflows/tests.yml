@@ -106,9 +106,13 @@ jobs:
           assert 'site-packages' in t.__file__, t.__file__
           assert t._tile_grid(16384, 8192, 5) == (32, 16) and t._pano_max_zoom(13312) == 5
           print(t.CONCURRENCY, len(t.HEADERS))
-          # The one call (#236): present, and a CAoS id refused before any request, so this step stays network-free.
+          # The one call (#236): present, and a CAoS id refused before any request. Every request path is replaced
+          # with one that fails first, so this step is network-free by construction, even if the refusal regressed.
           import inspect
           assert inspect.iscoroutinefunction(t.fetch_equirect_async) and callable(t.fetch_equirect)
+          def no_request(*args, **kwargs):
+              raise SystemExit('fetch_equirect made a request for a CAoS id')
+          t._get_response = t._request_tile = no_request
           try:
               t.fetch_equirect('CAoSLEFGMVFpcE05ZHg3dFhIa1htX193c1JDUW10UmRKd1J4dDY1Ujk5cDFGYWlu', 16384, 8192)
           except t.PhotosphereUnsupportedError:
