@@ -1,0 +1,64 @@
+== repo
+b2c8d58 Merge pull request #242 from ProjectSidewalk/239-on-disk-check
+2026-11-15T20:04:52Z
+Using CPython 3.10.6 interpreter at: /usr/bin/python3.10
+Creating virtual environment with seed packages at: venv-before
+ + packaging==26.3
+ + pip==26.3
+ + setuptools==84.2.1
+ + wheel==0.48.0
+Activate with: source venv-before/bin/activate
+pip 26.3 from ~/claude-work/237/venv-before/lib/python3.10/site-packages/pip (python 3.10)
+== pip install -r requirements.txt -c constraints.txt   (master's files, no cache)
+Installing collected packages: nvidia-cusparselt-cu13, mpmath, cuda-toolkit, urllib3, typing_extensions, triton, tomli, sympy, pygments, pyexiv2, pycryptodome, protobuf, propcache, pluggy, Pillow, nvidia-nvtx, nvidia-nvshmem-cu13, nvidia-nvjitlink, nvidia-nccl-cu13, nvidia-curand, nvidia-cufile, nvidia-cuda-runtime, nvidia-cuda-nvrtc, nvidia-cuda-cupti, numpy, networkx, MarkupSafe, iniconfig, idna, fsspec, frozenlist, filelock, cython, cuda-pathfinder, coordinatesconverter, charset_normalizer, certifi, bd09convertor, backports-asyncio-runner, backoff, attrs, async-timeout, aiohappyeyeballs, scipy, requests, pyproj, nvidia-cusparse, nvidia-cufft, nvidia-cublas, multidict, jinja2, exceptiongroup, cuda-bindings, aiosignal, yarl, pytest, pyfrpc, nvidia-cusolver, nvidia-cudnn-cu13, pytest-asyncio, aiohttp, torch, pyequilib, streetlevel
+
+Successfully installed MarkupSafe-3.0.3 Pillow-12.3.0 aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 async-timeout-5.0.1 attrs-26.1.0 backoff-2.2.1 backports-asyncio-runner-1.2.0 bd09convertor-0.0.3 certifi-2026.7.22 charset_normalizer-3.5.1 coordinatesconverter-0.1.5 cuda-bindings-13.3.1 cuda-pathfinder-1.8.0 cuda-toolkit-13.0.3.0 cython-3.3.0 exceptiongroup-1.3.1 filelock-3.32.5 frozenlist-1.8.0 fsspec-2026.7.0 idna-3.19 iniconfig-2.3.0 jinja2-3.1.6 mpmath-1.3.0 multidict-6.7.1 networkx-3.4.2 numpy-2.2.6 nvidia-cublas-13.1.1.3 nvidia-cuda-cupti-13.0.85 nvidia-cuda-nvrtc-13.0.88 nvidia-cuda-runtime-13.0.96 nvidia-cudnn-cu13-9.20.0.48 nvidia-cufft-12.0.0.61 nvidia-cufile-1.15.1.6 nvidia-curand-10.4.0.35 nvidia-cusolver-12.0.4.66 nvidia-cusparse-12.6.3.3 nvidia-cusparselt-cu13-0.8.1 nvidia-nccl-cu13-2.29.7 nvidia-nvjitlink-13.3.33 nvidia-nvshmem-cu13-3.4.5 nvidia-nvtx-13.0.85 pluggy-1.6.0 propcache-0.5.2 protobuf-7.36.1 pycryptodome-3.23.0 pyequilib-0.6.0 pyexiv2-2.16.0 pyfrpc-0.2.13 pygments-2.21.0 pyproj-3.7.1 pytest-9.1.1 pytest-asyncio-1.4.0 requests-2.34.2 scipy-1.15.3 streetlevel-0.12.11 sympy-1.14.0 tomli-2.4.1 torch-2.13.0 triton-3.7.1 typing_extensions-4.16.0 urllib3-2.7.0 yarl-1.24.5
+== freeze
+65
+== heavy distributions present
+cuda-bindings==13.3.1
+cuda-pathfinder==1.8.0
+cuda-toolkit==13.0.3.0
+nvidia-cublas==13.1.1.3
+nvidia-cuda-cupti==13.0.85
+nvidia-cuda-nvrtc==13.0.88
+nvidia-cuda-runtime==13.0.96
+nvidia-cudnn-cu13==9.20.0.48
+nvidia-cufft==12.0.0.61
+nvidia-cufile==1.15.1.6
+nvidia-curand==10.4.0.35
+nvidia-cusolver==12.0.4.66
+nvidia-cusparse==12.6.3.3
+nvidia-cusparselt-cu13==0.8.1
+nvidia-nccl-cu13==2.29.7
+nvidia-nvjitlink==13.3.33
+nvidia-nvshmem-cu13==3.4.5
+nvidia-nvtx==13.0.85
+pyequilib==0.6.0
+torch==2.13.0
+triton==3.7.1
+== size
+4.9G	~/claude-work/237/venv-before
+4963	~/claude-work/237/venv-before
+== the twenty largest packages (MB)
+2724	~/claude-work/237/venv-before/lib/python3.10/site-packages/nvidia
+1110	~/claude-work/237/venv-before/lib/python3.10/site-packages/torch
+690	~/claude-work/237/venv-before/lib/python3.10/site-packages/triton
+109	~/claude-work/237/venv-before/lib/python3.10/site-packages/scipy
+57	~/claude-work/237/venv-before/lib/python3.10/site-packages/sympy
+41	~/claude-work/237/venv-before/lib/python3.10/site-packages/numpy
+27	~/claude-work/237/venv-before/lib/python3.10/site-packages/scipy.libs
+27	~/claude-work/237/venv-before/lib/python3.10/site-packages/numpy.libs
+25	~/claude-work/237/venv-before/lib/python3.10/site-packages/cuda
+19	~/claude-work/237/venv-before/lib/python3.10/site-packages/pyproj
+15	~/claude-work/237/venv-before/lib/python3.10/site-packages/networkx
+14	~/claude-work/237/venv-before/lib/python3.10/site-packages/pillow.libs
+14	~/claude-work/237/venv-before/lib/python3.10/site-packages/Cython
+13	~/claude-work/237/venv-before/lib/python3.10/site-packages/pyproj.libs
+12	~/claude-work/237/venv-before/lib/python3.10/site-packages/pip
+10	~/claude-work/237/venv-before/lib/python3.10/site-packages/Crypto
+9	~/claude-work/237/venv-before/lib/python3.10/site-packages/pygments
+7	~/claude-work/237/venv-before/lib/python3.10/site-packages/aiohttp
+7	~/claude-work/237/venv-before/lib/python3.10/site-packages/PIL
+5	~/claude-work/237/venv-before/lib/python3.10/site-packages/pyexiv2
+2026-11-15T20:06:59Z

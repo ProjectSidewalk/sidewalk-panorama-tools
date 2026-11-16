@@ -1,0 +1,402 @@
+== pip and python in venv-after
+pip 26.3 from ~/claude-work/237/venv-after/lib/python3.10/site-packages/pip (python 3.10)
+== streetlevel/__init__.py
+__version__ = "0.12.11"
+(eof)
+== streetlevel/streetview/__init__.py
+from .streetview import *
+from .util import *
+(eof)
+== streetlevel/util.py (whole)
+     1	import asyncio
+     2	import json
+     3	from enum import Enum
+     4	from io import BytesIO
+     5	from pathlib import Path
+     6	from typing import List, Callable, Union
+     7	
+     8	import requests
+     9	from aiohttp import ClientSession
+    10	from PIL import Image
+    11	from requests import Session
+    12	
+    13	from .dataclasses import Tile, Size
+    14	
+    15	
+    16	def download_file(url: str, path: str, session: Session = None) -> None:
+    17	    """
+    18	    Downloads a file to disk using requests.
+    19	
+    20	    :param url: The URL.
+    21	    :param path: The output path.
+    22	    :param session: *(optional)* A requests session.
+    23	    """
+    24	    requester = session if session else requests
+    25	    response = requester.get(url)
+    26	    with open(path, "wb") as f:
+    27	        f.write(response.content)
+    28	
+    29	
+    30	async def download_file_async(url: str, path: str, session: ClientSession) -> None:
+    31	    """
+    32	    Downloads a file to disk using aiohttp.
+    33	
+    34	    :param url: The URL.
+    35	    :param path: The output path.
+    36	    :param session: A ``ClientSession``.
+    37	    """
+    38	    async with session.get(url) as response:
+    39	        with open(path, "wb") as f:
+    40	            f.write(await response.read())
+    41	
+    42	
+    43	def get_image(url: str, session: Session = None) -> Image.Image:
+    44	    """
+    45	    Fetches an image from a URL using requests.
+    46	
+    47	    :param url: The URL.
+    48	    :param session: *(optional)* A requests session.
+    49	    :return: The image as PIL Image.
+    50	    """
+    51	    requester = session if session else requests
+    52	    response = requester.get(url)
+    53	    return Image.open(BytesIO(response.content))
+    54	
+    55	
+    56	async def get_image_async(url: str, session: ClientSession) -> Image.Image:
+    57	    """
+    58	    Fetches an image from a URL using aiohttp.
+    59	
+    60	    :param url: The URL.
+    61	    :param session: A ``ClientSession``.
+    62	    :return: The image as PIL Image.
+    63	    """
+    64	    async with session.get(url) as response:
+    65	        return Image.open(BytesIO(await response.read()))
+    66	
+    67	
+    68	def get_json(url: str, session: Session = None, preprocess_function: Callable = None,
+    69	             headers: dict = None) -> dict:
+    70	    """
+    71	    Fetches JSON from a URL using requests.
+    72	
+    73	    :param url: The URL.
+    74	    :param session: *(optional)* A requests session.
+    75	    :param preprocess_function: *(optional)* A function to run on the text before passing it to the JSON parser.
+    76	    :param headers: *(optional)* Request headers.
+    77	    :return: The requested document as dictionary.
+    78	    """
+    79	    requester = session if session else requests
+    80	    response = requester.get(url, headers=headers)
+    81	    if preprocess_function:
+    82	        processed = preprocess_function(response.text)
+    83	        return json.loads(processed)
+    84	    else:
+    85	        return response.json()
+    86	
+    87	
+    88	async def get_json_async(url: str, session: ClientSession, json_function_parameters: dict = None,
+    89	                         preprocess_function: Callable = None, headers: dict = None) -> dict:
+    90	    """
+    91	    Fetches JSON from a URL using aiohttp.
+    92	
+    93	    :param url: The URL.
+    94	    :param session: A ``ClientSession``.
+    95	    :param json_function_parameters: *(optional)* Parameters to pass to the ``ClientResponse.json`` function.
+    96	    :param preprocess_function: *(optional)* A function to run on the text before passing it to the JSON parser.
+    97	    :param headers: *(optional)* Request headers.
+    98	    :return: The requested document as dictionary.
+    99	    """
+   100	    if headers is None:
+   101	        headers = {}
+   102	    async with session.get(url, headers=headers) as response:
+   103	        if preprocess_function:
+   104	            text = await response.text()
+   105	            processed = preprocess_function(text)
+   106	            return json.loads(processed)
+   107	        else:
+   108	            if json_function_parameters:
+   109	                return await response.json(**json_function_parameters)
+   110	            return await response.json()
+   111	
+   112	
+   113	def get_equirectangular_panorama(width: int, height: int, tile_size: Size,
+   114	                                 tile_list: List[Tile],
+   115	                                 headers: dict = None) -> Image.Image:
+   116	    """
+   117	    Downloads and stitches a tiled equirectangular panorama.
+   118	
+   119	    :param width: Width of the panorama in pixels.
+   120	    :param height: Height of the panorama in pixels.
+   121	    :param tile_size: Size of one tile.
+   122	    :param tile_list: The tiles this panorama is made of.
+   123	    :param headers: *(optional)* Request headers to send.
+   124	    :return: The stitched panorama as PIL image.
+   125	    """
+   126	    tile_images = download_tiles(tile_list, headers)
+   127	    stitched = stitch_equirectangular_tiles(tile_images, width, height, tile_size.x, tile_size.y)
+   128	    return stitched
+   129	
+   130	
+   131	async def get_equirectangular_panorama_async(width: int, height: int, tile_size: Size,
+   132	                                             tile_list: List[Tile],
+   133	                                             session: ClientSession,
+   134	                                             headers: dict = None) -> Image.Image:
+   135	    """
+   136	    Downloads and stitches a tiled equirectangular panorama.
+   137	
+   138	    :param width: Width of the panorama in pixels.
+   139	    :param height: Height of the panorama in pixels.
+   140	    :param tile_size: Size of one tile.
+   141	    :param tile_list: The tiles this panorama is made of.
+   142	    :param session: A ``ClientSession``.
+   143	    :param headers: *(optional)* Request headers to send.
+   144	    :return: The stitched panorama as PIL image.
+   145	    """
+   146	    tile_images = await download_tiles_async(tile_list, session, headers)
+   147	    stitched = stitch_equirectangular_tiles(tile_images, width, height, tile_size.x, tile_size.y)
+   148	    return stitched
+   149	
+   150	
+   151	def try_get(accessor):
+   152	    """
+   153	    QoL function for accessing an element of a nested list which may or may not exist, e.g. ``foo[1][0][2][3]``.
+   154	
+   155	    :param accessor: A function which attempts to access the element, e.g. ``lambda: foo[1][0][2][3]``.
+   156	    :return: The return value of the accessor, unless an IndexError, TypeError or KeyError occurred,
+   157	     in which case the function returns None.
+   158	    """
+   159	    try:
+   160	        return accessor()
+   161	    except IndexError:
+   162	        return None
+   163	    except TypeError:
+   164	        return None
+   165	    except KeyError:
+   166	        return None
+   167	
+   168	
+   169	async def download_files_async(urls: List[str], session: ClientSession = None,
+   170	                               headers: dict = None) -> List[bytes]:
+   171	    """
+   172	    Downloads multiple files to a list of ``bytes``.
+   173	
+   174	    :param urls: The URLs of the files to download.
+   175	    :param session: *(optional)* A ``ClientSession``. If no session is passed, a new one will be created.
+   176	    :param headers: *(optional)* Request headers to send.
+   177	    :return: The downloaded files as ``bytes``.
+   178	    """
+   179	    close_session = session is None
+   180	    session = session if session else ClientSession()
+   181	
+   182	    async def download_one(url: str, headers: dict = None) -> bytes:
+   183	        for _ in range(4):
+   184	            async with session.get(url, headers=headers) as response:
+   185	                if response.status == 200:
+   186	                    return await response.read()
+   187	                if 400 <= response.status < 500:
+   188	                    response.raise_for_status()
+   189	        response.raise_for_status()
+   190	
+   191	    tasks = [download_one(url, headers) for url in urls]
+   192	    data = await asyncio.gather(*tasks)
+   193	
+   194	    if close_session:
+   195	        await session.close()
+   196	
+   197	    return data
+   198	
+   199	
+   200	def download_tiles(tile_list: List[Tile], headers: dict = None) -> dict:
+   201	    """
+   202	    Downloads tiles to ``bytes``.
+   203	
+   204	    :param tile_list: The tiles to download.
+   205	    :param headers: *(optional)* Request headers to send.
+   206	    :return: A dictionary containing the images as ``bytes`` with the key ``(x, y)``.
+   207	    """
+   208	    images = asyncio.run(download_files_async([t.url for t in tile_list], headers=headers))
+   209	
+   210	    images_dict = {}
+   211	    for i, tile in enumerate(tile_list):
+   212	        images_dict[(tile.x, tile.y)] = images[i]
+   213	
+   214	    return images_dict
+   215	
+   216	
+   217	async def download_tiles_async(tile_list: List[Tile], session: ClientSession,
+   218	                               headers: dict = None):
+   219	    """
+   220	    Downloads tiles to ``bytes``.
+   221	
+   222	    :param tile_list: The tiles to download.
+   223	    :param session: A ``ClientSession``.
+   224	    :param headers: *(optional)* Request headers to send.
+   225	    :return: A dictionary containing the images as ``bytes`` with the key ``(x, y)``.
+   226	    """
+   227	
+   228	    images = await download_files_async([t.url for t in tile_list], session=session, headers=headers)
+   229	
+   230	    images_dict = {}
+   231	    for i, tile in enumerate(tile_list):
+   232	        images_dict[(tile.x, tile.y)] = images[i]
+   233	
+   234	    return images_dict
+   235	
+   236	
+   237	def stitch_equirectangular_tiles(tile_images: dict, width: int, height: int,
+   238	                                 tile_width: int, tile_height: int) -> Image.Image:
+   239	    """
+   240	    Stitches downloaded tiles of a tiled equirectangular panorama to a full image.
+   241	
+   242	    :param tile_images: The downloaded tiles.
+   243	    :param width: Width of the panorama in pixels.
+   244	    :param height: Height of the panorama in pixels.
+   245	    :param tile_width: Width of one tile in pixels.
+   246	    :param tile_height: Height of one tile in pixels.
+   247	    :return: The stitched panorama as PIL image.
+   248	    """
+   249	    panorama = Image.new('RGB', (width, height))
+   250	
+   251	    for x, y in tile_images:
+   252	        tile = Image.open(BytesIO(tile_images[(x, y)]))
+   253	        panorama.paste(im=tile, box=(x * tile_width, y * tile_height))
+   254	        del tile
+   255	
+   256	    return panorama
+   257	
+   258	
+   259	class CubemapStitchingMethod(Enum):
+   260	    """Stitching options for the faces of a cubemap."""
+   261	
+   262	    NONE = 0
+   263	    """The faces are returned as a list."""
+   264	
+   265	    NET = 1
+   266	    """The faces are combined into one image arranged as a net of a cube."""
+   267	
+   268	    ROW = 2
+   269	    """The faces are combined into one image arranged in one row in the order front, right, back, left, top, bottom."""
+   270	
+   271	
+   272	def stitch_cubemap_face(face_tiles: dict, tile_size: int, cols: int, rows: int):
+   273	    """
+   274	    Stitches one face of a cubemap.
+   275	
+   276	    :param face_tiles: Tiles of this face.
+   277	    :param tile_size: The side length of one tile in pixels.
+   278	    :param cols: Number of tile columns.
+   279	    :param rows: Number of tile rows.
+   280	    :return: The stitched face.
+   281	    """
+   282	    face = Image.new("RGB", (cols * tile_size, rows * tile_size))
+   283	    for row_idx in range(0, rows):
+   284	        for col_idx in range(0, cols):
+   285	            tile = Image.open(BytesIO(face_tiles[(col_idx, row_idx)]))
+   286	            face.paste(im=tile,
+   287	                       box=(col_idx * tile_size, row_idx * tile_size))
+   288	            del tile
+   289	    return face
+   290	
+   291	
+   292	def stitch_cubemap_faces(faces: List[Image.Image], face_size: int,
+   293	                         stitching_method: CubemapStitchingMethod) -> Union[Image.Image, List[Image.Image]]:
+   294	    """
+   295	    Stitches the six faces of a cubemap into one image.
+   296	
+   297	    :param faces: A list of faces in the order front, right, back, left, top, bottom.
+   298	    :param face_size: The side length of one face of the cubemap in pixels.
+   299	    :param stitching_method: The stitching method.
+   300	    :return: A stitched image, or ``faces`` if the stitching method is ``NONE``.
+   301	    """
+   302	    if stitching_method == CubemapStitchingMethod.NONE:
+   303	        return faces
+   304	    elif stitching_method == CubemapStitchingMethod.NET:
+   305	        pano_width = 4 * face_size
+   306	        pano_height = 3 * face_size
+   307	        image = Image.new('RGB', (pano_width, pano_height))
+   308	        image.paste(im=faces[0], box=(1 * face_size, 1 * face_size))
+   309	        image.paste(im=faces[1], box=(2 * face_size, 1 * face_size))
+   310	        image.paste(im=faces[2], box=(3 * face_size, 1 * face_size))
+   311	        image.paste(im=faces[3], box=(0,             1 * face_size))
+   312	        image.paste(im=faces[4], box=(1 * face_size, 0))
+   313	        image.paste(im=faces[5], box=(1 * face_size, 2 * face_size))
+   314	        return image
+   315	    elif stitching_method == CubemapStitchingMethod.ROW:
+   316	        image = Image.new('RGB', (6 * face_size, face_size))
+   317	        for i in range(0, 6):
+   318	            image.paste(im=faces[i], box=(i * face_size, 0))
+   319	        return image
+   320	    else:
+   321	        raise ValueError("Unsupported stitching method")
+   322	
+   323	
+   324	def save_cubemap_panorama(pano: Union[List[Image.Image], Image.Image], path: str, pil_args: dict) -> None:
+   325	    """
+   326	    Saves a cubemap to disk.
+   327	
+   328	    :param pano: A stitched cubemap, or the six faces of a cubemap.
+   329	    :param path: The output path.
+   330	    :param pil_args: *(optional)* Additional arguments for PIL's
+   331	        `Image.save <https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.save>`_
+   332	        method, e.g. ``{"quality":100}``. Defaults to ``{}``.
+   333	    """
+   334	    if isinstance(pano, List):
+   335	        path_obj = Path(path)
+   336	        for idx, face in enumerate(pano):
+   337	            face_path = path_obj.parent / f"{path_obj.stem}_{idx}{path_obj.suffix}"
+   338	            face.save(face_path, **pil_args)
+   339	    else:
+   340	        pano.save(path, **pil_args)
+== api.py find_panorama_by_id (the URL builder's body is not printed; r2 runs it)
+        session,
+        preprocess_function=repair_find_panorama_response
+    )
+
+
+def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+    return get_json(
+        build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+        session=session,
+        headers={
+            "Accept": "*/*",
+            "Host": "www.google.com",
+            "Referer": "https://www.google.com/",
+            "Alt-Used": "www.google.com",
+            "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        },
+        preprocess_function=lambda text: text[4:])
+
+
+async def find_panorama_by_id_async(panoid, session, download_depth=False, locale="en"):
+    return await get_json_async(
+        build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+        session,
+        headers={
+            "Accept": "*/*",
+            "Host": "www.google.com",
+            "Referer": "https://www.google.com/",
+            "Alt-Used": "www.google.com",
+            "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        },
+        preprocess_function=lambda text: text[4:])
+== every metadata / dynamic-import / optional-import construct anywhere in the installed package
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/exif.py:31:    Saves a PIL image as JPEG with Exif and XMP GPano metadata.
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/exif.py:76:    if metadata.is_equirectangular:
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/baidu/baidu.py:92:    :return: The metadata.
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/baidu/panorama.py:204:    """The panorama metadata."""
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/__init__.py:1:import importlib.util
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/__init__.py:7:if importlib.util.find_spec("torch"):
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:64:    phi_length = camera_metadata.lens_projection.fov_s
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:65:    theta_length = camera_metadata.lens_projection.fov_h
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:78:            "yaw": -camera_metadata.position.yaw,
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:79:            "pitch": camera_metadata.position.pitch,
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:80:            "roll": camera_metadata.position.roll,
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:97:        + camera_metadata.position.yaw
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:98:        - (camera_metadata.lens_projection.fov_s / 2)
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:104:        - (camera_metadata.lens_projection.fov_h / 2)
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:105:        - camera_metadata.lens_projection.cy
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:107:    phi_length = camera_metadata.lens_projection.fov_s
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/reproject.py:108:    theta_length = camera_metadata.lens_projection.fov_h
+== every 'import' or 'from' statement that is indented (inside a def/class/if/try) anywhere in the package
+~/claude-work/237/venv-after/lib/python3.10/site-packages/streetlevel/lookaround/__init__.py:8:    from .reproject import to_equirectangular

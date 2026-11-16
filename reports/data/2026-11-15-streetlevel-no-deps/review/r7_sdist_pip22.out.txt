@@ -1,0 +1,22 @@
+pip 22.0.2 from ~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/pip (python 3.10)
+WARNING: You are using pip version 22.0.2; however, version 26.3 is available.
+You should consider upgrading via the '~/claude-work/237/venv-review-pip22d/bin/python -m pip install --upgrade pip' command.
+pip==22.0.2
+setuptools==59.6.0
+== what the sdist ships (pyproject.toml or setup.py only?)
+WARNING: You are using pip version 22.0.2; however, version 26.3 is available.
+You should consider upgrading via the '~/claude-work/237/venv-review-pip22d/bin/python -m pip install --upgrade pip' command.
+CoordinatesConverter-0.1.5/setup.cfg
+CoordinatesConverter-0.1.5/setup.py
+CoordinatesConverter-0.1.5/src/CoordinatesConverter/__init__.py
+(build files only; pyproject.toml absent => pip 22.0.2 without wheel takes the legacy setup.py install path)
+== reinstall from the sdist, no cache
+      Successfully uninstalled CoordinatesConverter-0.1.5
+  Running setup.py install for CoordinatesConverter: started
+  Running setup.py install for CoordinatesConverter: finished with status 'done'
+Successfully installed CoordinatesConverter-0.1.5
+WARNING: You are using pip version 22.0.2; however, version 26.3 is available.
+You should consider upgrading via the '~/claude-work/237/venv-review-pip22d/bin/python -m pip install --upgrade pip' command.
+exit: 0
+CoordinatesConverter==0.1.5
+imports ok

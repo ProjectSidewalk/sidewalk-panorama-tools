@@ -1,0 +1,17 @@
+== host
+Ubuntu 22.04.1 LTS
+Python 3.10.6
+2026-11-15T19:59:52Z
+== repo
+b2c8d58 Merge pull request #242 from ProjectSidewalk/239-on-disk-check
+The virtual environment was not created successfully because ensurepip is not
+available.  On Debian/Ubuntu systems, you need to install the python3-venv
+package using the following command.
+
+    apt install python3.10-venv
+
+You may need to use sudo with that command.  After installing the python3-venv
+package, recreate your virtual environment.
+
+Failing command: ['~/claude-work/237/venv-probe/bin/python3', '-Im', 'ensurepip', '--upgrade', '--default-pip']
+

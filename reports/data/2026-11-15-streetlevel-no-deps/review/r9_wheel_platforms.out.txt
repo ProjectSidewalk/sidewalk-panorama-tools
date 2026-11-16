@@ -1,0 +1,20 @@
+pyexiv2/2.16.0           sdist=False  pure=False
+    manylinux  cp310 cp311 cp312 cp313 cp314 cp38 cp39
+    win_amd64  cp310 cp311 cp312 cp313 cp314 cp38 cp39
+    macosx     cp310 cp311 cp312 cp313 cp314 cp38 cp39
+pyproj/3.7.1             sdist=True  pure=False
+    manylinux  cp310 cp311 cp312 cp313
+    win_amd64  cp310 cp311 cp312 cp313
+    macosx     cp310 cp311 cp312 cp313
+scipy/1.15.3             sdist=True  pure=False
+    manylinux  cp310 cp311 cp312 cp313
+    win_amd64  cp310 cp311 cp312 cp313
+    macosx     cp310 cp311 cp312 cp313
+bd09convertor/0.0.3      sdist=True  pure=True
+    manylinux  -
+    win_amd64  -
+    macosx     -
+CoordinatesConverter/0.1.5 sdist=True  pure=False
+    manylinux  -
+    win_amd64  -
+    macosx     -

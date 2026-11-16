@@ -1,0 +1,26 @@
+{
+  "python": "3.10.6 (main, Nov 14 2022, 16:10:14) [GCC 11.3.0]",
+  "targets": [
+    {
+      "module": "streetlevel.streetview.panorama",
+      "missing_then_installed": [],
+      "ok": true
+    },
+    {
+      "module": "streetlevel.streetview.depth",
+      "missing_then_installed": [],
+      "ok": true
+    },
+    {
+      "module": "streetlevel.streetview.parse",
+      "missing_then_installed": [],
+      "ok": true
+    },
+    {
+      "module": "streetlevel.dataclasses",
+      "missing_then_installed": [],
+      "ok": true
+    }
+  ],
+  "installed_in_order": []
+}
