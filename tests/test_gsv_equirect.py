@@ -496,7 +496,8 @@ class TestRefusedBeforeAnyRequest:
 
         assert cbk.probe_urls == []
 
-    @pytest.mark.parametrize('frame', [(2048, 800), (1600, 801), (1024, 513), (1024, 1024), (16384, 7681)])
+    @pytest.mark.parametrize('frame', [(2048, 800), (1600, 801), (1024, 513), (1024, 1024), (16384, 7681),
+                                       (1025, 512)])
     def test_a_frame_that_is_not_two_to_one_is_refused(self, monkeypatch, frame):
         """The frame check compares tile grids, so a frame inside the pano's own grid would pass it and come
         back as a crop: 2048x800 of a 2048x1024 pano is its top 800 rows. Every GSV frame is 2:1, so anything
@@ -744,18 +745,21 @@ class TestThePublicSurface:
         assert issubclass(error, ValueError)
         assert not issubclass(error, gsv_tiles.FrameDisagreementError)
 
-    @pytest.mark.parametrize('error,attributes', [
-        (lambda: gsv_tiles.PanoGoneError(PANO), {'pano_id': PANO}),
-        (lambda: gsv_tiles.ZoomDisagreementError(PANO, 5, 3), {'pano_id': PANO, 'zoom': 5, 'probed': 3}),
-        (lambda: gsv_tiles.PhotosphereUnsupportedError(AF1Q_PANO), {'pano_id': AF1Q_PANO}),
+    @pytest.mark.parametrize('error,attributes,args', [
+        (lambda: gsv_tiles.PanoGoneError(PANO), {'pano_id': PANO}, (PANO,)),
+        (lambda: gsv_tiles.ZoomDisagreementError(PANO, 5, 3), {'pano_id': PANO, 'zoom': 5, 'probed': 3},
+         (PANO, 5, 3)),
+        (lambda: gsv_tiles.PhotosphereUnsupportedError(AF1Q_PANO), {'pano_id': AF1Q_PANO}, (AF1Q_PANO,)),
     ], ids=['gone', 'zoom', 'photosphere'])
-    def test_the_new_errors_survive_pickling(self, error, attributes):
+    def test_the_new_errors_survive_pickling(self, error, attributes, args):
         """A consumer fetching in a process pool gets the worker's exception back by pickle: it must rebuild as
-        the same type, with the same attributes and the same message (unpicklable, it breaks the whole pool)."""
+        the same type, with the same attributes and the same message (unpicklable, it breaks the whole pool).
+        `args` holds the constructor's arguments, never the message, which is what keeps that true."""
         original = error()
 
         copy = pickle.loads(pickle.dumps(original))
 
+        assert original.args == args and copy.args == args
         assert type(copy) is type(original)
         assert {name: getattr(copy, name) for name in attributes} == attributes
         assert str(copy) == str(original)
