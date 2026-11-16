@@ -34,7 +34,7 @@ from downloaders import common, gsv
 from downloaders.common import DownloadResult, jpeg_dimensions
 from sidewalk_panorama_tools import gsv_tiles
 from test_gsv_photometa_zoom import SERIES_13312, SERIES_16384, dimless, pano_info
-from test_gsv_stitcher import RED, assert_color, deny_probe, jpeg_bytes, stub_photometa, stub_tiles
+from test_gsv_stitcher import RED, assert_color, deny_probe, jpeg_bytes, stub_photometa, stub_probe, stub_tiles
 
 PANO = 'servedLargerPanoAAAAAA'
 SERVED = [(512, 256), (1024, 512), (2048, 1024)]
@@ -116,6 +116,29 @@ def place_native(tmp_path, image=None, raw=None):
     else:
         (image or stitched_native()).save(str(native(tmp_path)), 'jpeg')
     return native(tmp_path).read_bytes()
+
+
+#: Every filesystem call the downloader could reach a store path through: the stats, the opens, and the calls that
+#: change the store (rename, delete, chmod, mkdir) or list it (#243 review finding 9).
+FILESYSTEM_CALLS = ((os.path, 'isfile'), (os.path, 'isdir'), (os.path, 'exists'), (os.path, 'lexists'),
+                    (os.path, 'getsize'), (os, 'stat'), (os, 'lstat'), (os, 'listdir'), (os, 'scandir'),
+                    (os, 'replace'), (os, 'rename'), (os, 'remove'), (os, 'unlink'), (os, 'chmod'), (os, 'mkdir'),
+                    (builtins, 'open'))
+
+
+def record_filesystem_calls(recorder, touched):
+    """Wrap FILESYSTEM_CALLS on `recorder` (a MonkeyPatch) so each path argument - both of a rename's - lands in
+    the set `touched`."""
+    for module, name in FILESYSTEM_CALLS:
+        real = getattr(module, name)
+
+        def recording(*args, _real=real, **kwargs):
+            for arg in args[:2]:
+                if isinstance(arg, (str, os.PathLike)):
+                    touched.add(str(arg))
+            return _real(*args, **kwargs)
+
+        recorder.setattr(module, name, recording)
 
 
 def decoded(source):
@@ -228,18 +251,9 @@ class TestTheSwitchIsOff:
         stub_photometa(monkeypatch, SERVED)
         deny_probe(monkeypatch)
         no_tiles(monkeypatch)
-        touched = []
+        touched = set()
         with pytest.MonkeyPatch.context() as recorder:
-            for module, name in ((os.path, 'isfile'), (os.path, 'isdir'), (os.path, 'exists'), (os.path, 'lexists'),
-                                 (os, 'stat'), (os, 'lstat'), (builtins, 'open')):
-                real = getattr(module, name)
-
-                def recording(path, *args, _real=real, **kwargs):
-                    touched.append(str(path))
-                    return _real(path, *args, **kwargs)
-
-                recorder.setattr(module, name, recording)
-
+            record_filesystem_calls(recorder, touched)
             with pytest.raises(gsv.FrameDisagreementError):
                 download(tmp_path)
 
@@ -261,23 +275,29 @@ class TestTheSwitchIsOff:
         colour_tiles(monkeypatch)
         touched = set()
         with pytest.MonkeyPatch.context() as recorder:
-            for module, name in ((os.path, 'isfile'), (os.path, 'isdir'), (os.path, 'exists'),
-                                 (os.path, 'lexists'), (os, 'stat'), (os, 'lstat'), (builtins, 'open')):
-                real = getattr(module, name)
-
-                def recording(path, *args, _real=real, **kwargs):
-                    touched.add(str(path))
-                    return _real(path, *args, **kwargs)
-
-                recorder.setattr(module, name, recording)
-
+            record_filesystem_calls(recorder, touched)
             assert download(tmp_path, pano_info(*NATIVE, pano_id=PANO)) == DownloadResult.success
 
         in_store = {p for p in touched if p.startswith(str(tmp_path))}
-        # The storage root itself: makedirs climbs to it on the shard's first pano.
+        # Measured on master (b2c8d58) with the same recorder. The storage root itself: makedirs climbs to it on
+        # the shard's first pano.
         expected = {str(tmp_path), str(shard(tmp_path)), str(jpg(tmp_path)), str(jpg(tmp_path)) + '.part'}
         assert in_store == (expected | {str(native(tmp_path))} if switch else expected)
         assert files_in_shard(tmp_path) == [PANO + '.jpg']
+
+    def test_off_a_retired_pano_beside_an_original_is_masters_permanent_verdict(self, tmp_path, monkeypatch):
+        """#243 review finding 1, switch off: the documented orphan, deliberately left as master has it (no stat
+        of the original; measured on master b2c8d58 with the same recorder: the shard and the .jpg check)."""
+        original = place_native(tmp_path)
+        stub_probe(monkeypatch, -1)
+        no_tiles(monkeypatch)
+        touched = set()
+        with pytest.MonkeyPatch.context() as recorder:
+            record_filesystem_calls(recorder, touched)
+            assert download(tmp_path, pano_info(*NATIVE, pano_id=PANO)) == DownloadResult.failure
+
+        assert {p for p in touched if p.startswith(str(tmp_path))} == {str(shard(tmp_path)), str(jpg(tmp_path))}
+        assert native(tmp_path).read_bytes() == original
 
     def test_off_no_tripwire_fires_on_googles_width(self, tmp_path, monkeypatch):
         """The #121 tripwire reads the app's width in resolve_frame, as on master; Google's larger width is
@@ -488,17 +508,57 @@ class TestAPanoServedLargerIsKept:
         assert gsv._served_larger_run.kept == 1
         assert PANO in gsv._served_larger_run.details[0]
 
-    def test_the_tripwire_reads_the_width_about_to_be_stored(self, tmp_path, monkeypatch, capsys):
-        """#121's meaning is the width that lands on the store: here Google's, 2048 - not the app's 1664."""
+    def test_no_tripwire_on_the_originals_width(self, tmp_path, monkeypatch, capsys):
+        """#243 review finding 6: #121 watches what the viewer textures, and the viewer opens <pano_id>.jpg at the
+        app's width, which resolve_frame already checked. The .native is never opened by a viewer, so its width
+        must not spend the once-per-host alarm."""
         monkeypatch.setattr(common, 'VIEWER_MAX_PANO_WIDTH', 1700)
         served_larger(monkeypatch)
         before = common.ceiling_sightings()
 
-        download(tmp_path)
+        assert download(tmp_path) == DownloadResult.success
 
-        assert common.ceiling_sightings() == before + 1
-        wide = [line for line in capsys.readouterr().out.splitlines() if 'viewer ceiling' in line]
-        assert len(wide) == 1 and '2048 px wide' in wide[0]
+        assert common.ceiling_sightings() == before
+        assert 'viewer ceiling' not in capsys.readouterr().out
+        assert gsv._served_larger_run.kept == 1
+
+    def test_a_copy_that_appears_while_the_original_is_resampled_is_not_replaced(self, tmp_path, monkeypatch):
+        """#243 review finding 2: the mirror of the fan-out test above, for the second write. A <pano_id>.jpg that
+        lands while the copy is made is another writer's; the rename must refuse it, transiently."""
+        served_larger(monkeypatch)
+        real_resize = Image.Image.resize
+
+        def resize_beside_another_writer(image, *args, **kwargs):
+            out = real_resize(image, *args, **kwargs)
+            if out.size == APP and not jpg(tmp_path).exists():
+                jpg(tmp_path).write_bytes(b'another writer')
+            return out
+
+        monkeypatch.setattr(Image.Image, 'resize', resize_beside_another_writer)
+
+        with pytest.raises(FileExistsError):
+            download(tmp_path)
+
+        assert jpg(tmp_path).read_bytes() == b'another writer'
+        assert files_in_shard(tmp_path) == [PANO + '.jpg', PANO + '.native']
+        assert gsv._served_larger_run.kept == 0
+
+    def test_an_rgb_original_is_not_converted_before_the_resample(self, tmp_path, monkeypatch):
+        """#243 review finding 3: convert('RGB') on an image already RGB is a second full raster (512 MiB at
+        16384x8192; measured peak 1798 MiB with it, 1287 MiB without), so only a non-RGB original converts."""
+        served_larger(monkeypatch)
+        conversions = []
+        real_convert = Image.Image.convert
+
+        def recording(image, mode=None, *args, **kwargs):
+            conversions.append((image.mode, mode, image.size))
+            return real_convert(image, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, 'convert', recording)
+
+        assert download(tmp_path) == DownloadResult.success
+
+        assert ('RGB', 'RGB', NATIVE) not in conversions
 
 
 # --- step 5: a copy rebuilt from an original already on disk --------------------------------------------------
@@ -575,9 +635,73 @@ class TestTheCopyIsRebuiltFromAKeptOriginal:
         assert '%dx%d' % size in out and 'not usable' in out
         assert gsv._served_larger_run.kept == 0
 
-    def test_a_record_with_no_dims_never_looks_for_an_original(self, tmp_path, monkeypatch):
-        """#184's path is unchanged: there is no app frame to rebuild a copy at."""
-        record = dimless(pano_id=PANO)
+    def test_a_retired_pano_with_an_original_on_disk_is_never_written_off(self, tmp_path, monkeypatch):
+        """#243 review finding 1: the app's record corrected to Google's frame, the copy gone, and Google has
+        since retired the pano. The original is not usable for a copy (not larger than the app's frame), but a
+        permanent downloaded=0 beside it would hide imagery the store holds, so it raises - not ledgered,
+        retried - and names the file."""
+        original = place_native(tmp_path)
+        stub_probe(monkeypatch, -1)
+        no_tiles(monkeypatch)
+
+        with pytest.raises(gsv.KeptOriginalError) as error:
+            download(tmp_path, pano_info(*NATIVE, pano_id=PANO))
+
+        assert str(native(tmp_path)) in str(error.value)
+        assert not isinstance(error.value, gsv.FrameDisagreementError)
+        assert 'frame disagreement' not in str(error.value)
+        assert native(tmp_path).read_bytes() == original
+        assert files_in_shard(tmp_path) == [PANO + '.native']
+
+    def test_a_grayscale_original_makes_an_rgb_copy(self, tmp_path, monkeypatch):
+        """#243 review finding 3: the convert is skipped only for an RGB original; any other mode still converts,
+        so every stored panorama stays RGB."""
+        place_native(tmp_path, Image.new('L', NATIVE, 120))
+        no_photometa(monkeypatch)
+        deny_probe(monkeypatch)
+        no_tiles(monkeypatch)
+
+        assert download(tmp_path) == DownloadResult.skipped
+
+        with Image.open(str(jpg(tmp_path))) as copy:
+            assert (copy.mode, copy.size) == ('RGB', APP)
+
+    def test_an_original_over_the_pixel_ceiling_is_never_decoded(self, tmp_path, monkeypatch, capsys):
+        """#243 review finding 7: MAX_PANO_PIXELS bounds what recovery will decode from a file it did not write."""
+        original = place_native(tmp_path)
+        monkeypatch.setattr(common, 'MAX_PANO_PIXELS', NATIVE[0] * NATIVE[1] - 1)
+        stub_photometa(monkeypatch, SERVED)
+        deny_probe(monkeypatch)
+        no_tiles(monkeypatch)
+
+        with pytest.raises(gsv.FrameDisagreementError):
+            download(tmp_path)
+
+        assert not jpg(tmp_path).exists()
+        assert native(tmp_path).read_bytes() == original
+        assert 'is not usable' in capsys.readouterr().out
+
+    def test_a_rebuilt_copy_is_flagged_and_gets_its_display_copy(self, tmp_path, monkeypatch):
+        """#243 review finding 7: recovery runs the same after-save steps as the night path, on the copy."""
+        banded = stitched_native()
+        banded.paste(Image.new('RGB', (NATIVE[0], NATIVE[1] // 4)), (0, NATIVE[1] * 3 // 4))
+        place_native(tmp_path, banded)
+        monkeypatch.setattr(common, 'WRITE_DISPLAY_COPIES', True)
+        monkeypatch.setattr(common, 'DOWNSCALED_MAX_WIDTH', 1024)
+        no_photometa(monkeypatch)
+        deny_probe(monkeypatch)
+        no_tiles(monkeypatch)
+
+        assert download(tmp_path) == DownloadResult.skipped
+
+        assert gsv._edge_band_run.saved == 1
+        assert jpeg_dimensions(str(shard(tmp_path) / (PANO + '.w1024.jpg'))) == (1024, 512)
+
+    @pytest.mark.parametrize('record', [dimless(pano_id=PANO), dimless(pano_id=PANO, width=APP[0])],
+                             ids=['no-dims', 'width-only'])
+    def test_a_record_with_no_dims_never_looks_for_an_original(self, tmp_path, monkeypatch, record):
+        """#184's path is unchanged: there is no app frame to rebuild a copy at. A record missing only its height
+        is such a record too (#243 review finding 7)."""
         place_native(tmp_path)
         asked = stub_photometa(monkeypatch, SERVED)
         deny_probe(monkeypatch)

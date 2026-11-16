@@ -494,6 +494,7 @@ def atomic_output_path(final_path, mode=0o664, overwrite=True):
     tmp_path = final_path + '.part'
     try:
         yield tmp_path
+        # lexists, not isfile: a dangling symlink at the name is still a name this must not replace.
         if not overwrite and os.path.lexists(final_path):
             raise FileExistsError(final_path)
         os.chmod(tmp_path, mode)

@@ -695,11 +695,13 @@ KEEP_SERVED_LARGER_ORIGINALS = False
 
 
 class KeptOriginalError(Exception):
-    """A kept original (#185 Part 2) read back at a size other than the one just written. Nothing is ledgered.
+    """A kept original (#185 Part 2) stops a pano: it read back at a size other than the one just written, or
+    (switch on) Google answered "no imagery" for a pano whose original is on disk, where a permanent
+    downloaded=0 would hide imagery the store holds (#243 review). Nothing is ledgered.
 
     TRANSIENT under the #41 ledger: counted in tonight's failures, not ledgered, retried next run. Deliberately
-    NOT a FrameDisagreementError subclass: DownloadRunner counts that type by isinstance (#207), and a read-back
-    that disagrees with the write is a storage fault, not a frame disagreement.
+    NOT a FrameDisagreementError subclass: DownloadRunner counts that type by isinstance (#207), and neither case
+    is a frame disagreement.
     """
 
 
@@ -786,7 +788,11 @@ def _write_app_frame_copy(pano_id, native_path, out_image_name, app_dims, expect
             raise KeptOriginalError('pano %s: %s reads back at %dx%d, not the %dx%d just written; left in place, '
                                     'no copy written, not ledgered'
                                     % ((pano_id, native_path) + tuple(native.size) + tuple(expect)))
-        copy = native.convert('RGB').resize(tuple(app_dims), Image.LANCZOS)
+        # convert only a non-RGB original: on an RGB one it is a second full raster before the resample (#243
+        # review). Measured at 16384x8192 -> 13312x6656 (Windows peak working set): 1798 MiB with it, 1287
+        # without - the decode (~512 MiB, Pillow holds RGB at 4 bytes a pixel) plus LANCZOS's two passes.
+        source = native if native.mode == 'RGB' else native.convert('RGB')
+        copy = source.resize(tuple(app_dims), Image.LANCZOS)
     with atomic_output_path(out_image_name, overwrite=False) as tmp_path:
         copy.save(tmp_path, 'jpeg')
     return copy
@@ -833,14 +839,13 @@ def _keep_served_larger(pano_id, frame, plan, out_image_name, refusal):
     served_w, served_h, zoom = plan
     app_dims = (frame.width, frame.height)
     native_path = common.native_original_path(out_image_name)
-    if os.path.lexists(native_path):
+    if os.path.lexists(native_path):        # lexists: even a dangling symlink there is left untouched
         refusal = ('%s; an original is already on disk at %s and was not usable, so it was left untouched'
                    % (refusal, native_path))
         print("IMAGEDOWNLOAD: WARNING - pano %s: %s; not downloaded, retried next run" % (pano_id, refusal))
         raise gsv_tiles.FrameDisagreementError('pano %s: %s' % (pano_id, refusal))
-    # The #121 tripwire on the width about to be STORED - Google's. The app's narrower width was checked in
-    # resolve_frame, as on every pano.
-    common.warn_if_wider_than_viewer_ceiling(pano_id, served_w, 'gsv')
+    # No #121 tripwire on Google's width here (#243 review): the viewer opens <pano_id>.jpg at the app's width,
+    # which resolve_frame already checked; the .native is never textured, so it must not spend the alarm.
     # Raises as for any pano on a failed tile, a push-back or a mostly black stitch; nothing is written then.
     stitched = fetch_pano_image(pano_id, served_w, served_h, zoom)
     with atomic_output_path(native_path, overwrite=False) as tmp_path:
@@ -848,7 +853,8 @@ def _keep_served_larger(pano_id, frame, plan, out_image_name, refusal):
     # scrape.log only: the durable record if the run dies before the copy lands.
     logging.warning("IMAGEDOWNLOAD: pano %s: kept the %dx%d original as %s; writing the app-frame copy",
                     pano_id, served_w, served_h, native_path)
-    # The only reference to the stitch, released before the read-back so the two rasters never coexist.
+    # The only reference to the stitch, released before the read-back so the two rasters never coexist; the
+    # copy's peak is then the read-back plus the resample (_write_app_frame_copy has the measurement).
     del stitched
     copy = _write_app_frame_copy(pano_id, native_path, out_image_name, app_dims, expect=(served_w, served_h))
     _note_served_larger_kept(pano_id, app_dims, (served_w, served_h), native_path, rebuilt=False)
@@ -1154,6 +1160,14 @@ def download_single_pano(storage_path, pano_info):
         # No imagery at any zoom, on 200s - a permanent property of the pano, so the #41 ledger writes
         # downloaded=0 and never re-attempts it. Since #184 this is the ONLY way here: missing dims ask
         # photometa instead of returning None.
+        #
+        # Except, switch on, beside a kept original (#185 Part 2, #243 review): the store holds this pano, so
+        # it raises instead, unledgered, naming the file. Off, master's verdict stands (the documented orphan).
+        if KEEP_SERVED_LARGER_ORIGINALS:
+            native_path = common.native_original_path(out_image_name)
+            if os.path.lexists(native_path):
+                raise KeptOriginalError('pano %s: Google answers no imagery for it, but a kept original is on disk '
+                                        'at %s; not ledgered downloaded=0, retried next run' % (pano_id, native_path))
         return DownloadResult.failure
     refusal = _frame_refusal(pano_id, frame)
     if refusal is not None:
