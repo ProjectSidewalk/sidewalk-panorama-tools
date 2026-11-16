@@ -136,15 +136,15 @@ def tile_triples(cbk):
     return triples(url for _x, _y, url in cbk.tiles)
 
 
-def real_fan_out(monkeypatch, answer):
+def real_fan_out(monkeypatch, answer, delay=0.001):
     """Run the real fan-out (_download_tiles, _download_tile, _fetch_tile) with only the one HTTP request
-    behind it stubbed: `answer(tile)` returns the (x, y, bytes) triple or an exception to raise. Records every
-    tile that reached the request. Creating the aiohttp session opens no socket."""
+    behind it stubbed: `answer(tile)` returns the (x, y, bytes) triple or an exception to raise, after `delay`
+    seconds. Records every tile that reached the request. Creating the aiohttp session opens no socket."""
     requested = []
 
     async def fake_request_tile(session, tile):
         requested.append(tile)
-        await asyncio.sleep(0.001)
+        await asyncio.sleep(delay)
         result = answer(tile)
         if isinstance(result, BaseException):
             raise result
@@ -613,6 +613,58 @@ class TestTheEventLoop:
         assert len(cbk.probe_threads) == 5
         assert loop_thread not in cbk.probe_threads
         assert len(stitches) == 1 and stitches[0][1] != loop_thread
+
+    def test_the_max_width_resample_runs_off_the_loop_thread(self, monkeypatch):
+        """A 16384 to 8192 LANCZOS resample is seconds of CPU; on the loop thread it would stall every other
+        coroutine of the host application for that long (#236 review, finding 3)."""
+        FakeCbk(monkeypatch)
+        resize_threads = []
+        real = Image.Image.resize
+
+        def recording_resize(self, size, *args, **kwargs):
+            resize_threads.append(threading.get_ident())
+            return real(self, size, *args, **kwargs)
+
+        monkeypatch.setattr(Image.Image, 'resize', recording_resize)
+
+        async def main():
+            stitched = await gsv_tiles.fetch_equirect_async(PANO, 1024, 512, max_width=256)
+            return threading.get_ident(), stitched
+
+        loop_thread, stitched = asyncio.run(main())
+
+        assert stitched.image.size == (256, 128)
+        assert len(resize_threads) == 1 and resize_threads[0] != loop_thread
+
+    def test_cancelling_the_fetch_stops_the_fan_out(self, monkeypatch):
+        """The documented cancellation: cancelling the awaiting task mid fan-out stops it - no tile is requested
+        after the cancel, no task is left running, the fan-out state is reset - and the next fetch in the same
+        loop works (#236 review, finding 3)."""
+        FakeCbk(monkeypatch, served=(8192, 4096), stub_tiles=False)
+        requested = real_fan_out(monkeypatch, refuse_one_pano, delay=0.05)
+
+        async def main():
+            task = asyncio.ensure_future(gsv_tiles.fetch_equirect_async(SERVED_PANO, 8192, 4096, zoom=4))
+            while len(requested) < gsv_tiles.CONCURRENCY:
+                await asyncio.sleep(0.005)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            at_cancel = len(requested)
+            await asyncio.sleep(0.3)
+            after = len(requested)
+            alive = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            fanout = gsv_tiles._TILE_FANOUT.get()
+            again = await gsv_tiles.fetch_equirect_async(SERVED_PANO, 8192, 4096, zoom=3)
+            return at_cancel, after, alive, fanout, again
+
+        at_cancel, after, alive, fanout, again = asyncio.run(main())
+
+        assert at_cancel < 128
+        assert after == at_cancel
+        assert alive == []
+        assert fanout is None
+        assert again.image.size == (8192, 4096)
 
     def test_a_refusal_is_not_chained_to_the_loop_check(self, monkeypatch):
         """The running-loop check must not leave its own RuntimeError ("no running event loop") as the context
