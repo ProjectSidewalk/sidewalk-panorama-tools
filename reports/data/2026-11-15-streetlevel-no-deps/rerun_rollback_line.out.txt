@@ -1,0 +1,99 @@
+swap:     [ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
+rollback: if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+remove:   rm -rf -- .venv-before-237
+======== 01-the-old-line-after-removal
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
++ [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv
+     mv: cannot stat '.venv-before-237': No such file or directory
+     [exit 1]
+   state: .venv=NONE | .venv-237=yes | .venv-before-237=no
+   ^ the line this replaces: the link is gone and nothing replaced it
+======== 02-before-the-swap
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
+======== 03-killed-inside-the-swap
+   state: .venv=NONE | .venv-237=yes | .venv-before-237=yes
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
+======== 04-after-the-swap
++ [ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=yes
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
+======== 05-killed-inside-the-rollback
+   state: .venv=NONE | .venv-237=yes | .venv-before-237=yes
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
+======== 06-swap-typed-twice
++ [ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=yes
++ [ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=yes
+   stray link inside the old venv: -> .venv-237
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=dir(old) | .venv-237=yes | .venv-before-237=no
+======== 07-swap-without-a-built-venv-237
+   state: .venv=dir(old) | .venv-237=no | .venv-before-237=no
++ [ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
+     [exit 1]
+   state: .venv=dir(old) | .venv-237=no | .venv-before-237=no
+   ^ refused: .venv untouched
+======== 08-steady-state-after-removal
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=yes
++ readlink .venv: .venv-237
++ ls -d .venv*: .venv .venv-237 .venv-before-237 
++ rm -rf -- .venv-before-237
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
++ if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
+     nothing to roll back to: no .venv-before-237 (rolled back already, or removed)
+     [exit 0]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
+   .venv/bin/python still answers: new
+======== 09-a-later-rebuild-repoints-the-link-atomically
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
++ ln -s .venv-300 .venv.new && mv -T .venv.new .venv
+     [exit 0]
+   state: .venv=link->.venv-300 | .venv-237=yes | .venv-before-237=no
+   .venv/bin/python answers: newer
+======== 10-python3-m-venv-through-the-link
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
++ /usr/bin/python3.10 -m venv --without-pip .venv
+     Error: Unable to create directory '~/claude-work/237/rollback-line/10-python3-m-venv-through-the-link/.venv'
+     [exit 1]
+   state: .venv=link->.venv-237 | .venv-237=yes | .venv-before-237=no
+   .venv-237 contents: 

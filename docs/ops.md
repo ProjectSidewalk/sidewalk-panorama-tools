@@ -1404,7 +1404,8 @@ The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in 
 ## Operating the production host
 
 The nightly scrape runs on one small cloud instance (Ubuntu 22.04 / Python 3.10, the CI baseline) with the repo
-at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv`, the pano store sshfs-mounted at
+at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv` (a symlink to `.venv-237` once the
+[#237 move](#moving-the-box-to-the---no-deps-install-237) is done), the pano store sshfs-mounted at
 `/mnt/panostore` by a systemd mount unit, the city manifest at `/etc/sidewalk/cities.csv`, and the one crontab
 line from [Nightly deployment](downloader.md#nightly-deployment). Which instance, its addresses and who holds
 which key are deliberately **not** here; they live in the team's private planning repo, next to the rest of the
@@ -1573,9 +1574,10 @@ diff <(.venv-237/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep
 .venv-237/bin/python -c "from streetlevel import streetview; from streetlevel.streetview import api"
 .venv-237/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run
 
-# 2. Swap, as ONE command line: the old venv is renamed and .venv becomes a symlink to .venv-237. The new venv is
-#    never renamed, so its scripts (bin/pip among them) keep the paths they were built with.
-mv .venv .venv-before-237 && ln -s .venv-237 .venv
+# 2. Swap, as ONE command line, once: the old venv is renamed and .venv becomes a symlink to .venv-237. The new
+#    venv is never renamed, so its scripts (bin/pip among them) keep the paths they were built with. The first test
+#    refuses to swap in a .venv-237 that step 1 did not build.
+[ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv
 diff <(.venv/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)   # must print nothing
 .venv/bin/python -c "from streetlevel import streetview; import sys; print(sys.prefix)"   # .../sidewalk-panorama-tools/.venv
 git status --short                                        # must print nothing
@@ -1586,11 +1588,13 @@ du -sm .venv-237                                          # AFTER: record it (29
 **Rollback**, any time, from any of the states below, with the queue idle and no download running:
 
 ```bash
-[ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv
+if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi
 ```
 
-It removes the symlink if the swap happened, then puts the old venv back if `.venv` is missing. Run twice, or
-after a rollback already done, it does nothing. `unlink` removes only the link, never `.venv-237`.
+While the old venv is there, it removes the symlink if the swap happened, then puts the old venv back if `.venv`
+is missing. Without the old venv (a rollback already done, or `.venv-before-237` removed) it prints that message
+and changes nothing. It exits 0 either way, and run twice it does nothing the second time. `unlink` removes only
+the link, never `.venv-237`.
 
 | Interrupted | What is on disk | The 19:00 run | What to do |
 |---|---|---|---|
@@ -1598,6 +1602,8 @@ after a rollback already done, it does nothing. `unlink` removes only the link, 
 | inside the swap line, after `mv` and before `ln` (the only way to have no `.venv`: a kill between two `rename`/`symlink` calls) | `.venv-before-237` and `.venv-237`, no `.venv` | **cannot start** | run the rollback line, or `ln -s .venv-237 .venv` to finish the swap |
 | after the swap, before or during the checks | `.venv` -> `.venv-237`, `.venv-before-237` | new venv | finish the checks; if one fails, run the rollback line |
 | inside the rollback line, after `unlink` | `.venv-before-237`, `.venv-237`, no `.venv` | cannot start | run the rollback line again |
+| the swap line typed a second time | `.venv` -> `.venv-237`; the second `mv` moved the link into `.venv-before-237/` | new venv | nothing is broken and rollback still works; do not repeat the swap line |
+| after `.venv-before-237` was removed (below) | `.venv` -> `.venv-237` only | new venv | there is no rollback: the line prints its message and changes nothing. If `.venv` is ever missing, `ln -s .venv-237 .venv` |
 
 What to expect along the way:
 
@@ -1624,17 +1630,32 @@ What to expect along the way:
 - **Optional, and your call: one city in the daytime.** The last check above is the dry run, so the first real
   photometa and depth requests from the new venv are made at 19:00. To see one while watching, run one city
   through the queue (lever 3 of [Rolling back](#rolling-back-smallest-blast-radius-first)) with a short budget,
-  for example `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore
-  --only <city_id> --max-runtime 10`. It makes real requests and writes to that city's store like a night does.
+  one city slot exactly as the nightly runs it:
+  `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --only <city_id> --max-runtime 12 --city-max-runtime 12 -- --all-panos --min-depth-runtime 6`.
+  It makes real requests and writes to that city's store like a night does.
 - **The morning after.** `tail -1 ~/cron_notify.log` carries last night's date and says
   `nothing to publish (clean run, --only-on-failure)`; `heartbeat.log` shows `heartbeat published`; no SNS message
   arrived. If one did arrive, it must not contain `depth-unavailable` or `streetlevel is not importable`. Then the
   usual checks: each GSV city's `log.csv` row shows depth and image counts in their usual range (the
   [log analyzer](log-analyzer.md) is the tool).
-- **Then, after a few clean nights:** remove `.venv-before-237` to actually free the 4.9 GB, and open the
-  follow-up PR that refreshes `constraints.txt` from `/tmp/box-freeze.txt` per
+- **Then, after a few clean nights:** remove `.venv-before-237` to actually free the 4.9 GB. **From then on there
+  is no rollback to the old venv.** The checkout holds three names that start `.venv`, and two of them are the
+  serving venv and its link, so remove the old one by its full name, never a glob (`rm -rf .venv*` would take the
+  nightly's venv with it):
+
+  ```bash
+  readlink .venv                      # must print .venv-237
+  ls -d .venv*                        # exactly: .venv  .venv-237  .venv-before-237
+  rm -rf -- .venv-before-237          # this name only, typed in full
+  ```
+
+  Then open the follow-up PR that refreshes `constraints.txt` from `/tmp/box-freeze.txt` per
   [Refreshing `constraints.txt`](#refreshing-constraintstxt): a new `Source:` line, and the temporary header
   paragraph removed. `tests/test_constraints.py` fails that PR if the freeze came from the wrong venv.
+- **`.venv` is a symlink from now on**, to `.venv-237`. `python3 -m venv .venv` refuses to build through it, so a
+  later rebuild goes the same way as this one: build and check `.venv-<n>` beside it, then repoint the link in one
+  atomic step, `ln -s .venv-<n> .venv.new && mv -T .venv.new .venv`, and keep `.venv-237` until the new one has
+  run a few nights.
 - **Record both `du -sm` figures on #237.** That closes its Part 1.
 
 The in-place alternative, `pip uninstall -y` of the 41 packages in the old venv, saves the 0.3 GB of overlap but

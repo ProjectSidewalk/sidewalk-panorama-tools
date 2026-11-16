@@ -149,6 +149,13 @@ whole procedure with the box's pip 22.0.2 in a clone standing in for the box (`r
   `git status --short` is empty (the new `.gitignore` pattern), the nightly's shape (an absolute
   `.venv/bin/python` running `cron_notify.py` around the queue's dry run) exits 0, and the new venv is 294 MB.
 
+**The final review** found that the first rollback line, run after `.venv-before-237` had been removed, unlinked
+the only `.venv` and then failed its `mv` (reproduced in `rerun_rollback_line.out.txt`, case 01). The line is now
+guarded on `.venv-before-237` existing and otherwise prints that there is nothing to roll back to. The same file
+runs the swap, rollback and removal lines, taken verbatim from `docs/ops.md`, twice in every state of its table
+plus the state after the removal, on stand-in venvs: each rollback restores the old venv or, with nothing to
+restore, changes nothing and exits 0; the swap refuses when `.venv-237` was never built.
+
 **Why a symlink** (`rerun_venv_rename.out.txt`): a venv renamed after it is built keeps its old interpreter path
 in its scripts' first lines, so `.venv/bin/pip` exits 126 ("bad interpreter"), while `python -m pip` still works.
 Through a symlink both work, and `sys.prefix` is `.venv` either way.
