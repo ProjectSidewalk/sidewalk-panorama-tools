@@ -10,7 +10,9 @@ requirement files are committed as `proposed/*.txt.proposed`, so nothing indexes
 The text files were committed exactly as written except for one scripted substitution of local path prefixes:
 the measurement folder became `<MEAS>`, any other scratch path `<SCRATCH>`, the WSL work directory
 `~/claude-work/237`, and any other WSL home path `~/`. `tests/test_streetlevel_no_deps_report.py` checks that no
-local path is left.
+home-directory or scratch path is left. The scripts are a record of what ran, not portable tools: they still name
+the WSL work directory and, in two of them, the Windows clone they cloned from (`/mnt/d/Git/...`), and running one
+elsewhere means editing those two paths.
 
 ## The question
 
@@ -125,6 +127,31 @@ its old venv until the deploy. So master's 65 pins were split mechanically by `r
   `pytest-asyncio`'s own `backports.asyncio.runner`).
 
 `constraints.txt`'s header records the hand deletion until the first refresh from the box after the deploy.
+
+## The box move, end to end (added in review)
+
+The #244 review found that the first version of the move renamed `.venv` away before the new venv was built, so an
+interrupted build left the 19:00 run without an interpreter. The move now builds `.venv-237` beside the old venv,
+checks it, and swaps it in with `mv .venv .venv-before-237 && ln -s .venv-237 .venv`. `rerun_box_move.sh` ran the
+whole procedure with the box's pip 22.0.2 in a clone standing in for the box (`rerun_box_move.out.txt`):
+
+* **The old venv**, built from master's own files, froze to 65 lines identical to master's `constraints.txt`, at
+  4969 MB. **An ordinary deploy of this branch into it is a no-op**: both lines exit 0 and the freeze is unchanged.
+  The Deploying block's new freeze check prints exactly 41 `<` lines there (the packages #237 drops) and 0 `>`
+  lines.
+* **Step 1** built and checked `.venv-237` while `.venv` stayed whole: an empty freeze diff, the imports, and a dry
+  run with no `streetlevel` warning.
+* **Every interruption state** in the `docs/ops.md` table was produced and recovered by the one rollback line:
+  killed after `python3 -m venv`; killed inside the swap line (no `.venv`); a failed check after the swap; the
+  rollback line run twice; and killed inside the rollback line. Each time the old venv came back with its own pip
+  working and its freeze unchanged.
+* **After the swap**, `sys.prefix` is the checkout's `.venv`, the freeze diff is empty, `.venv/bin/pip` works,
+  `git status --short` is empty (the new `.gitignore` pattern), the nightly's shape (an absolute
+  `.venv/bin/python` running `cron_notify.py` around the queue's dry run) exits 0, and the new venv is 294 MB.
+
+**Why a symlink** (`rerun_venv_rename.out.txt`): a venv renamed after it is built keeps its old interpreter path
+in its scripts' first lines, so `.venv/bin/pip` exits 126 ("bad interpreter"), while `python -m pip` still works.
+Through a symlink both work, and `sys.prefix` is `.venv` either way.
 
 ## Part 2: the upstream fix exists
 

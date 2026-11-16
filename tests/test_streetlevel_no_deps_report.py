@@ -156,6 +156,34 @@ class TestTheSuiteFigures:
         assert summary in _report() and total in _report()
 
 
+class TestTheBoxMove:
+    """The review round's end-to-end run of the docs/ops.md move, and why it swaps in a symlink."""
+
+    def test_the_old_venv_and_the_ordinary_deploy_into_it(self):
+        text = _read('rerun_box_move.out.txt')
+        assert 'old freeze: 65 lines\nold freeze == master\'s constraints.txt\nold .venv: 4969 MB\n' in text
+        assert 'freeze unchanged: the two lines are a no-op in the old venv' in text
+        assert re.search(r'> lines \(should be 0\)\n41\n0\n', text)
+        assert '4969 MB' in _report() and 'exactly 41 `<` lines' in _report()
+
+    def test_every_rollback_restores_the_old_venv(self):
+        text = _read('rerun_box_move.out.txt')
+        restored = 'state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes'
+        assert text.count('-- rollback line') == 3 and text.count(restored) >= 5
+        assert 'old venv back, freeze as before' in text
+        assert text.count('git status --short (must be empty):\n(end)') == 2
+        assert 'cron_notify exit: 0; streetlevel warnings: 0' in text and 'new venv: 294 MB' in text
+
+    def test_a_renamed_venvs_pip_fails_and_a_symlinked_ones_does_not(self):
+        text = _read('rerun_venv_rename.out.txt')
+        renamed = _section(text, '== renamed', '== symlinked')
+        symlinked = text.split('== symlinked', 1)[1]
+        assert any('.venv/bin/pip --version exit: 126' in line and 'bad interpreter' in line for line in renamed)
+        assert '.venv/bin/pip --version exit: 0' in symlinked
+        assert all('sys.prefix: <S>/.venv' in part for part in ('\n'.join(renamed), symlinked))
+        assert 'exits 126' in _report()
+
+
 class TestNoLocalPathIsCommitted:
     """The raw outputs had local path prefixes normalised before commit (the report says how)."""
 
