@@ -2,8 +2,10 @@
 
 Every number in the report's prose is transcribed from a file in reports/data/2026-11-15-streetlevel-no-deps/
 (.claude/rules/desk-studies.md). This test re-derives the headline ones from those files and checks that the
-report quotes them, and that tests/test_constraints.py's two requirement sets are the measured split rather than
-a hand-typed copy of it. The behaviour those sets enforce is tested in tests/test_constraints.py.
+report quotes them. It reads only the report and its own committed data, never the live requirement or pin
+files: those are meant to change (a pin bump, Part 2's streetlevel bump), and a dated report must not fail when
+they do. The live invariants (what constraints.txt and constraints-ci.txt must and must not pin, and the
+requirement split checked against the installed streetlevel) are tests/test_constraints.py's.
 """
 
 import json
@@ -13,11 +15,30 @@ import re
 import pytest
 from packaging.utils import canonicalize_name
 
-from test_constraints import STREETLEVEL_REACHED, STREETLEVEL_UNREACHED, _content_lines
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO_ROOT, 'reports', 'data', '2026-11-15-streetlevel-no-deps')
 REPORT = os.path.join(REPO_ROOT, 'reports', '2026-11-15-streetlevel-no-deps.md')
+
+# The split as the report states it for streetlevel 0.12.11, kept here rather than imported from
+# tests/test_constraints.py, whose constants follow the installed release and may legitimately move on.
+REPORTED_REACHED = {'aiohttp', 'requests', 'numpy', 'pillow', 'pyproj', 'scipy', 'bd09convertor',
+                    'coordinatesconverter', 'pyexiv2'}
+REPORTED_UNREACHED = {'pyequilib', 'protobuf', 'pyfrpc', 'pycryptodome', 'cython', 'pytest', 'pytest-asyncio'}
+
+
+def _content_lines(path):
+    with open(path, encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+
+
+def _pins(*parts):
+    """A frozen pin or freeze file as {canonical name: version}."""
+    pins = {}
+    for line in _content_lines(os.path.join(DATA, *parts)):
+        name, version = line.split('==')
+        pins[canonicalize_name(name)] = version
+    return pins
 
 
 def _read(*parts):
@@ -60,11 +81,13 @@ class TestTheSplit:
         reached = declared & set(closure)
         assert (len(reached), len(declared - reached)) == (9, 7)
 
-    def test_the_constants_in_test_constraints_are_the_measured_split(self):
+    def test_the_reported_split_is_the_measured_one(self):
         declared = _declared()
         reached = declared & set(_closure())
-        assert STREETLEVEL_REACHED == reached
-        assert STREETLEVEL_UNREACHED == declared - reached
+        assert REPORTED_REACHED == reached
+        assert REPORTED_UNREACHED == declared - reached
+        report = _report()
+        assert all('`%s`' % name in report.lower() for name in REPORTED_UNREACHED)
 
     @pytest.mark.parametrize('phrase', ['16 requirements', '21 distributions', '9 are reached and 7 are not'])
     def test_the_report_quotes_it(self, phrase):
@@ -79,13 +102,18 @@ class TestBeforeAndAfter:
         assert len(_content_lines(os.path.join(DATA, '05_before_freeze.txt'))) == 65
         assert re.search(r'^== size\n4\.9G\t.*\n4963\t', text, re.M)
 
-    def test_24_after_and_the_branch_pins_are_exactly_them(self):
-        reduced = _content_lines(os.path.join(DATA, 'review', 'constraints-reduced.txt'))
+    def test_24_after_and_they_are_what_the_two_lines_installed(self):
+        """The reduced pin set is exactly what the two install lines produced with the box's pip, both in the
+        review (r4) and on the branch (rerun_box_pip22), and every pin is master's 65-line freeze verbatim."""
+        reduced = _pins('review', 'constraints-reduced.txt')
         assert len(reduced) == 24
-        assert _content_lines(os.path.join(REPO_ROOT, 'constraints.txt')) == reduced
-        ci = _content_lines(os.path.join(DATA, 'review', 'constraints-ci.txt'))
-        assert len(ci) == 15
-        assert _content_lines(os.path.join(REPO_ROOT, 'constraints-ci.txt')) == ci
+        assert _pins('review', 'r4_freeze.txt') == reduced
+        assert _pins('rerun_box_pip22_freeze.txt') == reduced
+        before = _pins('05_before_freeze.txt')
+        ci = _pins('review', 'constraints-ci.txt')
+        assert len(ci) == 15 and not set(ci) & set(reduced)
+        assert all(before.get(name) == version for name, version in {**reduced, **ci}.items())
+        assert len(before) - len(reduced) - len(ci) == 26
 
     def test_291_mb_with_pip_26_and_294_mb_with_the_boxs_pip_22(self):
         after = _read('03_after.out.txt')

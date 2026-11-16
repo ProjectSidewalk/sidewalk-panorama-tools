@@ -194,6 +194,12 @@ class TestTheCiPinFile:
         gpu = sorted(name for name in ci if _is_gpu_stack(name))
         assert not gpu, 'constraints-ci.txt pins the GPU stack: %s' % gpu
 
+    def test_it_pins_the_test_runner_and_torch(self):
+        """Why the file exists (#237 D2/D3): the gated job's pytest and its CPU torch stay at tested versions, so
+        a red run means a change in this repo, not a new release. Without these two pins both would float."""
+        missing = sorted({'pytest', 'torch'} - set(_pins(CI_CONSTRAINTS)))
+        assert not missing, 'constraints-ci.txt no longer pins %s' % missing
+
     def test_every_gated_install_line_uses_it(self):
         lines = _install_lines(GATED_WORKFLOW)
         assert lines, 'tests.yml has no pip install step'
