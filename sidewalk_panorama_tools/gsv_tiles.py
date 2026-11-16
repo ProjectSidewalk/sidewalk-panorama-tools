@@ -819,12 +819,18 @@ class PanoGoneError(ValueError):
     That is cbk's answer for a retired pano, and exactly the evidence the nightly scraper's permanent "no
     imagery" verdict rests on (two requests). fetch_equirect raises it before the frame check, which would read
     the same black tiles as "Google serves it smaller". Never retry it. Not a FrameDisagreementError.
+
+    The three new errors keep their fields in `args` and build their text in __str__, as TilePushbackError
+    does, so pickle rebuilds them intact: a consumer fetching in a process pool gets the worker's error back.
     """
 
     def __init__(self, pano_id):
-        super().__init__("pano %s is gone: the probe found tile (0, 0) exactly black on a 200 at zooms 3 and 5, "
-                         "cbk's answer for a retired pano" % (pano_id,))
+        super().__init__(pano_id)
         self.pano_id = pano_id
+
+    def __str__(self):
+        return ("pano %s is gone: the probe found tile (0, 0) exactly black on a 200 at zooms 3 and 5, "
+                "cbk's answer for a retired pano" % (self.pano_id,))
 
 
 class ZoomDisagreementError(ValueError):
@@ -836,12 +842,15 @@ class ZoomDisagreementError(ValueError):
     """
 
     def __init__(self, pano_id, zoom, probed):
-        super().__init__("pano %s: zoom %s was asked, but the probe found the zoom-5 corner tile (0, 0) exactly "
-                         "black and imagery at zoom %s; pass zoom=None (the probe's zoom) or zoom=4"
-                         % (pano_id, zoom, probed))
+        super().__init__(pano_id, zoom, probed)
         self.pano_id = pano_id
         self.zoom = zoom
         self.probed = probed
+
+    def __str__(self):
+        return ("pano %s: zoom %s was asked, but the probe found the zoom-5 corner tile (0, 0) exactly black and "
+                "imagery at zoom %s; pass zoom=None (the probe's zoom) or zoom=4"
+                % (self.pano_id, self.zoom, self.probed))
 
 
 class PhotosphereUnsupportedError(ValueError):
@@ -851,9 +860,12 @@ class PhotosphereUnsupportedError(ValueError):
     """
 
     def __init__(self, pano_id):
-        super().__init__('pano %s has the %s prefix of a GSV user photosphere, which cbk does not serve as tiles, '
-                         'so fetch_equirect does not fetch it (#223)' % (pano_id, PHOTOSPHERE_ID_PREFIX))
+        super().__init__(pano_id)
         self.pano_id = pano_id
+
+    def __str__(self):
+        return ('pano %s has the %s prefix of a GSV user photosphere, which cbk does not serve as tiles, so '
+                'fetch_equirect does not fetch it (#223)' % (self.pano_id, PHOTOSPHERE_ID_PREFIX))
 
 
 def choose_zoom(sizes, width, height):

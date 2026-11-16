@@ -27,6 +27,7 @@ import ast
 import asyncio
 import gc
 import os
+import pickle
 import threading
 import warnings
 from io import BytesIO
@@ -653,6 +654,23 @@ class TestThePublicSurface:
         error = getattr(gsv_tiles, name)
         assert issubclass(error, ValueError)
         assert not issubclass(error, gsv_tiles.FrameDisagreementError)
+
+    @pytest.mark.parametrize('error,attributes', [
+        (lambda: gsv_tiles.PanoGoneError(PANO), {'pano_id': PANO}),
+        (lambda: gsv_tiles.ZoomDisagreementError(PANO, 5, 3), {'pano_id': PANO, 'zoom': 5, 'probed': 3}),
+        (lambda: gsv_tiles.PhotosphereUnsupportedError(AF1Q_PANO), {'pano_id': AF1Q_PANO}),
+    ], ids=['gone', 'zoom', 'photosphere'])
+    def test_the_new_errors_survive_pickling(self, error, attributes):
+        """A consumer fetching in a process pool gets the worker's exception back by pickle: it must rebuild as
+        the same type, with the same attributes and the same message (unpicklable, it breaks the whole pool)."""
+        original = error()
+
+        copy = pickle.loads(pickle.dumps(original))
+
+        assert type(copy) is type(original)
+        assert {name: getattr(copy, name) for name in attributes} == attributes
+        assert str(copy) == str(original)
+        assert str(original).count(attributes['pano_id']) == 1
 
     def test_gsv_does_not_re_export_the_one_call(self):
         assert 'fetch_equirect' not in gsv.RE_EXPORTED_FROM_GSV_TILES
