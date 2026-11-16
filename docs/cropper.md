@@ -873,10 +873,11 @@ below `main()` that passes none.
   the metadata does not state them** — never inferred from the source or anything else. `copyright` is
   the field the app keeps the producer credit under (`pano_data.copyright`, which it renders beside
   `pano_data.license`), so the column keeps that name rather than being renamed on the way through.
-  **cvMetadata sends all three since SidewalkWebpage#5928**
-  ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)); a `-d` run against an
-  older deployment writes all three empty, and older CSV exports fill `source` and sometimes
-  `copyright`. None of them is a required column, on any of the three intakes.
+  **Today cvMetadata sends none of the three**
+  ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)), so a `-d` run writes
+  all three empty, and older CSV exports fill `source` and sometimes `copyright`. They fill in by
+  themselves if the endpoint starts sending them; none of them is a required column, on any of the three
+  intakes.
 * **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
   [Crop geometry](#crop-geometry)).
 * **The tilt correction is per row, too**
