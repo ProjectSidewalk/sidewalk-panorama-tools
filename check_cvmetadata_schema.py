@@ -12,7 +12,7 @@ So this lives outside tests/ and is the one thing here that talks to a deploymen
 
   python3 check_cvmetadata_schema.py --host sidewalk-sea.cs.washington.edu
 
-It exits 0 when every field CropRunner needs is served, 1 naming the ones that are not, 2 on a usage error
+It exits 0 when every field CropRunner requires or records is served, 1 naming the ones that are not, 2 on a usage error
 (no host, or a URL where a bare FQDN belongs), and 3 when the deployment could not be read at all - a check
 that did not run has not passed. Under cron, nonzero is the whole interface: mail-on-failure is the
 unattended path to a human, the same one log_analyzer uses (and on a host with no MTA it reaches the box
@@ -67,6 +67,9 @@ USER_AGENT = 'sidewalk-panorama-tools cvMetadata schema check'
 
 EXIT_OK = 0
 EXIT_MISSING_FIELDS = 1
+# Exit 1 covers both kinds of missing field - one the cropper cannot run without, and a provenance field
+# it records for every crop. The report's FAIL line says which; cron only needs "nonzero".
+#
 # argparse's own usage error, and ours. resolve_host used bare sys.exit('<message>'), which exits 1 - the
 # same code as "a required field is gone", so an operator pasting a URL into --host, or a crontab line
 # with no --host at all, read exactly like the upstream rename this exists to catch.
@@ -106,11 +109,16 @@ class Comparison(namedtuple('Comparison',
     """
 
     @property
+    def readable(self):
+        """True when the cropper can cut from this deployment at all, whatever its crops then lack."""
+        return not self.missing and not self.missing_groups
+
+    @property
     def ok(self):
-        """True only when nothing REQUIRED is absent. Note what is not consulted: `not_required`. Whether the
-        server added a field is not part of this answer, and writing it in here is the one edit that turns
-        the tripwire into the boy who cried wolf."""
-        return not self.missing and not self.missing_groups and not self.missing_provenance
+        """True only when nothing the cropper requires or records is absent. Note what is not consulted:
+        `not_required`. Whether the server added a field is not part of this answer, and writing it in here
+        is the one edit that turns the tripwire into the boy who cried wolf."""
+        return self.readable and not self.missing_provenance
 
 
 def required_fields():
@@ -134,7 +142,7 @@ def required_field_groups():
 
 def provenance_fields():
     """The fields the cropper copies into each crop's provenance row (#111), asked of CropRunner at call
-    time for required_fields()' reason. Served by cvMetadata since SidewalkWebpage#5928."""
+    time for required_fields()' reason. Served by cvMetadata since SidewalkWebpage#5990 (v11.21.0)."""
     return tuple(CropRunner.PROVENANCE_FIELDS)
 
 
@@ -148,11 +156,11 @@ def compare_served_fields(served):
     """
     served = list(served)
     present = set(served)
-    groups = required_field_groups()
-    missing = [field for field in required_fields() if field not in present]
+    required, groups, provenance = required_fields(), required_field_groups(), provenance_fields()
+    missing = [field for field in required if field not in present]
     missing_groups = [group for group in groups if not any(field in present for field in group)]
-    missing_provenance = [field for field in provenance_fields() if field not in present]
-    reads = set(required_fields()).union(provenance_fields(), *(set(group) for group in groups))
+    missing_provenance = [field for field in provenance if field not in present]
+    reads = set(required).union(provenance, *(set(group) for group in groups))
     not_required = [field for field in served if field not in reads]
     return Comparison(served=served, missing=missing, missing_groups=missing_groups,
                       missing_provenance=missing_provenance, not_required=not_required)
@@ -285,7 +293,7 @@ def report(fqdn, comparison):
     for field in comparison.missing_provenance:
         print('MISSING: CropRunner records %r for every crop and %s does not serve it, so crops cut from '
               'it carry no %s (CropRunner.PROVENANCE_FIELDS)' % (field, fqdn, field))
-    if comparison.missing or comparison.missing_groups:
+    if not comparison.readable:
         print('FAIL: the cropper cannot read this deployment. See docs/api-fields.md.')
     else:
         print('FAIL: crops cut from this deployment would lose their provenance. See docs/api-fields.md.')

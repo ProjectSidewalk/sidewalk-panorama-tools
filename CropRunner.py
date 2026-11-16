@@ -285,7 +285,7 @@ PROVENANCE_MANIFEST = 'crop_provenance.csv'
 
 # The label-row fields copied into the manifest verbatim when the row carries them, and written EMPTY when
 # it does not - never inferred from anything else (the #99 rule). cvMetadata sends all three since
-# SidewalkWebpage#5928 (docs/api-fields.md); older CSV exports carry `source` and sometimes `copyright`.
+# SidewalkWebpage#5990, v11.21.0 (docs/api-fields.md); older CSV exports carry `source` and sometimes `copyright`.
 # `copyright` is the app's own name for the producer credit (pano_data.copyright, which
 # ImageryAttribution.line reads beside pano_data.license, SidewalkWebpage#5202), so a value that arrives
 # under it needs no renaming here.
@@ -699,7 +699,7 @@ def json_to_list(jsondata, source=None):
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
     was undocumented. `source`, `copyright` and `license` were not sent then; they are since
-    SidewalkWebpage#5928, and the provenance manifest (#111) copies all three when a row carries them
+    SidewalkWebpage#5990 (v11.21.0), and the provenance manifest (#111) copies all three when a row carries them
     and writes them empty otherwise.
     """
     if not isinstance(jsondata, list):
@@ -1921,13 +1921,21 @@ def _end_of_last_line(f, size):
     return 0
 
 
+_LINE_BREAKS = re.compile(r'[\r\n]+')
+
+
 def _provenance_value(value):
     """A provenance field as the manifest writes it: the value as given, or '' when the row does not state
     one - absent, null, a blank cell, or a NaN from a caller that built its rows with pandas. Never a
-    default: an empty cell is the honest record of 'not stated'."""
+    default: an empty cell is the honest record of 'not stated'.
+
+    A line break inside the value is written as one space, the only change made to it. A row has to stay
+    one physical line: csv.writer does not quote a bare '\r', so a reader would split the row there, and the
+    torn-row repair (_end_of_last_line) cuts back to the last '\n' wherever it sits, quoted or not."""
     if _absent(value) or (isinstance(value, float) and math.isnan(value)):
         return ''
-    return str(value)
+    return _LINE_BREAKS.sub(' ', str(value))
+
 
 
 # Which recorded constants each rule actually reads, for write_rule_marker's same-id check. v3 does not

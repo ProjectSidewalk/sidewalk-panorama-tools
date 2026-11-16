@@ -870,13 +870,16 @@ below `main()` that passes none.
   rather than closed off with a newline, which inside a quoted `copyright` would swallow every later row.
   If nothing is left, the header is written again.
 * **`source`, `copyright` and `license` are copied from the label metadata verbatim, and written empty when
-  the metadata does not state them** — never inferred from the source or anything else. `copyright` is
+  the metadata does not state them** — never inferred from the source or anything else. The one change
+  made to a value is that a line break inside it is written as a space, so a row is always one line. `copyright` is
   the field the app keeps the producer credit under (`pano_data.copyright`, which it renders beside
   `pano_data.license`), so the column keeps that name rather than being renamed on the way through.
-  **cvMetadata sends all three since SidewalkWebpage#5928**
-  ([API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)); a `-d` run against an
-  older deployment writes all three empty, and older CSV exports fill `source` and sometimes
-  `copyright`. None of them is a required column, on any of the three intakes.
+  **cvMetadata sends all three since v11.21.0** (SidewalkWebpage#5990;
+  [API fields](api-fields.md#adminapilabelscvmetadata--the-croppers-label-list)); metadata captured
+  before that writes all three empty, and older CSV exports fill `source` and sometimes `copyright`.
+  None of them is a required column, on any of the three intakes. **A plain re-run never fills an empty
+  row in**: the crop on disk is what marks a label done, so it is skipped and no row is written. Only
+  `--force` re-cuts it and records the provenance the metadata now carries.
 * **`crop_rule_version` is per row**, because a store can hold more than one geometry (see
   [Crop geometry](#crop-geometry)).
 * **The tilt correction is per row, too**

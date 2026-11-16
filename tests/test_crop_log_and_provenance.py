@@ -1794,7 +1794,7 @@ INTAKES = ['csv', 'json', 'server']
 
 
 class TestTheProvenanceColumnsAreOptionalOnEveryIntake:
-    """cvMetadata sent none of source, copyright or license before SidewalkWebpage#5928 (the capture in
+    """cvMetadata sent none of source, copyright or license before SidewalkWebpage#5990 (the capture in
     samples/cvmetadata-seattle.csv has none of them), and older exports still lack them. A metadata source
     lacking them has to stay valid,
     and one carrying them has to deliver them to the manifest unchanged, on each of the three intakes."""
@@ -1819,9 +1819,20 @@ class TestTheProvenanceColumnsAreOptionalOnEveryIntake:
         assert (rows['1']['source'], rows['1']['copyright'], rows['1']['license']) == (
             'panoramax', 'Jane Doe', 'CC-BY-SA-4.0')
 
-    def test_the_current_cvmetadata_capture_crops_with_empty_provenance(self, crop_runner, tmp_path):
-        """samples/cvmetadata-seattle.csv IS the 2026-09-18 sidewalk-sea response, so this is what a -d
-        run against a deployment produces today: crops, with all three provenance fields empty."""
+    @pytest.mark.parametrize('credit', ['Jane\rDoe', 'Jane\nDoe', 'Jane\r\n\nDoe'])
+    def test_a_line_break_in_a_value_cannot_split_or_tear_its_manifest_row(self, crop_runner, credit):
+        """csv.writer leaves a bare \\r unquoted, and the torn-row repair cuts at the last \\n even inside
+        quotes, so either one in a credit would cost a crop its licence - or every later row theirs."""
+        value = crop_runner._provenance_value(credit)
+        assert value == 'Jane Doe'
+        line = crop_runner._csv_line(('1', value, 'CC-BY-SA-4.0'))
+        assert line.count(b'\n') == 1 and b'\r' not in line
+        assert list(csv.reader(io.StringIO(line.decode('utf-8'), newline=''))) == [
+            ['1', 'Jane Doe', 'CC-BY-SA-4.0']]
+
+    def test_the_pre_v11_21_cvmetadata_capture_crops_with_empty_provenance(self, crop_runner, tmp_path):
+        """samples/cvmetadata-seattle.csv IS the 2026-09-18 sidewalk-sea response, so this is what metadata
+        captured before v11.21.0 produces: crops, with all three provenance fields empty."""
         sample = os.path.join(REPO_ROOT, 'samples', 'cvmetadata-seattle.csv')
         labels = crop_runner.fetch_label_ids_csv(sample)
         assert not any(k in labels[0] for k in ('source', 'copyright', 'license'))

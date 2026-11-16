@@ -30,7 +30,7 @@ import check_cvmetadata_schema as schema  # noqa: E402
 
 
 # The shape sidewalk-sea served when measured 2026-09-18 (samples/cvmetadata-seattle.csv), plus the three
-# provenance fields SidewalkWebpage#5928 appended. Written out here rather than read from that file because
+# provenance fields SidewalkWebpage#5990 appended (v11.21.0, measured 2026-11-16). Written out here rather than read from that file because
 # this battery is about what the check does with a field set, and the file is the record of one deployment
 # on one day.
 SERVED_BEFORE_5928 = ('label_id', 'pano_id', 'label_type', 'agree_count', 'disagree_count', 'unsure_count',
@@ -40,7 +40,7 @@ SERVED_BEFORE_5928 = ('label_id', 'pano_id', 'label_type', 'agree_count', 'disag
 SERVED_TODAY = SERVED_BEFORE_5928 + ('source', 'copyright', 'license')
 
 # What the same endpoint served until SidewalkWebpage#4103 (released 2026-09-02): an integer id, not a name.
-SERVED_BEFORE_4103 = tuple('label_type_id' if f == 'label_type' else f for f in SERVED_TODAY)
+SERVED_BEFORE_4103 = tuple('label_type_id' if f == 'label_type' else f for f in SERVED_BEFORE_5928)
 
 
 def payload(fields, count=2):
@@ -88,12 +88,13 @@ class TestTheVerdict:
         assert result.missing_groups == []
         assert result.ok
 
-    def test_the_pre_4103_shape_also_passes(self):
+    def test_the_pre_4103_shape_is_still_readable(self):
         """`label_type_id` is still accepted - every archived export carries it (#123), so an intake that
-        refused it would fail on the one shape half the stores on disk were cut from."""
+        refused it would fail on the one shape half the stores on disk were cut from. Readable, not ok:
+        a deployment that old serves no provenance either."""
         result = schema.compare_served_fields(SERVED_BEFORE_4103)
-        assert result.ok
-        assert result.missing_groups == []
+        assert result.readable
+        assert result.missing == [] and result.missing_groups == []
 
     def test_a_required_field_that_stopped_being_served_fails_and_is_named(self):
         served = tuple(f for f in SERVED_TODAY if f != 'pano_x')
@@ -145,6 +146,7 @@ class TestTheVerdict:
         assert not result.ok
         assert result.missing_provenance == ['source', 'copyright', 'license']
         assert result.missing == [] and result.missing_groups == []
+        assert result.readable
 
     def test_the_provenance_fields_are_not_listed_as_beyond_what_is_required(self):
         result = schema.compare_served_fields(SERVED_TODAY)
@@ -344,6 +346,23 @@ class TestTheCommandLine:
         code = schema.main(['--host', 'sidewalk-sea.cs.washington.edu'])
         assert code == schema.EXIT_MISSING_FIELDS
         assert 'pano_y' in capsys.readouterr().out
+
+    def test_a_missing_provenance_field_exits_with_the_missing_field_code(self, served, capsys):
+        """The report has to say the cropper still runs: 'cannot read this deployment' would send the
+        reader after a rename that did not happen."""
+        served['fields'] = [f for f in SERVED_TODAY if f != 'license']
+        code = schema.main(['--host', 'sidewalk-sea.cs.washington.edu'])
+        assert code == schema.EXIT_MISSING_FIELDS
+        out = capsys.readouterr().out
+        assert "MISSING: CropRunner records 'license'" in out
+        assert 'would lose their provenance' in out and 'cannot read this deployment' not in out
+
+    def test_a_missing_required_field_outranks_missing_provenance_in_the_verdict(self, served, capsys):
+        served['fields'] = [f for f in SERVED_BEFORE_5928 if f != 'pano_y']
+        assert schema.main(['--host', 'sidewalk-sea.cs.washington.edu']) == schema.EXIT_MISSING_FIELDS
+        out = capsys.readouterr().out
+        assert 'cannot read this deployment' in out and 'would lose their provenance' not in out
+        assert "records 'source'" in out
 
     def test_an_added_field_still_exits_zero(self, served, capsys):
         served['fields'] = list(SERVED_TODAY) + ['label_severity']
@@ -569,7 +588,7 @@ class TestTheTwoChannels:
                                             + CropRunner.PROVENANCE_FIELDS)
         assert schema.report('sidewalk-sea.cs.washington.edu', lean) == schema.EXIT_OK
         out = capsys.readouterr().out
-        assert 'does not read' not in out
+        assert 'beyond what CropRunner requires' not in out
         assert 'OK:' in out
 
     def test_the_detail_can_be_written_to_a_file(self, tmp_path):

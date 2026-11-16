@@ -50,11 +50,14 @@ chicago-il's list (36 and 64 for the two forms measured), which the downloader f
 
 You won't need most of this in your work, but it's all here for reference. Everything through
 `unsure_count` might be useful; then there are a few duplicates from the endpoint above; then everything
-from `canvas_width` on probably doesn't matter for you.
+from `canvas_width` through `zoom` probably doesn't matter for you. The last three do if you redistribute
+crops: they say whose imagery a crop is and under which licence.
 
 The table below is the response measured against `sidewalk-sea` on 2026-09-18, and
 `samples/cvmetadata-seattle.csv` is that response — the field names are transcribed from a capture rather
 than from memory, because the four this table used to carry were each wrong in a different way (#123).
+The last three rows are newer than that capture: measured 2026-11-16 from the first records served by
+`sidewalk-sea` (GSV), `sidewalk-richmond` (Mapillary) and `sidewalk-bayonne` (Panoramax).
 
 | Attribute | Definition |
 |---|---|
@@ -80,13 +83,14 @@ than from memory, because the four this table used to carry were each wrong in a
 | `zoom` | The zoom level in the GSV interface when the user placed the label |
 | `source` | The imagery provider the pano came from (`gsv`, `mapillary`, `panoramax`, `infra3d`) [same as `/adminapi/panos`] |
 | `copyright` | Who to credit for the pano: the provider's own copyright string for GSV and infra3d, the contributor's bare name for Mapillary and Panoramax. Null when none was recorded |
-| `license` | The licence the imagery is shared under, as an identifier: `CC-BY-SA-4.0` on every Mapillary row, the one recorded per picture for Panoramax (`CC-BY-SA-4.0`, `CC-BY-4.0`, `etalab-2.0`), null for the other providers |
+| `license` | The licence the imagery is shared under, as an identifier: `CC-BY-SA-4.0` on every Mapillary row; for Panoramax whatever identifier the instance recorded for the picture (`CC-BY-SA-4.0`, `CC-BY-4.0` and `etalab-2.0` are the known ones, not a closed set), and null on a pano recorded before SidewalkWebpage#5202, which means *unknown*, not unlicensed; null for the other providers |
 
-**`source`, `copyright` and `license` are served since
-[SidewalkWebpage#5928](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5928)** (merged
-2026-11-16). The three rows above are transcribed from that change, not yet from a capture of a live
-deployment. The cropper copies all three into its per-crop provenance manifest when a row carries them
-and writes them empty when it does not, so a `-d` run against a deployment older than that records
+**`source`, `copyright` and `license` are served since v11.21.0**
+([SidewalkWebpage#5990](https://github.com/ProjectSidewalk/SidewalkWebpage/pull/5990), released
+2026-11-16). Measured that day: `gsv` / `© 2019 Google` / null on `sidewalk-sea`, `mapillary` / a bare
+contributor name / `CC-BY-SA-4.0` on `sidewalk-richmond`, `panoramax` / `sig_bayonne` / `etalab-2.0` on
+`sidewalk-bayonne`. The cropper copies all three into its per-crop provenance manifest when a row
+carries them and writes them empty when it does not, so metadata captured before that release records
 none of them — see
 [Cropper → The provenance manifest](cropper.md#the-provenance-manifest-crop_provenancecsv).
 
@@ -158,7 +162,8 @@ Three things about it are load-bearing:
 
 * **It reads the required list off `CropRunner`** — `REQUIRED_LABEL_COLUMNS`, `LABEL_TYPE_COLUMNS` and
   `PROVENANCE_FIELDS`, asked at call time — rather than restating it. Losing a provenance field stops no
-  crop, but every crop then goes out with no source, credit or licence, so it fails the check too. Two copies of a field list drift silently, which is the bug being
+  crop, but every crop then goes out with no source, credit or licence, so it fails the check too, with
+  the same exit `1` and a FAIL line that says the cropper still runs. Two copies of a field list drift silently, which is the bug being
   fixed, not a shape to reproduce one level out.
 * **A field the server *adds* is not a failure.** Servers add fields, and a check that cried wolf on that
   would be muted within a month; a muted tripwire is worse than none. New fields are printed, because an
@@ -172,7 +177,9 @@ What it does **not** check, deliberately:
 * **The fields with a documented fallback.** `pano_width`/`pano_height` are read through `_metadata_dims`,
   which falls back to the older `width`/`height` and then to the image on disk, so their absence degrades
   the dims preflight rather than stopping the cropper. Adding them would mean writing a second field list
-  that `CropRunner` has no constant for — the drift this check exists to prevent.
+  that `CropRunner` has no constant for — the drift this check exists to prevent. (The provenance fields
+  also only degrade the output, but they have a constant, `PROVENANCE_FIELDS`, and nothing downstream
+  notices a crop without a licence, so they are checked.)
 * **Values — only names.** A deployment serving `pano_x: null` on every row passes this check while the
   cropper errors on every label. The check answers "are the fields still called what the cropper calls
   them", which is the failure that actually happened; it is not a guarantee that the cropper will succeed.
@@ -187,7 +194,8 @@ Be precise about what that does *not* buy, because the obvious reading is wrong.
 every broken cron line identifiable: a failed `cd` exits **1** (the shell's code, not this script's), a
 missing interpreter exits **127**, and CPython's own "can't open file" is itself **2**. What keeps the
 `cd` case from arising is the absolute-interpreter form above, not the exit code. Read the codes as:
-`1` the schema moved *or* the shell failed before the script ran, `2` the script was invoked wrongly,
+`1` the schema moved (a field the cropper requires or records is gone) *or* the shell failed before the
+script ran, `2` the script was invoked wrongly,
 `3` the deployment could not be read, `127` the interpreter path is wrong.
 
 ## Label type IDs

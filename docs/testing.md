@@ -150,7 +150,7 @@ pytest's default on one is to run nothing else; the run still exits nonzero, wit
 capture scripts that produced `tests/fixtures/` remain runnable on demand.
 
 That is also why the one check of a *live* contract is not a test. `check_cvmetadata_schema.py` asks a
-deployment which fields it serves and compares them against what `CropRunner` requires; it lives outside
+deployment which fields it serves and compares them against what `CropRunner` requires and records; it lives outside
 `tests/` precisely so the suite above stays offline. The suite cannot fail on a contract it never touches,
 and for 16 days in September 2026 it did not
 ([#135](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/135)).
