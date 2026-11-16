@@ -807,8 +807,9 @@ The tile mechanics - the fan-out, the two-tile probe, the frame check, the stitc
 of Google's refusals - are the installable module `sidewalk_panorama_tools.gsv_tiles`
 ([#222](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/222) step 2), which a project
 outside this repo can pin and compose itself
-([Fetching a GSV panorama](geometry.md#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles)). What
-follows about verdicts, refusals and the latch is this scraper's policy around it.
+([Fetching a GSV panorama](geometry.md#fetching-a-gsv-panorama--sidewalk_panorama_toolsgsv_tiles)); since 1.3.0
+a consumer has the one call `fetch_equirect` there, while this scraper keeps composing the pieces with its
+ledgers. What follows about verdicts, refusals and the latch is this scraper's policy around it.
 
 If photometa is unavailable, or says the pano is gone, the older two-tile probe picks the zoom instead (a
 fully black tile at both zoom 5 and zoom 3, **on a 200**, means there is no imagery — still the only evidence

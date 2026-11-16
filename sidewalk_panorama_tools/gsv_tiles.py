@@ -12,6 +12,16 @@ Usage (docs/geometry.md, "Fetching a GSV panorama")::
 
     from sidewalk_panorama_tools import gsv_tiles
 
+    stitched = gsv_tiles.fetch_equirect(pano_id, width, height)          # since 1.3.0 (#236)
+    stitched.image                                   # a PIL RGB image at exactly (width, height)
+
+    stitched = await gsv_tiles.fetch_equirect_async(pano_id, width, height)   # inside an event loop
+
+:func:`fetch_equirect` probes, checks the frame and fetches the tiles, refusing a retired pano
+(:class:`PanoGoneError`), a frame Google serves larger or smaller (:class:`FrameDisagreementError`) and a
+photosphere id (:class:`PhotosphereUnsupportedError`). The pieces it runs, for a caller that composes them itself
+(the nightly scraper does, with photometa and its ledgers)::
+
     zoom = gsv_tiles.probe_zoom(pano_id)              # 5, 3, or None: no imagery at either (the pano is gone)
     if zoom is not None and gsv_tiles.frame_covers_pano(pano_id, width, height, zoom):
         stitched = gsv_tiles.fetch_pano_image(pano_id, width, height, zoom)
@@ -34,6 +44,7 @@ import collections
 import contextvars
 import logging
 import math
+import operator
 import random
 import re
 import time
@@ -53,11 +64,13 @@ except ImportError as e:
 
 from . import store
 
-__all__ = ['CBK_BASE_URL', 'CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS', 'PROXIES',
+__all__ = ['CBK_BASE_URL', 'CONCURRENCY', 'DEFAULT_HEADERS', 'FrameDisagreementError', 'HEADERS',
+           'PHOTOSPHERE_ID_PREFIX', 'PROXIES', 'PanoGoneError', 'PhotosphereUnsupportedError',
            'STITCH_MAX_BLACK_FRACTION', 'StitchedPano', 'StitchedPanoMostlyBlackError', 'TILE_MAX_TRIES',
            'TILE_PUSHBACK_STATUSES', 'TILE_RETRY_MAX_SECONDS', 'TILE_RETRY_MAX_WAIT', 'TILE_SIZE',
-           'TilePushbackError', 'choose_zoom', 'configure', 'fetch_pano_image', 'frame_covers_pano',
-           'probe_zoom', 'pushback_reason', 'tile_url']
+           'TilePushbackError', 'ZoomDisagreementError', 'choose_zoom', 'configure', 'fetch_equirect',
+           'fetch_equirect_async', 'fetch_pano_image', 'frame_covers_pano', 'is_photosphere_id', 'probe_zoom',
+           'pushback_reason', 'tile_url']
 
 
 # --- settings: read at call time; change them with configure() ------------------------------------------------
@@ -337,6 +350,15 @@ def tile_url(pano_id, zoom, x, y):
     '&zoom=5&x=1&y=2&panoid=abc'
     """
     return f'{CBK_BASE_URL}&zoom={zoom}&x={x}&y={y}&panoid={pano_id}'
+
+
+# Moved from downloaders/gsv.py (#236), which re-exports both; the decode and the photo-host fetch stay there.
+PHOTOSPHERE_ID_PREFIX = 'CAoS'
+
+
+def is_photosphere_id(pano_id):
+    """Whether `pano_id` is a GSV user photosphere (#223): the `CAoS` prefix, nothing more."""
+    return pano_id.startswith(PHOTOSPHERE_ID_PREFIX)
 
 
 # Tile failures worth retrying. aiohttp.web.HTTPServerError used to head this tuple, but it is a SERVER-side
@@ -787,8 +809,63 @@ class FrameDisagreementError(Exception):
     retried next run (its reasons are beside the re-export in downloaders/gsv.py); refetch_panos returns it
     as its unledgered 'frame_shrank'. Never store a frame refused with it. One class across the repo, because
     DownloadRunner counts refusals by isinstance (#207): an error that is not a frame refusal must not
-    subclass it.
+    subclass it. fetch_equirect raises it for the "larger" case too, because a consumer has no ledger for it.
     """
+
+
+class PanoGoneError(ValueError):
+    """The pano is gone: the probe found tile (0, 0) exactly black, on a 200, at zoom 3 and at zoom 5.
+
+    That is cbk's answer for a retired pano, and exactly the evidence the nightly scraper's permanent "no
+    imagery" verdict rests on (two requests). fetch_equirect raises it before the frame check, which would read
+    the same black tiles as "Google serves it smaller". Never retry it. Not a FrameDisagreementError.
+
+    The three new errors keep their fields in `args` and build their text in __str__, as TilePushbackError
+    does, so pickle rebuilds them intact: a consumer fetching in a process pool gets the worker's error back.
+    """
+
+    def __init__(self, pano_id):
+        super().__init__(pano_id)
+        self.pano_id = pano_id
+
+    def __str__(self):
+        return ("pano %s is gone: the probe found tile (0, 0) exactly black on a 200 at zooms 3 and 5, "
+                "cbk's answer for a retired pano" % (self.pano_id,))
+
+
+class ZoomDisagreementError(ValueError):
+    """zoom=5 was asked, but the probe found the zoom-5 corner tile exactly black and imagery at zoom 3.
+
+    The probe reads tile (0, 0), the zenith corner, so this is what was observed about that one tile, not proof
+    that zoom 5 does not exist. A five-level pano (native zoom 4) is answered the same way, which is why an
+    explicit zoom 4 is never refused here. Pass zoom=None (the probe's zoom) or zoom=4.
+    """
+
+    def __init__(self, pano_id, zoom, probed):
+        super().__init__(pano_id, zoom, probed)
+        self.pano_id = pano_id
+        self.zoom = zoom
+        self.probed = probed
+
+    def __str__(self):
+        return ("pano %s: zoom %s was asked, but the probe found the zoom-5 corner tile (0, 0) exactly black and "
+                "imagery at zoom %s; pass zoom=None (the probe's zoom) or zoom=4"
+                % (self.pano_id, self.zoom, self.probed))
+
+
+class PhotosphereUnsupportedError(ValueError):
+    """The pano id has the `CAoS` prefix of a GSV user photosphere, which cbk does not serve as tiles (#223).
+
+    fetch_equirect refuses every such id before any request.
+    """
+
+    def __init__(self, pano_id):
+        super().__init__(pano_id)
+        self.pano_id = pano_id
+
+    def __str__(self):
+        return ('pano %s has the %s prefix of a GSV user photosphere, which cbk does not serve as tiles, so '
+                'fetch_equirect does not fetch it (#223)' % (self.pano_id, PHOTOSPHERE_ID_PREFIX))
 
 
 def choose_zoom(sizes, width, height):
@@ -901,7 +978,8 @@ def frame_covers_pano(pano_id, width, height, zoom):
     thing that catches it.
 
     **Callers must ask the probe first.** CBK answers a retired pano with a black 200 at every tile, which
-    check 3 reads as "smaller". Both callers run this only after the probe found imagery at (0, 0), so a
+    check 3 reads as "smaller". Every caller (the nightly, refetch_panos.py, fetch_equirect) runs this only
+    after the probe found imagery at (0, 0), so a
     retired pano gets the probe's permanent None and never reaches here; asked first, every retired pano
     would become a frame disagreement retried every night.
 
@@ -950,8 +1028,6 @@ def fetch_pano_image(pano_id, width, height, zoom):
 
     @return StitchedPano(image, undersized_tiles, upscaled).
     """
-    final_im_dimension = (width, height)
-
     tiles = _generate_tile_urls(pano_id, width, height, zoom)
     # The fan-out's shared state (#162) - see _TILE_FANOUT for why it rides in a context variable. Reset in a
     # finally, so no later fan-out in this thread can inherit a refusal it did not see.
@@ -961,6 +1037,40 @@ def fetch_pano_image(pano_id, width, height, zoom):
         results = asyncio.run(_download_tiles(tiles))
     finally:
         _TILE_FANOUT.reset(token)
+    return _stitch_fan_out(pano_id, width, height, zoom, tiles, results, fanout)
+
+
+async def _fetch_pano_image_async(pano_id, width, height, zoom):
+    """fetch_pano_image on the caller's event loop: the same tiles, fan-out state and stitch (#236).
+
+    Same contract as fetch_pano_image - never writes, raises for everything transient, returns
+    StitchedPano(image, undersized_tiles, upscaled) - but awaits the fan-out on the running loop instead of
+    calling asyncio.run, and runs the stitch (CPU work) in a worker thread with asyncio.to_thread. _TILE_FANOUT
+    is set and reset inside the awaiting task, so concurrent fetches in separate tasks keep separate fan-outs:
+    a refusal in one cannot abandon another's tiles.
+
+    Private: the probe and the frame check have no async form, so an async consumer wants the whole composition,
+    fetch_equirect_async, not this piece of it.
+    """
+    tiles = _generate_tile_urls(pano_id, width, height, zoom)
+    fanout = _TileFanOut()
+    token = _TILE_FANOUT.set(fanout)
+    try:
+        results = await _download_tiles(tiles)
+    finally:
+        _TILE_FANOUT.reset(token)
+    return await asyncio.to_thread(_stitch_fan_out, pano_id, width, height, zoom, tiles, results, fanout)
+
+
+def _stitch_fan_out(pano_id, width, height, zoom, tiles, results, fanout):
+    """Turn one fan-out's results into a StitchedPano, or raise: the one stitch path (#236).
+
+    Shared by fetch_pano_image and _fetch_pano_image_async, so the partition, the refusal counts, the failure
+    line, the black guard and the upscaled flag cannot drift between them (tests/test_gsv_equirect.py fails a
+    second stitch path). Extracted verbatim from fetch_pano_image.
+    """
+    final_im_dimension = (width, height)
+
     ok, failed = _partition_tile_results(tiles, results)
     if failed:
         refusals = [error for _cell, error in failed if isinstance(error, TilePushbackError)]
@@ -1007,6 +1117,182 @@ def fetch_pano_image(pano_id, width, height, zoom):
         logging.info("IMAGEDOWNLOAD: pano %s: only zoom %s was available for a %dx%d frame; stitched %dx%d "
                      "and upscaled", pano_id, zoom, width, height, *zoom_dims)
     return StitchedPano(image, degraded, upscaled)
+
+
+# --- the one call (#236) --------------------------------------------------------------------------------------
+
+# The zooms fetch_equirect accepts explicitly. 0-2 are refused: no frame in the store is that small, and
+# frame_covers_pano has never been measured there.
+_EQUIRECT_ZOOMS = (3, 4, 5)
+
+# A GSV pano id is base64url. The id is pasted into a URL by tile_url, so `&`, `#`, `/`, `?` or a space would
+# ask cbk a different question, and a black answer to the wrong question would read as "gone".
+_PANO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
+
+# The widest frame fetch_equirect accepts: twice the largest GSV frame (16384). A wider one is a caller's bug,
+# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent. The cap
+# limits memory without making it small: a frame 2x, 4x or 8x the pano's own size passes the frame check (the
+# same grid at a lower level) and, with no max_width, is upscaled to the whole frame after the fan-out - 2 GiB
+# at the cap, where the first cap of 2**17 allowed 32 GiB (docs/geometry.md, "What the frame check cannot see").
+_MAX_FRAME_WIDTH = 2 ** 15
+
+
+def _whole_number(value, name, minimum, maximum=None):
+    """`value` as an int of at least `minimum` (and at most `maximum`), or ValueError naming the argument.
+
+    Anything operator.index accepts (int, numpy.int64, ...) passes; bool and numpy.bool_ are refused although
+    both are integers to Python, and so are floats (4.0 included), strings and None.
+
+    >>> _whole_number(4, 'zoom', 0)
+    4
+    >>> _whole_number(True, 'width', 1)
+    Traceback (most recent call last):
+    ...
+    ValueError: width must be a whole number of at least 1, not True
+    """
+    bounds = 'of at least %d' % (minimum,) if maximum is None else 'from %d to %d' % (minimum, maximum)
+    message = '%s must be a whole number %s, not %r' % (name, bounds, value)
+    if isinstance(value, bool) or getattr(getattr(value, 'dtype', None), 'kind', None) == 'b':
+        raise ValueError(message)
+    try:
+        number = operator.index(value)
+    except TypeError:
+        raise ValueError(message) from None
+    if number < minimum or (maximum is not None and number > maximum):
+        raise ValueError(message)
+    return number
+
+
+async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=None):
+    """Fetch one GSV panorama as an equirectangular image: probe, frame check, tile fan-out, stitch (#236).
+
+    The awaitable form, for code already inside an event loop (an async web handler); fetch_equirect is the
+    same call for synchronous code. Usage::
+
+        from sidewalk_panorama_tools import gsv_tiles
+
+        stitched = await gsv_tiles.fetch_equirect_async(pano_id, 16384, 8192)
+        stitched.image                    # a PIL RGB image at exactly (16384, 8192)
+        numpy.asarray(stitched.image)     # H x W x 3, uint8, RGB
+
+    pano_id   - a GSV pano id (A-Z, a-z, 0-9, _ and -). A `CAoS` id is a user photosphere: refused.
+    width, height - the pano's full frame as the Project Sidewalk app records it; required, because the probe
+                returns only a zoom. Whole numbers (numpy integers are fine), exactly 2:1 as every GSV frame
+                is, and width at most 2**15. The frame check compares TILE GRIDS (512 px at the fetched zoom):
+                a 2:1 frame less than one tile smaller than the pano's true frame passes it and comes back as
+                the pano's top-left corner at that size, with nothing to show it (16000x8000 of a 16384x8192
+                pano drops its right 384 columns and bottom 192 rows). Only photometa can catch that.
+    zoom      - None (the default) fetches at the probe's answer, 5 or 3. An explicit 3, 4 or 5 is still
+                probed, and refused only when it is 5 and the probe saw imagery at zoom 3 alone
+                (ZoomDisagreementError); any other explicit zoom is left to the frame check. Pass 4 for a
+                five-level pano (5376x2688), which the probe can only call 3.
+    max_width - None, or a whole number of at least 1. Below `width`, the tiles are stitched at the zoom's own
+                frame (the same grid) and resampled ONCE with LANCZOS to max_width wide and the nearest whole
+                pixel high; at or above `width`, nothing is resized.
+
+    Returns StitchedPano(image, undersized_tiles, upscaled), the type fetch_pano_image returns. `upscaled` is
+    whether the returned image holds less imagery than its size says: the zoom fetched is narrower than the
+    returned width. It never writes a file and never retries anything it raises.
+
+    Cost, in URLs asked before urllib3's retries (probe and frame check) and backoff's (tiles): 2 for the probe,
+    3 for the frame check, then the grid - 517 for a 16384x8192 frame at zoom 5, 37 at zoom 3. No photometa.
+
+    Raises, in the order they can happen:
+      ValueError - a bad argument, a frame that is not 2:1 included; zero requests.
+      PhotosphereUnsupportedError - a `CAoS` id; zero requests.
+      PanoGoneError - two exactly black 200s from the probe, cbk's answer for a retired pano; 2 requests.
+      ZoomDisagreementError - zoom=5 against a probe that saw imagery only at zoom 3; 2 requests.
+      FrameDisagreementError - Google serves the pano larger (3-4 requests) or smaller (5) than the frame.
+      requests.HTTPError, requests.exceptions.RetryError - a probe or frame-check tile was refused or failed;
+          pushback_reason(exc) says whether it was Google refusing this host.
+      TilePushbackError - a tile was refused (429, 403, interstitial); the rest of the grid is abandoned.
+      aiohttp.ClientError, asyncio.TimeoutError, StitchedPanoMostlyBlackError - transient; try another day.
+      PIL.UnidentifiedImageError (an OSError) - a 200 whose body is not an image, from the probe, the frame
+          check or a tile; transient, as in the nightly.
+
+    The probe, the frame check and the stitch run in a worker thread (asyncio.to_thread), so they use the loop's
+    DEFAULT EXECUTOR (min(32, CPUs + 4) threads), which asyncio also uses for DNS lookups (aiohttp's default
+    resolver) and every other to_thread in the application. A probe or frame-check thread is held for as long
+    as cbk takes: 30 s per request at most, and a 429 or 5xx is retried up to 5 times with backoff, so on a
+    slow or refusing cbk one call can hold a thread for minutes. N concurrent calls hold up to N threads; a
+    host application should cap concurrent calls (an asyncio.Semaphore) well below the executor's size. The
+    fan-out runs on the caller's loop, CONCURRENCY tiles in flight per call. Cancelling the awaiting task
+    cancels the tile tasks and closes the aiohttp session; a probe, frame check or stitch already running in
+    its thread finishes in the background.
+    """
+    if not isinstance(pano_id, str) or not pano_id:
+        raise ValueError('pano_id must be a non-empty str, not %r' % (pano_id,))
+    width = _whole_number(width, 'width', 1, _MAX_FRAME_WIDTH)
+    height = _whole_number(height, 'height', 1)
+    if width != 2 * height:
+        # Every GSV frame is 2:1. The frame check compares tile grids, so a frame inside the pano's own grid
+        # passes it, and one that is not 2:1 would come back as a crop of the pano (#236 review, finding 4).
+        raise ValueError('the frame must be 2:1 (width == 2 * height), as every GSV frame is, not %dx%d'
+                         % (width, height))
+    if zoom is not None:
+        asked = zoom
+        try:
+            zoom = _whole_number(zoom, 'zoom', 0)
+        except ValueError:
+            zoom = None
+        if zoom not in _EQUIRECT_ZOOMS:
+            raise ValueError('zoom must be None, 3, 4 or 5, not %r' % (asked,))
+    if max_width is not None:
+        max_width = _whole_number(max_width, 'max_width', 1)
+    if is_photosphere_id(pano_id):
+        raise PhotosphereUnsupportedError(pano_id)
+    if not _PANO_ID_CHARS.fullmatch(pano_id):
+        raise ValueError('pano_id must be a GSV pano id (A-Z, a-z, 0-9, _ and -), not %r' % (pano_id,))
+
+    # The probe first, always: it is the only evidence that a pano is gone, and frame_covers_pano reads a
+    # retired pano's black tiles as "served smaller".
+    probed = await asyncio.to_thread(_probe_zoom, pano_id)
+    if probed is None:
+        raise PanoGoneError(pano_id)
+    if zoom == 5 and probed == 3:
+        raise ZoomDisagreementError(pano_id, zoom, probed)
+    use_zoom = probed if zoom is None else zoom
+    if not await asyncio.to_thread(frame_covers_pano, pano_id, width, height, use_zoom):
+        raise FrameDisagreementError('frame disagreement: the frame is %dx%d but a tile past its grid at zoom %d '
+                                     'has imagery, so Google serves this pano larger' % (width, height, use_zoom))
+    if max_width is None or max_width >= width:
+        return await _fetch_pano_image_async(pano_id, width, height, use_zoom)
+    # The zoom's own frame: the same grid (test_the_zoom_native_frame_has_the_frames_grid), stitched without
+    # upscaling, so the output below is one resample of the imagery that was fetched.
+    native_w, native_h = _dims_at_zoom(width, height, use_zoom)
+    stitched = await _fetch_pano_image_async(pano_id, native_w, native_h, use_zoom)
+    size = (max_width, max(1, int(round(height * max_width / float(width)))))
+    image = stitched.image
+    if image.size != size:
+        image = await asyncio.to_thread(image.resize, size, Image.LANCZOS)
+    return StitchedPano(image, stitched.undersized_tiles, native_w < max_width)
+
+
+def fetch_equirect(pano_id, width, height, *, zoom=None, max_width=None):
+    """fetch_equirect_async for synchronous code: the same arguments, return value and exceptions (#236).
+
+    Usage::
+
+        from sidewalk_panorama_tools import gsv_tiles
+
+        stitched = gsv_tiles.fetch_equirect(pano_id, 16384, 8192, max_width=8192)
+        stitched.image.size               # (8192, 4096)
+
+    It runs the coroutine with asyncio.run, so it cannot run while an event loop is running in this thread
+    (inside an async handler): there it raises RuntimeError, before any request, naming fetch_equirect_async.
+    asyncio.run waits for the worker thread on the way out, so a Ctrl-C during the probe or the frame check
+    reaches the caller only when that thread's request returns (bounded by the timeouts above).
+    """
+    # Checked before the coroutine exists, so a refusal here leaves no never-awaited coroutine behind. The run is
+    # outside the except clause, or every exception it raised would be chained to "no running event loop".
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError('fetch_equirect() cannot run while an event loop is running in this thread; '
+                           'use `await fetch_equirect_async(...)` there')
+    return asyncio.run(fetch_equirect_async(pano_id, width, height, zoom=zoom, max_width=max_width))
 
 
 # urllib3's ResponseError.SPECIFIC_ERROR, 'too many {status_code} error responses', as it reads inside the

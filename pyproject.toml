@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sidewalk-panorama-tools"
-version = "1.2.0"
+version = "1.3.0"
 description = "Project Sidewalk panorama geometry: perspective views of a label from an equirectangular pano, with rig-tilt correction; the pano store layout, the front end's click math, label vote arithmetic, and the GSV tile fetcher ([gsv] extra)."
 readme = "docs/geometry.md"
 requires-python = ">=3.9"

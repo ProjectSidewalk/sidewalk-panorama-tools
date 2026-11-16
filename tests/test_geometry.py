@@ -84,6 +84,13 @@ def test_the_version_matches_pyproject():
     assert re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', declared), declared
 
 
+def test_the_current_version_has_a_release_note():
+    """A release says what a re-pinning consumer will see change, in docs/geometry.md "Releases" (#236)."""
+    with open(os.path.join(REPO_ROOT, 'docs', 'geometry.md'), encoding='utf-8') as f:
+        page = f.read()
+    assert '* **%s**' % sidewalk_panorama_tools.__version__ in page, sidewalk_panorama_tools.__version__
+
+
 def test_pose_is_pano_pose_not_a_copy():
     """One definition: every name the package exports IS pano_pose's object, and every public pano_pose name
     is exported, so a function added there cannot go missing here."""

@@ -566,8 +566,9 @@ def mis_targeted_patches():
 
     * the package looks the name up itself, so a patch belongs on gsv_tiles, and gsv's binding must be
       untouched - a test that rebinds it on gsv changed nothing the code reads; except
-    * gsv.GSV_COMPOSED_SEAMS, which gsv's own composition and refetch_panos look up on gsv and the package
-      never calls - so those are patched on gsv, and the package's object must be untouched.
+    * gsv.GSV_COMPOSED_SEAMS, which gsv's own composition and refetch_panos look up on gsv - so those are
+      patched on gsv, and the package's object must be untouched. (The package's own fetch_equirect calls
+      frame_covers_pano since #236; its tests stub the requests beneath it, never the seam.)
 
     A state check, run after every test's call phase and before teardown undoes the patches
     (pytest_runtest_call below), so it sees every spelling - gsv, downloaders.gsv, self.gsv, DownloadRunner.gsv,
@@ -580,8 +581,9 @@ def mis_targeted_patches():
     for name, original in _ORIGINALS.items():
         if name in gsv.GSV_COMPOSED_SEAMS:
             if getattr(gsv_tiles, name) is not original:
-                problems.append('gsv_tiles.%s was patched, but nothing in the package calls it: downloaders.gsv '
-                                'composes it by its own binding, so patch downloaders.gsv.%s' % (name, name))
+                problems.append('gsv_tiles.%s was patched, but downloaders.gsv composes it by its own binding: '
+                                'patch downloaders.gsv.%s (a test of fetch_equirect stubs the requests beneath '
+                                'it, never the seam)' % (name, name))
         elif getattr(gsv, name) is not original:
             problems.append('downloaders.gsv.%s was patched, but the code reads it on the package: patch '
                             'sidewalk_panorama_tools.gsv_tiles.%s instead' % (name, name))
