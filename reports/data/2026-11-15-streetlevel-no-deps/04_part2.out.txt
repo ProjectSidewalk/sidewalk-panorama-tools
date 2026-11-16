@@ -1,0 +1,114 @@
+2026-11-15T20:05:16Z
+== streetlevel 0.12.11: streetlevel-0.12.11-py3-none-any.whl sha256 811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4
+-- depth.py parse_header
+32:def parse_header(depth_map):
+33-    return {
+34-        "header_size": depth_map[0],
+35-        "number_of_planes": get_uint16(depth_map, 1),
+36-        "width": get_uint16(depth_map, 3),
+37-        "height": get_uint16(depth_map, 5),
+38-        "offset": get_uint16(depth_map, 7),
+39-    }
+-- Requires-Dist / Requires-Python
+Version: 0.12.11
+Requires-Python: >=3.8
+Requires-Dist: aiohttp
+Requires-Dist: bd09convertor
+Requires-Dist: coordinatesconverter
+Requires-Dist: cython
+Requires-Dist: numpy
+Requires-Dist: pillow
+Requires-Dist: protobuf>4
+Requires-Dist: pycryptodome
+Requires-Dist: pyequilib
+Requires-Dist: pyexiv2
+Requires-Dist: pyfrpc==0.2.13
+Requires-Dist: pyproj
+Requires-Dist: pytest
+Requires-Dist: pytest-asyncio
+Requires-Dist: requests
+Requires-Dist: scipy
+-- api.find_panorama_by_id signature and imports
+1:import aiohttp
+2:from typing import Tuple
+3:from .protobuf import *
+4:from .util import is_third_party_panoid
+5:from ..util import get_json, get_json_async
+86:def build_find_panorama_by_id_request_url(panoid, download_depth, locale):
+190:def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+== streetlevel 0.12.13: streetlevel-0.12.13-py3-none-any.whl sha256 60fe28fec2ce73e93eba7fbdbea1bac58173e4ba8661fda2127846eb989a682e
+-- depth.py parse_header
+32:def parse_header(depth_map):
+33-    return {
+34-        "header_size": depth_map[0],
+35-        "number_of_planes": get_uint16(depth_map, 1),
+36-        "width": get_uint16(depth_map, 3),
+37-        "height": get_uint16(depth_map, 5),
+38-        "offset": get_uint16(depth_map, 7),
+39-    }
+-- Requires-Dist / Requires-Python
+Version: 0.12.13
+Requires-Python: >=3.8
+Requires-Dist: aiohttp
+Requires-Dist: bd09convertor
+Requires-Dist: coordinatesconverter
+Requires-Dist: cython
+Requires-Dist: numpy
+Requires-Dist: pillow
+Requires-Dist: protobuf>4
+Requires-Dist: pycryptodome
+Requires-Dist: pyequilib
+Requires-Dist: pyexiv2
+Requires-Dist: pyfrpc==0.2.13
+Requires-Dist: pyproj
+Requires-Dist: pytest
+Requires-Dist: pytest-asyncio
+Requires-Dist: requests
+Requires-Dist: scipy
+-- api.find_panorama_by_id signature and imports
+1:import aiohttp
+2:import json
+3:from typing import Tuple
+4:from .protobuf import *
+5:from .util import is_third_party_panoid
+6:from ..util import get_json, get_json_async, post_json, post_json_async
+91:def build_find_panorama_by_id_request_url(panoid, download_depth, locale):
+195:def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+== streetlevel 0.13.0: streetlevel-0.13.0-py3-none-any.whl sha256 624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d
+-- depth.py parse_header
+32:def parse_header(depth_map):
+33-    return {
+34-        "header_size": depth_map[0],
+35-        "number_of_planes": get_uint16(depth_map, 1),
+36-        "width": get_uint16(depth_map, 3),
+37-        "height": get_uint16(depth_map, 5),
+38-        # One byte, not two: the header is `header_size` (8) bytes long, so a uint16
+39-        # read here would extend to index 8, which is already the first plane index.
+-- Requires-Dist / Requires-Python
+Version: 0.13.0
+Requires-Python: >=3.8
+Requires-Dist: aiohttp
+Requires-Dist: bd09convertor
+Requires-Dist: coordinatesconverter
+Requires-Dist: cython
+Requires-Dist: numpy
+Requires-Dist: pillow
+Requires-Dist: protobuf>4
+Requires-Dist: pycryptodome
+Requires-Dist: pyequilib
+Requires-Dist: pyexiv2
+Requires-Dist: pyfrpc==0.2.13
+Requires-Dist: pyproj
+Requires-Dist: pytest
+Requires-Dist: pytest-asyncio
+Requires-Dist: requests
+Requires-Dist: scipy
+-- api.find_panorama_by_id signature and imports
+1:import aiohttp
+2:import json
+3:from typing import Tuple
+4:from .protobuf import *
+5:from .util import is_third_party_panoid
+6:from ..util import get_json, get_json_async, post_json, post_json_async
+91:def build_find_panorama_by_id_request_url(panoid, download_depth, locale):
+195:def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):

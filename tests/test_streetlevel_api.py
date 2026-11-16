@@ -2,19 +2,20 @@
 
 Every other test in this suite runs against conftest's stub, which swallows anything via **kwargs. That means
 a renamed parameter or a moved attribute anywhere in the >=0.12.11,<0.13 range would pass the whole suite and
-only surface on the scraper box. These tests import the real library instead, so CI (which installs
-requirements.txt) catches the drift.
+only surface on the scraper box. These tests import the real library instead, so CI (which installs it from
+requirements-nodeps.txt) catches the drift.
 
 Since #56, production uses only streetlevel's api half (gsv._fetch_pano_with_depth_planes fetches the raw
 photometa response and parses the fields it needs in-repo - the parse half's unguarded depth decode dies on
 ~1% of panos, see test_streetlevel_still_misreads_the_depth_offset), so the surface pinned here is
 api.find_panorama_by_id, the photometa response shape, and the depth decode's column order.
 
-Skipped when streetlevel isn't installed -- its pyfrpc dependency needs a compiler, so a dev box without one can
-still run the rest of the suite. Unless SIDEWALK_REQUIRE_STREETLEVEL is set (anything but empty or `0`), which
-CI does: there the import is a hard one, so a module missing anywhere in streetlevel's transitive tree (pyproj,
-scipy, bd09convertor, CoordinatesConverter - unpinned, and unused by the scraper) is a collection error that
-fails the run with the real message, rather than ten quiet skips and a green check (#165). importorskip
+Skipped when streetlevel isn't installed, so a dev box without it can still run the rest of the suite. Since #237
+streetlevel is installed with --no-deps and the requirements it imports (pyproj, scipy, bd09convertor,
+CoordinatesConverter, pyexiv2 among them) are listed in requirements.txt, so it installs without a compiler
+everywhere. Unless SIDEWALK_REQUIRE_STREETLEVEL is set (anything but empty or `0`), which CI does: there the
+import is a hard one, so a requirement missing from requirements.txt is a collection error that fails the run
+with the real message, rather than quiet skips and a green check (#165). importorskip
 skips only on ModuleNotFoundError since pytest 9 - a plain ImportError already errors - so an absent
 dependency is exactly the case the variable exists for. tests/test_suite_isolation.py pins both behaviours.
 """
@@ -22,6 +23,7 @@ dependency is exactly the case the variable exists for. tests/test_suite_isolati
 import dataclasses
 import importlib
 import inspect
+import json
 import os
 
 import numpy as np
@@ -33,7 +35,7 @@ if os.environ.get('SIDEWALK_REQUIRE_STREETLEVEL', '') not in ('', '0'):
     api = importlib.import_module('streetlevel.streetview.api')
 else:
     panorama = pytest.importorskip('streetlevel.streetview.panorama',
-                                   reason='streetlevel not installed (pyfrpc needs a compiler); CI installs it')
+                                   reason='streetlevel not installed (requirements-nodeps.txt); CI installs it')
     streetview = pytest.importorskip('streetlevel.streetview')
     api = pytest.importorskip('streetlevel.streetview.api')
 
@@ -361,3 +363,28 @@ def test_depth_map_still_exposes_data():
     if dataclasses.is_dataclass(panorama.DepthMap):
         fields = {f.name for f in dataclasses.fields(panorama.DepthMap)}
     assert 'data' in fields or hasattr(panorama.DepthMap, 'data'), "streetlevel renamed DepthMap.data"
+
+
+def test_the_real_find_panorama_by_id_uses_the_session_it_is_given():
+    """Every other test here stubs api.find_panorama_by_id itself, so streetlevel's own body (the URL builder,
+    util.get_json and the `)]}'` strip) never ran in CI. This runs it, network-free, with a requests-like session
+    that answers the "pano gone" envelope: the session the seam passes must be the one that is asked (a
+    session=None fallback would reach the network, which the suite's guard refuses), exactly once, at photometa.
+    Since #237 streetlevel is installed --no-deps, so this also proves the call path needs nothing that
+    requirements.txt leaves out."""
+    calls = []
+
+    class FakeResponse:
+        text = ")]}'" + json.dumps([None, [[[2]]]])
+
+    class FakeSession:
+        def get(self, url, headers=None, **kwargs):
+            calls.append(url)
+            return FakeResponse()
+
+    result = api.find_panorama_by_id('testPanoIdAbCdEfGhIj_-', download_depth=True, locale='en',
+                                     session=FakeSession())
+
+    assert result == [None, [[[2]]]]
+    assert len(calls) == 1
+    assert calls[0].startswith('https://www.google.com/maps/photometa/v1')

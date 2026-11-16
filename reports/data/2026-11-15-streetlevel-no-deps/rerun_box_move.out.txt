@@ -1,0 +1,72 @@
+2026-11-16T01:40:10Z
+07bc7d4 Build the new venv beside the old one; check the freeze on every deploy (#244 review 2-4)
+================ the OLD venv: master's one-line install, pip 22.0.2
+install exit: 0
+old freeze: 65 lines
+old freeze == master's constraints.txt
+old .venv: 4969 MB
+================ an ordinary deploy of this branch into the old venv (docs/ops.md, Deploying)
+line 1 exit: 0
+line 2 exit: 0
+freeze unchanged: the two lines are a no-op in the old venv
+-- the Deploying block's freeze diff on the old venv: < lines (packages #237 dropped), > lines (should be 0)
+41
+0
+py_compile ok
+import ok
+streetlevel ok
+   state: .venv=dir | .venv-237=no | .venv-before-237=no | torch importable from .venv: yes
+================ interruption 1: killed during step 1 (python3 -m venv done, no install yet)
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+================ step 1, from the top (each line idempotent; the venv command re-run on the existing dir)
+Successfully installed CoordinatesConverter-0.1.5 Pillow-12.3.0 aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 async-timeout-5.0.1 attrs-26.1.0 backoff-2.2.1 bd09convertor-0.0.3 certifi-2026.7.22 charset_normalizer-3.5.1 frozenlist-1.8.0 idna-3.19 multidict-6.7.1 numpy-2.2.6 propcache-0.5.2 pyexiv2-2.16.0 pyproj-3.7.1 requests-2.34.2 scipy-1.15.3 typing_extensions-4.16.0 urllib3-2.7.0 yarl-1.24.5
+line 1 exit: 0
+Successfully installed streetlevel-0.12.11
+line 2 exit: 0
+freeze diff: empty
+py_compile ok
+import ok
+streetlevel ok
+dry run exit: 0; streetlevel warnings: 0
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+================ interruption 2: killed inside the swap line, after mv and before ln
+   state: .venv=MISSING | .venv-237=yes | .venv-before-237=yes | torch importable from .venv: no
+-- rollback line
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+pip 22.0.2 f
+old .venv/bin/pip exit: 0
+================ step 2: the swap, as one line
+   state: .venv=symlink->.venv-237 | .venv-237=yes | .venv-before-237=yes | torch importable from .venv: no
+freeze diff through the symlink: empty
+<S>/srv/.venv
+first line of .venv/bin/pip: #!<S>/srv/.venv-237/bin/python
+pip 22.0.2 f
+.venv/bin/pip exit: 0
+first line of .venv-before-237/bin/pip: #!<S>/srv/.venv/bin/python   (the new venv's python: hence 'never run it while renamed')
+git status --short (must be empty):
+(end)
+-- the nightly's shape: an absolute .venv/bin/python running cron_notify around the queue (dry run, no network)
+cron_notify exit: 0; streetlevel warnings: 0
+new venv: 294 MB
+================ interruption 3: a check after the swap fails -> rollback line
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+old venv back, freeze as before
+pip 22.0.2 f
+old .venv/bin/pip exit: 0
+-- rollback line again (idempotent)
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+================ interruption 4: killed inside the rollback line, after unlink
+   state: .venv=MISSING | .venv-237=yes | .venv-before-237=yes | torch importable from .venv: no
+-- rollback line
+   state: .venv=dir | .venv-237=yes | .venv-before-237=no | torch importable from .venv: yes
+================ finish the move: swap again
+   state: .venv=symlink->.venv-237 | .venv-237=yes | .venv-before-237=yes | torch importable from .venv: no
+freeze diff: empty
+git status --short (must be empty):
+(end)
+== a later ordinary deploy on the moved box: the Deploying block's checks
+line 1 exit: 0
+line 2 exit: 0
+freeze diff: empty
+streetlevel ok
+2026-11-16T01:43:00Z

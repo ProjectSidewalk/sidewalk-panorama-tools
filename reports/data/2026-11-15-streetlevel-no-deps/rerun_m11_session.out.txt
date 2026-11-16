@@ -1,0 +1,30 @@
+2026-11-15T21:26:12Z
+56945c7 Document the two-line install and the box's move to it (#237)
+Using CPython 3.10.6 interpreter at: /usr/bin/python3.10
+Creating virtual environment with seed packages at: ~/claude-work/237/venv-impl-m11
+ + packaging==26.3
+ + pip==26.3
+ + setuptools==84.2.1
+ + wheel==0.48.0
+Activate with: source ~/claude-work/237/venv-impl-m11/bin/activate
+line 1 exit: 0
+line 2 exit: 0
+== unpatched
+.                                                                        [100%]
+1 passed in 0.50s
+== patch: find_panorama_by_id passes session=None
+190:def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+191-    return get_json(
+192-        build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+193-        session=session,
+190:def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+191-    return get_json(
+192-        build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+193-        session=None,
+== patched (expect the test to FAIL)
+=========================== short test summary info ============================
+FAILED tests/test_streetlevel_api.py::test_the_real_find_panorama_by_id_uses_the_session_it_is_given
+ERROR tests/test_streetlevel_api.py::test_the_real_find_panorama_by_id_uses_the_session_it_is_given
+1 failed, 1 error in 0.50s
+== clone still clean?
+2026-11-15T21:26:41Z

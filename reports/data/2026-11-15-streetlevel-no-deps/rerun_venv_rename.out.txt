@@ -1,0 +1,15 @@
+== as built
+   sys.prefix: <S>/built-as-237
+   first line of built-as-237/bin/pip: #!<S>/built-as-237/bin/python
+   built-as-237/bin/pip --version exit: 0 
+   built-as-237/bin/python -m pip --version exit: 0
+== renamed: mv built-as-237 .venv
+   sys.prefix: <S>/.venv
+   first line of .venv/bin/pip: #!<S>/built-as-237/bin/python
+   .venv/bin/pip --version exit: 126 <SCRATCH>/wt-237/reports/data/2026-11-15-streetlevel-no-deps/rerun_venv_rename.sh: .venv/bin/pip: <S>/built-as-237/bin/python: bad interpreter: No such file or directory
+   .venv/bin/python -m pip --version exit: 0
+== symlinked: ln -s built-as-237 .venv
+   sys.prefix: <S>/.venv
+   first line of .venv/bin/pip: #!<S>/built-as-237/bin/python
+   .venv/bin/pip --version exit: 0 
+   .venv/bin/python -m pip --version exit: 0

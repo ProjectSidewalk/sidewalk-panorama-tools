@@ -3,8 +3,8 @@
 The repo's scripts are not an installed package, so tests import modules (downloaders, config) straight from the
 repo root. pyproject.toml installs only sidewalk_panorama_tools/ and pano_pose.py, for other projects
 (docs/geometry.md); the tests import those from the checkout too.
-streetlevel itself is never exercised: tests install a stub module so the suite is network-free and runs without
-streetlevel's heavy dependency tree.
+streetlevel itself is never exercised here: tests install a stub module so the suite is network-free and runs
+where streetlevel is not installed (tests/test_streetlevel_api.py is the one module that imports the real one).
 """
 
 import base64

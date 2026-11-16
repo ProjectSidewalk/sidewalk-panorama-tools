@@ -5,4 +5,18 @@ urllib3>=2.0
 aiohttp>=3.7.4
 backoff>=1.10.0
 numpy>=1.21
-streetlevel>=0.12.11,<0.13
+# streetlevel itself is in requirements-nodeps.txt and is installed with --no-deps (#237): it declares
+# pyequilib, whose 0.6.0 requires torch, and a normal resolve puts torch, triton and eighteen nvidia-*/cuda-*
+# wheels (several GB) into a venv where no production module imports any of them. pip has no per-requirement
+# --no-deps, so the requirements streetlevel really needs are listed here instead. The five below, with
+# aiohttp, requests, numpy and Pillow above, are everything `from streetlevel import streetview` imports,
+# measured on Python 3.10 against streetlevel 0.12.11 (reports/2026-11-15-streetlevel-no-deps.md). They carry
+# no floor because streetlevel declares none; constraints.txt holds the versions that were tested. Declared by
+# streetlevel but never imported on that path, and so NOT installed: pyequilib, protobuf, pyfrpc,
+# pycryptodome, cython, pytest, pytest-asyncio. tests/test_constraints.py fails when streetlevel's
+# declared list stops matching these two lists, which is the cue to measure again.
+pyproj
+scipy
+bd09convertor
+CoordinatesConverter
+pyexiv2

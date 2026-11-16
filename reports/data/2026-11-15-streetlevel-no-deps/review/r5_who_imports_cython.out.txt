@@ -1,0 +1,21 @@
+== source lines importing cython (any case), outside the cython-generated .so files
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/scipy/_lib/_testutils.py:21:    import cython  # type: ignore[import-untyped]
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/scipy/_lib/_testutils.py:22:    from Cython.Compiler.Version import (  # type: ignore[import-untyped]
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/examples/cython/setup.py:6:import Cython
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/examples/cython/setup.py:10:from Cython.Build import cythonize
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/test_cython.py:12:    import cython
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/test_cython.py:13:    from Cython.Compiler.Version import version as cython_version
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/test_limited_api.py:11:    import cython
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/_core/tests/test_limited_api.py:12:    from Cython.Compiler.Version import version as cython_version
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/random/tests/test_extending.py:34:    import cython
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/numpy/random/tests/test_extending.py:35:    from Cython.Compiler.Version import version as cython_version
+~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/setuptools/command/build_ext.py:16:    from Cython.Distutils.build_ext import build_ext as _build_ext
+== the same attempt, with the caller's stack
+  File "<frozen importlib._bootstrap>", line 1006, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 688, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "~/claude-work/237/venv-review-pip22d/lib/python3.10/site-packages/scipy/_lib/_testutils.py", line 21, in <module>
+    import cython  # type: ignore[import-untyped]
+  File "<string>", line 8, in imp
+import 'cython' attempted from:

@@ -1,0 +1,22 @@
+2026-11-15T20:04:52Z
+== streetlevel 0.12.11: streetlevel-0.12.11-py3-none-any.whl sha256 811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4
+-- depth.py parse_header
+<MEAS>/04_part2.sh: line 18: unzip: command not found
+-- Requires-Dist / Requires-Python
+<MEAS>/04_part2.sh: line 20: unzip: command not found
+-- api.find_panorama_by_id signature and imports
+<MEAS>/04_part2.sh: line 22: unzip: command not found
+== streetlevel 0.12.13: streetlevel-0.12.13-py3-none-any.whl sha256 60fe28fec2ce73e93eba7fbdbea1bac58173e4ba8661fda2127846eb989a682e
+-- depth.py parse_header
+<MEAS>/04_part2.sh: line 18: unzip: command not found
+-- Requires-Dist / Requires-Python
+<MEAS>/04_part2.sh: line 20: unzip: command not found
+-- api.find_panorama_by_id signature and imports
+<MEAS>/04_part2.sh: line 22: unzip: command not found
+== streetlevel 0.13.0: streetlevel-0.13.0-py3-none-any.whl sha256 624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d
+-- depth.py parse_header
+<MEAS>/04_part2.sh: line 18: unzip: command not found
+-- Requires-Dist / Requires-Python
+<MEAS>/04_part2.sh: line 20: unzip: command not found
+-- api.find_panorama_by_id signature and imports
+<MEAS>/04_part2.sh: line 22: unzip: command not found

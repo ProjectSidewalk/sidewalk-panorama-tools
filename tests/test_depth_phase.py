@@ -1095,6 +1095,9 @@ class TestTheDepthPhaseNotesItsConditions:
         assert condition_codes(stop_reasons) == [gsv.DEPTH_CONDITION_UNAVAILABLE]
         out = capsys.readouterr().out
         assert 'WARNING' in out and 'streetlevel' in out
+        # The remedy it names must reinstall streetlevel (#237): requirements.txt no longer lists it, so
+        # "reinstall requirements.txt" alone would leave the depth phase off.
+        assert 'requirements-nodeps.txt' in out and '--no-deps' in out, out
         assert any(r.levelno == logging.ERROR and 'streetlevel' in r.getMessage() for r in caplog.records)
 
     def test_scattered_errors_before_a_budget_stop_are_not_a_condition(self, tmp_path, fake_streetview,

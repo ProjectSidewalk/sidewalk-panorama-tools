@@ -1,8 +1,9 @@
 """Tests for sidewalk_panorama_tools.torch_geometry, the optional torch sampling grid (docs/geometry.md).
 
-torch is an optional extra of the package, so this whole module skips cleanly without it. CI has it:
-requirements.txt pulls torch in through streetlevel -> pyequilib, so the gated job runs these tests and
-measures torch_geometry.py, and the `package` job reruns them on the CPU-only torch build. With torch it checks the
+torch is an optional extra of the package, so this whole module skips cleanly without it. CI installs it on
+purpose: the gated job installs the CPU-only torch build, pinned in constraints-ci.txt, and imports it in a step of
+its own (#237), so it runs these tests and measures torch_geometry.py; the `package` job reruns them beside a
+wheel build. With torch it checks the
 torch grid against the numpy one over seven label points - both sides of the seam, the centre, +-72 deg and
 +-86 deg elevation - with and without tilt, in float32 and float64, and checks the wrap-padded grid_sample
 normalization against the padded tensor's columns and against geometry.render_view.

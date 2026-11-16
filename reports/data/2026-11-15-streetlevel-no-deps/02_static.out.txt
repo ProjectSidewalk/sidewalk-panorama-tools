@@ -1,0 +1,107 @@
+== distributions loaded (RECORD-based)
+aiohappyeyeballs==2.7.1  (modules: aiohappyeyeballs)
+aiohttp==3.14.3  (modules: aiohttp)
+aiosignal==1.4.0  (modules: aiosignal)
+async-timeout==5.0.1  (modules: async_timeout)
+attrs==26.1.0  (modules: attr)
+bd09convertor==0.0.3  (modules: bd09convertor)
+certifi==2026.7.22  (modules: certifi)
+CoordinatesConverter==0.1.5  (modules: CoordinatesConverter)
+frozenlist==1.8.0  (modules: frozenlist)
+idna==3.19  (modules: idna)
+multidict==6.7.1  (modules: multidict)
+numpy==2.2.6  (modules: numpy)
+pillow==12.3.0  (modules: PIL)
+propcache==0.5.2  (modules: propcache)
+pyexiv2==2.16.0  (modules: pyexiv2)
+pyproj==3.7.1  (modules: pyproj)
+requests==2.34.2  (modules: requests)
+scipy==1.15.3  (modules: scipy)
+streetlevel==0.12.11  (modules: streetlevel)
+typing_extensions==4.16.0  (modules: typing_extensions)
+urllib3==2.7.0  (modules: urllib3)
+yarl==1.24.5  (modules: yarl)
+--- 22 distributions loaded
+== every import statement in the loaded streetlevel modules
+streetlevel  (streetlevel/__init__.py)
+streetlevel.dataclasses  (streetlevel/dataclasses.py)
+streetlevel.exif  (streetlevel/exif.py)
+    PIL                    module-level ok
+    pyexiv2                module-level ok
+streetlevel.geo  (streetlevel/geo.py)
+    CoordinatesConverter   module-level ok
+    bd09convertor          module-level ok
+    pyproj                 module-level ok
+    scipy                  module-level ok
+streetlevel.streetview  (streetlevel/streetview/__init__.py)
+streetlevel.streetview.api  (streetlevel/streetview/api.py)
+    aiohttp                module-level ok
+streetlevel.streetview.depth  (streetlevel/streetview/depth.py)
+    numpy                  module-level ok
+streetlevel.streetview.panorama  (streetlevel/streetview/panorama.py)
+    numpy                  module-level ok
+streetlevel.streetview.parse  (streetlevel/streetview/parse.py)
+streetlevel.streetview.protobuf  (streetlevel/streetview/protobuf.py)
+streetlevel.streetview.streetview  (streetlevel/streetview/streetview.py)
+    PIL                    module-level ok
+    aiohttp                module-level ok
+    requests               module-level ok
+streetlevel.streetview.util  (streetlevel/streetview/util.py)
+streetlevel.util  (streetlevel/util.py)
+    PIL                    module-level ok
+    aiohttp                module-level ok
+    requests               module-level ok
+--- streetlevel modules loaded: 13
+--- unresolved imports: 0
+== the same, for the production imports only
+streetlevel.streetview.protobuf  (streetlevel/streetview/protobuf.py)
+streetlevel.streetview.streetview  (streetlevel/streetview/streetview.py)
+    PIL                    module-level ok
+    aiohttp                module-level ok
+    requests               module-level ok
+streetlevel.streetview.util  (streetlevel/streetview/util.py)
+streetlevel.util  (streetlevel/util.py)
+    PIL                    module-level ok
+    aiohttp                module-level ok
+    requests               module-level ok
+--- streetlevel modules loaded: 13
+--- unresolved imports: 0
+== what streetlevel/streetview/__init__.py and api.py import
+from .streetview import *
+from .util import *
+-- api.py imports
+1:import aiohttp
+2:from typing import Tuple
+3:from .protobuf import *
+4:from .util import is_third_party_panoid
+5:from ..util import get_json, get_json_async
+-- depth.py parse_header
+32:def parse_header(depth_map):
+33-    return {
+34-        "header_size": depth_map[0],
+35-        "number_of_planes": get_uint16(depth_map, 1),
+36-        "width": get_uint16(depth_map, 3),
+37-        "height": get_uint16(depth_map, 5),
+38-        "offset": get_uint16(depth_map, 7),
+39-    }
+40-
+41-
+42-def get_bin(a):
+43-    ba = bin(a)[2:]
+44-    return "0" * (8 - len(ba)) + ba
+-- packages in the streetlevel wheel
+__init__.py
+__pycache__
+baidu
+dataclasses.py
+exif.py
+geo.py
+ja
+kakao
+lookaround
+mapy
+naver
+streetside
+streetview
+util.py
+yandex

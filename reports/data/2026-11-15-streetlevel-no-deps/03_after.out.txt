@@ -1,0 +1,212 @@
+== repo
+b2c8d58 Merge pull request #242 from ProjectSidewalk/239-on-disk-check
+Using CPython 3.10.6 interpreter at: /usr/bin/python3.10
+Creating virtual environment with seed packages at: venv-after
+ + packaging==26.3
+ + pip==26.3
+ + setuptools==84.2.1
+ + wheel==0.48.0
+Activate with: source venv-after/bin/activate
+pip 26.3 from ~/claude-work/237/venv-after/lib/python3.10/site-packages/pip (python 3.10)
+== size of the empty venv (pip, setuptools, wheel only)
+17	~/claude-work/237/venv-after
+== stage A1: pip install -r requirements.txt -c constraints.txt   (proposed requirements.txt)
+Installing collected packages: urllib3, typing_extensions, pyexiv2, propcache, Pillow, numpy, idna, frozenlist, CoordinatesConverter, charset_normalizer, certifi, bd09convertor, backoff, attrs, async-timeout, aiohappyeyeballs, scipy, requests, pyproj, multidict, aiosignal, yarl, aiohttp
+
+Successfully installed CoordinatesConverter-0.1.5 Pillow-12.3.0 aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 async-timeout-5.0.1 attrs-26.1.0 backoff-2.2.1 bd09convertor-0.0.3 certifi-2026.7.22 charset_normalizer-3.5.1 frozenlist-1.8.0 idna-3.19 multidict-6.7.1 numpy-2.2.6 propcache-0.5.2 pyexiv2-2.16.0 pyproj-3.7.1 requests-2.34.2 scipy-1.15.3 typing_extensions-4.16.0 urllib3-2.7.0 yarl-1.24.5
+== stage A2: pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+Using cached streetlevel-0.12.11-py3-none-any.whl (94 kB)
+Installing collected packages: streetlevel
+Successfully installed streetlevel-0.12.11
+== stage A freeze
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+async-timeout==5.0.1
+attrs==26.1.0
+backoff==2.2.1
+bd09convertor==0.0.3
+certifi==2026.7.22
+charset-normalizer==3.5.1
+CoordinatesConverter==0.1.5
+frozenlist==1.8.0
+idna==3.19
+multidict==6.7.1
+numpy==2.2.6
+packaging==26.3
+pillow==12.3.0
+propcache==0.5.2
+pyexiv2==2.16.0
+pyproj==3.7.1
+requests==2.34.2
+scipy==1.15.3
+streetlevel==0.12.11
+typing_extensions==4.16.0
+urllib3==2.7.0
+yarl==1.24.5
+== stage A size
+291M	~/claude-work/237/venv-after
+291	~/claude-work/237/venv-after
+== stage A pip check
+streetlevel 0.12.11 requires cython, which is not installed.
+streetlevel 0.12.11 requires protobuf, which is not installed.
+streetlevel 0.12.11 requires pycryptodome, which is not installed.
+streetlevel 0.12.11 requires pyequilib, which is not installed.
+streetlevel 0.12.11 requires pyfrpc, which is not installed.
+streetlevel 0.12.11 requires pytest, which is not installed.
+streetlevel 0.12.11 requires pytest-asyncio, which is not installed.
+pip check exit: 1
+== stage A: the deploy import checks (docs/ops.md, Deploying) and the queue's streetlevel probe
+py_compile ok
+import ok
+probe_streetlevel: (True, '')
+url ok: https://www.google.com/maps/photometa/v1?authuser=0&hl=en&gl
+== stage A: heavy distributions present (expect none)
+grep exit: 1 (1 = none found)
+== stage B: + requirements-dev.txt
+streetlevel 0.12.11 requires pytest-asyncio, which is not installed.
+Successfully installed contourpy-1.3.2 coverage-7.16.2 cycler-0.12.1 exceptiongroup-1.3.1 fonttools-4.65.0 iniconfig-2.3.0 kiwisolver-1.5.1 matplotlib-3.10.9 pandas-2.3.3 pluggy-1.6.0 pygments-2.21.0 pyparsing-3.3.3 pytest-9.1.1 pytest-cov-7.1.0 python-dateutil-3.0.0 pytz-2026.6 six-1.17.0 tomli-2.4.1 tzdata-2026.6
+== stage B freeze
+44 <MEAS>/03_after_stageB_freeze.txt
+== stage B size
+440	~/claude-work/237/venv-after
+== stage B: full suite, SIDEWALK_REQUIRE_STREETLEVEL=1, with coverage (no torch installed)
+pytest exit: 0
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_a_city_with_no_repair_scope_does_not_crash_the_figure
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_the_stated_range_covers_only_the_cities_that_had_scope
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_every_city_lacking_scope_is_still_not_a_crash
+  ~/claude-work/237/repo/reports/scripts/off_target_markers_figures.py:202: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+    ax.legend(frameon=False, fontsize=8.5, loc='upper left')
+
+tests/test_photometa_census.py: 16 warnings
+  ~/claude-work/237/repo/reports/scripts/photometa_census.py:144: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    float(100 * alive['has_depth'].fillna(False).mean()) if len(alive) else None,
+
+tests/test_photometa_census.py::TestDecay::test_it_counts_the_four_transitions
+tests/test_photometa_census.py::TestDecay::test_the_death_rate_is_a_share_of_what_was_alive_not_of_the_sample
+tests/test_photometa_census.py::TestTheRefetchCLI::test_it_writes_a_decay_block_and_re_probes_only_the_deaths
+tests/test_photometa_census.py::TestTheRefetchCLI::test_the_written_artifact_is_strict_json_with_no_nan_tokens
+tests/test_photometa_census.py::TestTheRefetchCLI::test_it_carries_the_prior_censuss_provenance_forward
+tests/test_photometa_census.py::TestTheRefetchCLI::test_refetch_needs_no_csv_dir
+tests/test_photometa_census.py::TestPoseDrift::test_only_panoramas_alive_in_both_censuses_are_compared
+tests/test_rerender_probe_report.py::TestThePoseDriftSection::test_the_committed_block_is_what_the_code_computes_today
+  ~/claude-work/237/repo/reports/scripts/photometa_census.py:368: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    had_depth = joined['has_depth_before'].fillna(False).astype(bool)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.10.6-final-0 ________________
+
+Name                                        Stmts   Miss Branch BrPart  Cover   Missing
+---------------------------------------------------------------------------------------
+CropRunner.py                                1132      2    382      2  99.7%   1868-1869, 1871->exit, 2253->2252
+DownloadRunner.py                             764      0    274      3  99.7%   840->851, 849->851, 920->964
+downloaders/common.py                         258      6     64      2  97.5%   210, 260-261, 277, 279-280
+downloaders/gsv.py                            842      6    226      1  99.3%   38-41, 45-49, 1794
+downloaders/mapillary.py                      136      0     58      3  98.5%   71->73, 76->85, 394->393
+downloaders/panoramax.py                      135      0     58      1  99.5%   279->exit
+log_analyzer/analyze.py                       411      0    122      2  99.6%   469->494, 1162->1171
+log_analyzer/roster.py                         81      3     26      0  97.2%   133, 148-149
+readmit_dimless_writeoffs.py                   97      9     16      1  89.4%   61-62, 117, 166-167, 169-172
+refetch_panos.py                              323      1    118      2  99.3%   649->651, 702
+sidewalk_panorama_tools/torch_geometry.py      36     36      4      0   0.0%   38-107
+verify_store.py                               236     13     82      4  94.7%   79->exit, 109-110, 146-147, 183-184, 198-199, 229, 285-286, 288, 334
+---------------------------------------------------------------------------------------
+TOTAL                                        6916     76   2092     21  98.9%
+
+19 files skipped due to complete coverage.
+Required test coverage of 98.0% reached. Total coverage: 98.86%
+7033 passed, 20 skipped, 27 warnings in 1067.52s (0:17:47)
+== stage B: test_streetlevel_api.py alone, verbose
+============================= test session starts ==============================
+platform linux -- Python 3.10.6, pytest-9.1.1, pluggy-1.6.0 -- ~/claude-work/237/venv-after/bin/python
+rootdir: ~/claude-work/237/repo
+configfile: pyproject.toml
+plugins: cov-7.1.0
+collecting ... collected 17 items
+
+tests/test_streetlevel_api.py::test_api_find_panorama_by_id_still_takes_the_arguments_we_pass PASSED [  5%]
+tests/test_streetlevel_api.py::test_panorama_still_exposes_the_attributes_we_read PASSED [ 11%]
+tests/test_streetlevel_api.py::test_depth_decode_still_mirrors_x PASSED  [ 17%]
+tests/test_streetlevel_api.py::test_depth_decode_mirrors_x_end_to_end PASSED [ 23%]
+tests/test_streetlevel_api.py::test_streetlevel_still_misreads_the_depth_offset PASSED [ 29%]
+tests/test_streetlevel_api.py::test_fetch_seam_extracts_pano_and_planes_from_the_raw_response PASSED [ 35%]
+tests/test_streetlevel_api.py::test_fetch_seam_returns_none_pair_when_the_pano_is_gone PASSED [ 41%]
+tests/test_streetlevel_api.py::test_fetch_seam_survives_a_modelled_zenith PASSED [ 47%]
+tests/test_streetlevel_api.py::test_fetch_seam_raises_on_an_unrecognized_envelope PASSED [ 52%]
+tests/test_streetlevel_api.py::test_panorama_still_exposes_image_sizes_and_tile_size PASSED [ 58%]
+tests/test_streetlevel_api.py::test_our_levels_reading_agrees_with_streetlevels_parser PASSED [ 64%]
+tests/test_streetlevel_api.py::test_image_levels_seam_calls_the_api_without_depth PASSED [ 70%]
+tests/test_streetlevel_api.py::test_image_levels_seam_returns_none_when_the_pano_is_gone PASSED [ 76%]
+tests/test_streetlevel_api.py::test_image_levels_seam_raises_on_an_unrecognized_envelope PASSED [ 82%]
+tests/test_streetlevel_api.py::test_the_depth_and_image_seams_share_one_envelope_check PASSED [ 88%]
+tests/test_streetlevel_api.py::test_download_depth_false_changes_the_request_url PASSED [ 94%]
+tests/test_streetlevel_api.py::test_depth_map_still_exposes_data PASSED  [100%]
+
+============================== 17 passed in 1.73s ==============================
+== stage C: + CPU-only torch, the way tests.yml's package job installs it, but unpinned
+Successfully installed MarkupSafe-3.0.3 filelock-3.32.5 fsspec-2026.7.0 jinja2-3.1.6 mpmath-1.3.0 networkx-3.4.2 sympy-1.14.0
+Successfully installed torch-2.14.1+cpu
+torch==2.14.1+cpu
+torch requires:
+filelock
+typing-extensions>=4.10.0
+setuptools>=77.0.3
+sympy>=1.13.3
+networkx>=2.5.1
+jinja2
+fsspec>=0.8.5
+optree>=0.13.0; extra == "optree"
+opt-einsum>=3.3; extra == "opt-einsum"
+pyyaml; extra == "pyyaml"
+== stage C size
+1275	~/claude-work/237/venv-after
+== stage C: full suite again, with coverage
+pytest exit: 0
+=============================== warnings summary ===============================
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_a_city_with_no_repair_scope_does_not_crash_the_figure
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_the_stated_range_covers_only_the_cities_that_had_scope
+tests/test_off_target_markers_figures.py::TestSeverityHandlesEmptyRepairScope::test_every_city_lacking_scope_is_still_not_a_crash
+  ~/claude-work/237/repo/reports/scripts/off_target_markers_figures.py:202: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+    ax.legend(frameon=False, fontsize=8.5, loc='upper left')
+
+tests/test_photometa_census.py: 16 warnings
+  ~/claude-work/237/repo/reports/scripts/photometa_census.py:144: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    float(100 * alive['has_depth'].fillna(False).mean()) if len(alive) else None,
+
+tests/test_photometa_census.py::TestDecay::test_it_counts_the_four_transitions
+tests/test_photometa_census.py::TestDecay::test_the_death_rate_is_a_share_of_what_was_alive_not_of_the_sample
+tests/test_photometa_census.py::TestTheRefetchCLI::test_it_writes_a_decay_block_and_re_probes_only_the_deaths
+tests/test_photometa_census.py::TestTheRefetchCLI::test_the_written_artifact_is_strict_json_with_no_nan_tokens
+tests/test_photometa_census.py::TestTheRefetchCLI::test_it_carries_the_prior_censuss_provenance_forward
+tests/test_photometa_census.py::TestTheRefetchCLI::test_refetch_needs_no_csv_dir
+tests/test_photometa_census.py::TestPoseDrift::test_only_panoramas_alive_in_both_censuses_are_compared
+tests/test_rerender_probe_report.py::TestThePoseDriftSection::test_the_committed_block_is_what_the_code_computes_today
+  ~/claude-work/237/repo/reports/scripts/photometa_census.py:368: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    had_depth = joined['has_depth_before'].fillna(False).astype(bool)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.10.6-final-0 ________________
+
+Name                           Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------
+CropRunner.py                   1132      2    382      2  99.7%   1868-1869, 1871->exit, 2253->2252
+DownloadRunner.py                764      0    274      3  99.7%   840->851, 849->851, 920->964
+downloaders/common.py            258      6     64      2  97.5%   210, 260-261, 277, 279-280
+downloaders/gsv.py               842      6    226      1  99.3%   38-41, 45-49, 1794
+downloaders/mapillary.py         136      0     58      3  98.5%   71->73, 76->85, 394->393
+downloaders/panoramax.py         135      0     58      1  99.5%   279->exit
+log_analyzer/analyze.py          411      0    122      2  99.6%   469->494, 1162->1171
+log_analyzer/roster.py            81      3     26      0  97.2%   133, 148-149
+readmit_dimless_writeoffs.py      97      9     16      1  89.4%   61-62, 117, 166-167, 169-172
+refetch_panos.py                 323      1    118      2  99.3%   649->651, 702
+verify_store.py                  236     13     82      4  94.7%   79->exit, 109-110, 146-147, 183-184, 198-199, 229, 285-286, 288, 334
+--------------------------------------------------------------------------
+TOTAL                           6916     40   2092     21  99.3%
+
+20 files skipped due to complete coverage.
+Required test coverage of 98.0% reached. Total coverage: 99.30%
+7086 passed, 19 skipped, 27 warnings in 989.05s (0:16:29)
+== clone still clean?
+2026-11-15T20:41:07Z

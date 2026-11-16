@@ -28,6 +28,7 @@ cd sidewalk-panorama-tools
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt -c constraints.txt
+pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 ```
 
 `-c constraints.txt` installs the exact versions the production box runs and CI tests
@@ -36,14 +37,26 @@ pip install -r requirements.txt -c constraints.txt
 [Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
 everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
 example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
-numpy from source. (`pyfrpc` has no 3.14 wheel either way; see below.)
+numpy from source.
+
+**Why two install lines.** `streetlevel` sits alone in `requirements-nodeps.txt` and is installed with
+`--no-deps` ([#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237)). It declares
+`pyequilib`, which requires `torch`, and a normal install pulls in torch, triton and the `nvidia-*`/`cuda-*`
+wheels, none of which anything here imports: master's one-line install measured 4,963 MB of venv, the two lines
+about 291 MB. What `streetlevel` does import is listed in `requirements.txt`, from the measurement in
+[the #237 report](../reports/2026-11-15-streetlevel-no-deps.md). Two side effects are expected, not faults:
+`pip check` exits 1, naming the 7 requirements `streetlevel` declares and never imports, and a later
+`pip install` that changes one of `streetlevel`'s requirements prints a red block that starts `ERROR: pip's
+dependency resolver does not currently take into account...` and names the same 7, then exits 0. Do not install
+what either names: `pyequilib` is the way back to torch ([Deploying](ops.md#deploying) has the check that counts).
 
 Two platform notes:
 
-* **`streetlevel` needs `pyfrpc`**, which publishes manylinux wheels for CPython 3.9–3.13 but no Windows or
-  macOS wheels. On Linux the install is pure wheels; elsewhere pip builds it from the sdist, which needs a C
-  compiler (`apt install python3-dev gcc`, or Xcode command-line tools, or MSVC Build Tools on Windows). Only
-  the depth phase imports it — `--skip-depth` runs fine without it.
+* **No compiler needed.** The install is wheels on Linux, Windows and macOS for CPython 3.10–3.13, except
+  `CoordinatesConverter`, a pure-Python sdist that builds without one. (`pyfrpc`, which needed a compiler off
+  Linux, is no longer installed.) Both phases import `streetlevel`: since #74 the image phase reads photometa
+  through `streetlevel.streetview.api`, and without it falls back to probing tiles; the depth phase does not run
+  and the night reports `depth-unavailable`.
 * **At least 2 GB RAM.** A 16384×8192 pano is 384 MB decoded (`16384 × 8192 × 3` bytes), and low-memory
   machines crash on images that size.
 

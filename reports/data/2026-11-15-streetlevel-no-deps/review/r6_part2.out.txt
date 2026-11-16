@@ -1,0 +1,47 @@
+curl exit: 0
+~/claude-work/237/dl-streetlevel-0.12.11:
+streetlevel-0.12.11-py3-none-any.whl
+
+~/claude-work/237/dl-streetlevel-0.13.0:
+streetlevel-0.13.0-py3-none-any.whl
+624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d  ~/claude-work/237/dl-streetlevel-0.13.0/streetlevel-0.13.0-py3-none-any.whl
+811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4  ~/claude-work/237/dl-streetlevel-0.12.11/streetlevel-0.12.11-py3-none-any.whl
+== PyPI: latest version 0.13.0
+   0.12.1   2025-06-03T12:06:34.796069Z  streetlevel-0.12.1-py3-none-any.whl, streetlevel-0.12.1.tar.gz
+   0.12.10  2026-06-11T15:01:25.647810Z  streetlevel-0.12.10-py3-none-any.whl, streetlevel-0.12.10.tar.gz
+   0.12.11  2026-08-05T11:56:32.275384Z  streetlevel-0.12.11-py3-none-any.whl, streetlevel-0.12.11.tar.gz
+   0.12.12  2026-10-05T16:18:07.543248Z  streetlevel-0.12.12-py3-none-any.whl, streetlevel-0.12.12.tar.gz
+   0.12.13  2026-10-14T14:45:26.212027Z  streetlevel-0.12.13-py3-none-any.whl, streetlevel-0.12.13.tar.gz
+   0.13.0   2026-11-12T15:39:27.573399Z  streetlevel-0.13.0-py3-none-any.whl, streetlevel-0.13.0.tar.gz
+== 0.12.11: the offset line of depth.parse_header
+   "offset": get_uint16(depth_map, 7),
+== 0.12.11: find_panorama_by_id
+   def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+       return get_json(
+           build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+           session=session,
+           headers={
+               "Accept": "*/*",
+               "Host": "www.google.com",
+               "Referer": "https://www.google.com/",
+               "Alt-Used": "www.google.com",
+               "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+           },
+           preprocess_function=lambda text: text[4:])
+== 0.12.11: third-party top-level imports in streetview/*, util, geo, exif: ['CoordinatesConverter', 'PIL', 'aiohttp', 'bd09convertor', 'numpy', 'pyexiv2', 'pyproj', 'requests', 'scipy']
+== 0.13.0: the offset line of depth.parse_header
+   "offset": depth_map[7],
+== 0.13.0: find_panorama_by_id
+   def find_panorama_by_id(panoid, download_depth=False, locale="en", session=None):
+       return get_json(
+           build_find_panorama_by_id_request_url(panoid, download_depth, locale),
+           session=session,
+           headers={
+               "Accept": "*/*",
+               "Host": "www.google.com",
+               "Referer": "https://www.google.com/",
+               "Alt-Used": "www.google.com",
+               "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+           },
+           preprocess_function=lambda text: text[4:])
+== 0.13.0: third-party top-level imports in streetview/*, util, geo, exif: ['CoordinatesConverter', 'PIL', 'aiohttp', 'bd09convertor', 'numpy', 'pyexiv2', 'pyproj', 'requests', 'scipy']

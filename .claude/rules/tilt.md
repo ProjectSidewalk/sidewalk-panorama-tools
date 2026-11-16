@@ -88,9 +88,9 @@ Loaded by Claude Code when a file matching the globs above is read. The repo-wid
   is the reduced width - `normalized_grid_torch(..., k=k)` does the same), and a torch consumer `avg_pool2d`s by the same k; k = 1 for
   both current consumers. `label_view` wraps `x_norm` modulo 1; `wrap180` is `pano_pose.wrap_deg`.
 - **The torch twin** (`torch_geometry.py`, the `[torch]` extra) imports torch lazily and reuses
-  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI has torch
-  (requirements.txt pulls it in through streetlevel -> pyequilib), so its test runs and is measured in the gated
-  job; a checkout without torch skips it. The `package` job in `tests.yml` also builds the wheel and imports it
+  `geometry._basis` and the numpy tilt matrix, so it adds no second definition of where a view looks. CI installs
+  CPU-only torch for it explicitly, pinned in `constraints-ci.txt` (#237), so its test runs and is measured in the
+  gated job; a checkout without torch skips it. The `package` job in `tests.yml` also builds the wheel and imports it
   from a fresh venv.
 - **Changing it is a release.** Consumers pin a tag; bump `version` in `pyproject.toml` and `__version__`
   together (a test checks), and say in the PR what a consumer re-pinning will see change.

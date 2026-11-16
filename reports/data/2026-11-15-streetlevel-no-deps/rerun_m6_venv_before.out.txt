@@ -1,0 +1,15 @@
+2026-11-15T21:18:32Z
+0dd7caa Add the #237 tests first: streetlevel installed with --no-deps
+65
+== with SIDEWALK_REQUIRE_STREETLEVEL=1 (expect the GPU-stack test to FAIL, the rest of the live checks to pass)
+.F...                                                                    [100%]
+=================================== FAILURES ===================================
+E   AssertionError: the GPU stack #237 removed is installed: ['cuda-bindings', 'cuda-pathfinder', 'cuda-toolkit', 'nvidia-cublas', 'nvidia-cuda-cupti', 'nvidia-cuda-nvrtc', 'nvidia-cuda-runtime', 'nvidia-cudnn-cu13', 'nvidia-cufft', 'nvidia-cufile', 'nvidia-curand', 'nvidia-cusolver', 'nvidia-cusparse', 'nvidia-cusparselt-cu13', 'nvidia-nccl-cu13', 'nvidia-nvjitlink', 'nvidia-nvshmem-cu13', 'nvidia-nvtx', 'pyequilib', 'triton']
+    assert not ['cuda-bindings', 'cuda-pathfinder', 'cuda-toolkit', 'nvidia-cublas', 'nvidia-cuda-cupti', 'nvidia-cuda-nvrtc', ...]
+~/claude-work/237/impl-repo-tests/tests/test_constraints.py:305: AssertionError: the GPU stack #237 removed is installed: ['cuda-bindings', 'cuda-pathfinder', 'cuda-toolkit', 'nvidia-cublas', 'nvidia-cuda-cupti', 'nvidia-cuda-nvrtc', 'nvidia-cuda-runtime', 'nvidia-cudnn-cu13', 'nvidia-cufft', 'nvidia-cufile', 'nvidia-curand', 'nvidia-cusolver', 'nvidia-cusparse', 'nvidia-cusparselt-cu13', 'nvidia-nccl-cu13', 'nvidia-nvjitlink', 'nvidia-nvshmem-cu13', 'nvidia-nvtx', 'pyequilib', 'triton']
+1 failed, 4 passed in 0.71s
+== without the variable (expect the GPU-stack test to SKIP)
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_constraints.py:303: this venv holds the GPU stack (20 distributions), and this run does not require its absence
+1 passed, 1 skipped in 2.84s
+2026-11-15T21:18:44Z

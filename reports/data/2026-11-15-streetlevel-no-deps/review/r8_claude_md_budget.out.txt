@@ -1,0 +1,4 @@
+edit: +22 characters
+edit: +69 characters
+edit: -93 characters
+CLAUDE.md: 29995 -> 29993 characters (net -2; ratchet < 30000)

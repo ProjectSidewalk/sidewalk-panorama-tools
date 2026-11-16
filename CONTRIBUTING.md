@@ -10,6 +10,7 @@ three months from now."
 python3 -m venv .venv
 source .venv/bin/activate                                  # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-dev.txt
+pip install --no-deps -r requirements-nodeps.txt
 python3 -m pytest tests
 ```
 
@@ -20,8 +21,9 @@ the suite covers and which parts touch the network.
 ## What CI runs
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) installs `requirements.txt` +
-`requirements-dev.txt` on Ubuntu 22.04 / Python 3.10 and runs `pytest tests -v` on every push to `master`,
-every pull request, and on demand. There is no linter configured — match the surrounding style.
+`requirements-dev.txt`, then `streetlevel` from `requirements-nodeps.txt` with `--no-deps` (#237), against
+`constraints.txt` and `constraints-ci.txt`, on Ubuntu 22.04 / Python 3.10, and runs `pytest tests -v` on every
+push to `master`, every pull request, and on demand. There is no linter configured — match the surrounding style.
 
 ## Conventions worth knowing before you write code
 
