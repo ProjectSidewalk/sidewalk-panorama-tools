@@ -284,10 +284,11 @@ CITIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log_anal
 PROVENANCE_MANIFEST = 'crop_provenance.csv'
 
 # The label-row fields copied into the manifest verbatim when the row carries them, and written EMPTY when
-# it does not - never inferred from anything else (the #99 rule). cvMetadata sends none of the three today
-# (docs/api-fields.md); older CSV exports carry `source` and `copyright`. `copyright` is the app's own name
-# for the producer credit (pano_data.copyright, which ImageryAttribution.line reads beside
-# pano_data.license, SidewalkWebpage#5202), so a value that arrives under it needs no renaming here.
+# it does not - never inferred from anything else (the #99 rule). cvMetadata sends all three since
+# SidewalkWebpage#5928 (docs/api-fields.md); older CSV exports carry `source` and sometimes `copyright`.
+# `copyright` is the app's own name for the producer credit (pano_data.copyright, which
+# ImageryAttribution.line reads beside pano_data.license, SidewalkWebpage#5202), so a value that arrives
+# under it needs no renaming here.
 PROVENANCE_FIELDS = ('source', 'copyright', 'license')
 
 # What each row says about the tilt correction (#196), since --tilt-correction makes a store mixed by
@@ -697,9 +698,9 @@ def json_to_list(jsondata, source=None):
 
     Measured against sidewalk-sea 2026-09-18 (#123): `label_type` is a name and replaced the older
     `label_type_id`; `unsure_count` was documented here as `notsure_count`; `camera_roll` is served and
-    was undocumented; `source` is NOT sent by this endpoint, despite the older exports in samples/ having
-    a column by that name. Nor does it send `copyright` or `license`; the provenance manifest (#111)
-    copies all three when a row carries them and writes them empty otherwise.
+    was undocumented. `source`, `copyright` and `license` were not sent then; they are since
+    SidewalkWebpage#5928, and the provenance manifest (#111) copies all three when a row carries them
+    and writes them empty otherwise.
     """
     if not isinstance(jsondata, list):
         raise ValueError("%s: expected a JSON array of label rows, got %s: %s"

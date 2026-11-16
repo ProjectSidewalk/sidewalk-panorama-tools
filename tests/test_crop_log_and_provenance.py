@@ -1794,8 +1794,9 @@ INTAKES = ['csv', 'json', 'server']
 
 
 class TestTheProvenanceColumnsAreOptionalOnEveryIntake:
-    """cvMetadata sends none of source, copyright or license today (docs/api-fields.md; the capture in
-    samples/cvmetadata-seattle.csv has none of them). A metadata source lacking them has to stay valid,
+    """cvMetadata sent none of source, copyright or license before SidewalkWebpage#5928 (the capture in
+    samples/cvmetadata-seattle.csv has none of them), and older exports still lack them. A metadata source
+    lacking them has to stay valid,
     and one carrying them has to deliver them to the manifest unchanged, on each of the three intakes."""
 
     def test_the_required_columns_did_not_grow(self, crop_runner):

@@ -21,7 +21,9 @@ and stops there - see docs/api-fields.md).
 Three properties are load-bearing, and each is the failure mode of the obvious implementation:
 
   - **The required list is read off CropRunner, never restated.** Two copies drift silently, which is the
-    bug. REQUIRED_LABEL_COLUMNS and LABEL_TYPE_COLUMNS are imported and asked at call time.
+    bug. REQUIRED_LABEL_COLUMNS, LABEL_TYPE_COLUMNS and PROVENANCE_FIELDS are imported and asked at call
+    time. The last three names stop no crop when they go, but a crop cut without them carries no source,
+    credit or licence into a dataset (#111), which is the same silent failure one step downstream.
   - **A field the server ADDS is not a failure.** Servers add fields; a check that cried wolf on that would
     be muted within a month, and a muted tripwire is worse than none. Only a field the cropper needs and no
     longer receives fails the run. New fields are still printed, because an addition is often the first
@@ -90,12 +92,15 @@ class _Incomplete(Exception):
     """Internal: the prefix read so far may still become a record. Never leaves this module."""
 
 
-class Comparison(namedtuple('Comparison', ['served', 'missing', 'missing_groups', 'not_required'])):
+class Comparison(namedtuple('Comparison',
+                            ['served', 'missing', 'missing_groups', 'missing_provenance', 'not_required'])):
     """One verdict about one deployment's field set.
 
     served          the field names the endpoint sent, in the order it sent them
     missing         required fields that are absent - each one fails the run
     missing_groups  either/or groups with no member present (the label type pair) - each fails the run
+    missing_provenance  provenance fields that are absent (source, copyright, license) - each fails the
+                    run: the cropper still cuts, and every crop's manifest row goes out empty
     not_required    fields served that CropRunner does not REQUIRE (it may still read some of
                     them - pano_width through _metadata_dims). Information only, NEVER a failure.
     """
@@ -105,7 +110,7 @@ class Comparison(namedtuple('Comparison', ['served', 'missing', 'missing_groups'
         """True only when nothing REQUIRED is absent. Note what is not consulted: `not_required`. Whether the
         server added a field is not part of this answer, and writing it in here is the one edit that turns
         the tripwire into the boy who cried wolf."""
-        return not self.missing and not self.missing_groups
+        return not self.missing and not self.missing_groups and not self.missing_provenance
 
 
 def required_fields():
@@ -127,6 +132,12 @@ def required_field_groups():
     return (tuple(CropRunner.LABEL_TYPE_COLUMNS),)
 
 
+def provenance_fields():
+    """The fields the cropper copies into each crop's provenance row (#111), asked of CropRunner at call
+    time for required_fields()' reason. Served by cvMetadata since SidewalkWebpage#5928."""
+    return tuple(CropRunner.PROVENANCE_FIELDS)
+
+
 def compare_served_fields(served):
     """Compare what a deployment serves against what CropRunner requires.
 
@@ -140,9 +151,11 @@ def compare_served_fields(served):
     groups = required_field_groups()
     missing = [field for field in required_fields() if field not in present]
     missing_groups = [group for group in groups if not any(field in present for field in group)]
-    reads = set(required_fields()).union(*(set(group) for group in groups)) if groups else set(required_fields())
+    missing_provenance = [field for field in provenance_fields() if field not in present]
+    reads = set(required_fields()).union(provenance_fields(), *(set(group) for group in groups))
     not_required = [field for field in served if field not in reads]
-    return Comparison(served=served, missing=missing, missing_groups=missing_groups, not_required=not_required)
+    return Comparison(served=served, missing=missing, missing_groups=missing_groups,
+                      missing_provenance=missing_provenance, not_required=not_required)
 
 
 def record_fields(text):
@@ -269,7 +282,13 @@ def report(fqdn, comparison):
     for group in comparison.missing_groups:
         print('MISSING: CropRunner needs one of %s and %s serves none of them '
               '(CropRunner.LABEL_TYPE_COLUMNS)' % (', '.join(repr(f) for f in group), fqdn))
-    print('FAIL: the cropper cannot read this deployment. See docs/api-fields.md.')
+    for field in comparison.missing_provenance:
+        print('MISSING: CropRunner records %r for every crop and %s does not serve it, so crops cut from '
+              'it carry no %s (CropRunner.PROVENANCE_FIELDS)' % (field, fqdn, field))
+    if comparison.missing or comparison.missing_groups:
+        print('FAIL: the cropper cannot read this deployment. See docs/api-fields.md.')
+    else:
+        print('FAIL: crops cut from this deployment would lose their provenance. See docs/api-fields.md.')
     return EXIT_MISSING_FIELDS
 
 

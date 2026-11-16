@@ -78,11 +78,16 @@ than from memory, because the four this table used to carry were each wrong in a
 | `heading` | The heading (in degrees) of the center of the canvas with respect to true north when the label was placed |
 | `pitch` | The pitch (in degrees) of the center of the canvas with respect to *the camera's pitch* when the label was placed |
 | `zoom` | The zoom level in the GSV interface when the user placed the label |
+| `source` | The imagery provider the pano came from (`gsv`, `mapillary`, `panoramax`, `infra3d`) [same as `/adminapi/panos`] |
+| `copyright` | Who to credit for the pano: the provider's own copyright string for GSV and infra3d, the contributor's bare name for Mapillary and Panoramax. Null when none was recorded |
+| `license` | The licence the imagery is shared under, as an identifier: `CC-BY-SA-4.0` on every Mapillary row, the one recorded per picture for Panoramax (`CC-BY-SA-4.0`, `CC-BY-4.0`, `etalab-2.0`), null for the other providers |
 
-**This endpoint does not send `source`.** `/adminapi/panos` does, and some older CSV exports have a
-column by that name, but `LabelCVMetadata` has no such field. Nor does it send `copyright` or
-`license`. The cropper copies all three into its per-crop provenance manifest when a row carries them
-and writes them empty when it does not, so a `-d` run today records none of them — see
+**`source`, `copyright` and `license` are served since
+[SidewalkWebpage#5928](https://github.com/ProjectSidewalk/SidewalkWebpage/issues/5928)** (merged
+2026-11-16). The three rows above are transcribed from that change, not yet from a capture of a live
+deployment. The cropper copies all three into its per-crop provenance manifest when a row carries them
+and writes them empty when it does not, so a `-d` run against a deployment older than that records
+none of them — see
 [Cropper → The provenance manifest](cropper.md#the-provenance-manifest-crop_provenancecsv).
 
 **`label_type` replaced `label_type_id`, and the cropper still needs the id.** Until
@@ -151,8 +156,9 @@ reports exit `1`, which is the missing-field code.
 
 Three things about it are load-bearing:
 
-* **It reads the required list off `CropRunner`** — `REQUIRED_LABEL_COLUMNS` and `LABEL_TYPE_COLUMNS`, asked
-  at call time — rather than restating it. Two copies of a field list drift silently, which is the bug being
+* **It reads the required list off `CropRunner`** — `REQUIRED_LABEL_COLUMNS`, `LABEL_TYPE_COLUMNS` and
+  `PROVENANCE_FIELDS`, asked at call time — rather than restating it. Losing a provenance field stops no
+  crop, but every crop then goes out with no source, credit or licence, so it fails the check too. Two copies of a field list drift silently, which is the bug being
   fixed, not a shape to reproduce one level out.
 * **A field the server *adds* is not a failure.** Servers add fields, and a check that cried wolf on that
   would be muted within a month; a muted tripwire is worse than none. New fields are printed, because an
