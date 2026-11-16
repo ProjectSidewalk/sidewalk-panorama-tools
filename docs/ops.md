@@ -891,7 +891,8 @@ uniform LANCZOS resample of it at the app's frame. The copy is therefore a **sec
 original, deliberately: the night's copy and a rebuilt one come from one code path and are the same bytes.
 **Neither write ever replaces a file** (`atomic_output_path(..., overwrite=False)` re-checks the target at the
 rename; an original or copy that appeared during the fan-out aborts the pano, transiently). The pano is ledgered
-`1` with tonight's stamp, as any success. The width tripwire reads Google's width, the one stored.
+`1` with tonight's stamp, as any success. The [width tripwire](#the-width-tripwire) is not run on Google's width:
+the viewer opens `<pano_id>.jpg` at the app's width, which is checked as for every pano, and never the original.
 
 **The labels: an assumption, not a measurement.** The app projects a label against its recorded frame, and stored
 `pano_x`/`pano_y` reproduce from the stored POV against the recorded dims for 95-100% of labels
@@ -925,19 +926,31 @@ regenerate the copy from; nothing does that automatically.
 
 An original that cannot be used (unreadable, not whole, not larger than the app's frame at its aspect) is left
 untouched with one `WARNING` on both channels, and the pano is refused as a frame disagreement naming the file.
+With the switch on, a pano Google no longer serves at all is never ledgered `0` while an original sits beside
+it: it raises `KeptOriginalError` naming the file, unledgered, every run, until someone decides (the orphan,
+below). Nothing re-checks a `.native` after it is written, and the whole-file check recovery runs (the same as
+for any found file, #239) cannot see damaged scan data under an intact header and end marker.
 
 **The other tools.** `downscale_panos.py`, `scan_black_bands.py` and `verify_store.py` judge `<pano_id>.jpg`
 only, never the original. `verify_store.py --quarantine` moves the `.jpg` and its display copy and **leaves the
 `.native`** (as it leaves the depth artifact); with the switch on, the next scrape rebuilds the copy from it.
+**With the switch off, a quarantine makes an orphan**: the row and the copy are gone, so the next scrape refuses
+the pano nightly while Google serves it, and ledgers it `0` once Google retires it.
 `refetch_panos.py` refuses a pano with an original at zero requests (`kept_original`). `--from-store` pulls
 `<pano_id>.jpg` by name, so a collaborator gets the copy only. The cropper reads `<pano_id>.jpg`.
 
-**The orphan, and its hand repair.** An original with no copy (the switch turned off, or the app record since
-corrected): copy it to `<pano_id>.jpg` by hand only after checking that `jpeg_dimensions` of the `.native` equals
-the app's current frame; otherwise leave both files alone and ask.
+**The orphan, and its repair.** An original with no copy. Two kinds, told apart by `jpeg_dimensions` of the
+`.native` against the app's current frame:
+
+* **Larger than the app's frame** (the common one: a run died between the two writes, or a quarantine took the
+  copy, and the app's record is still the small one). With the switch on, the next run rebuilds the copy at zero
+  requests; so if the switch is off, turn it on for one more run, let it rebuild, then turn it off.
+* **Equal to the app's frame** (the record has since been corrected). Recovery will not use it; copy it to
+  `<pano_id>.jpg` by hand. Any other size: leave both files alone and ask.
 
 **Before turning the switch off again.** The rebuild of a lost copy is gated by the switch too, so first list
-every original and confirm each has its copy:
+every original and confirm each has its copy, and run the same check again after any `verify_store.py
+--quarantine` while the switch is off:
 
 ```bash
 find /mnt/panostore -name '*.native' | while read n; do [ -f "${n%.native}.jpg" ] || echo "no copy: $n"; done
