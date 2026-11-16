@@ -1129,12 +1129,12 @@ _EQUIRECT_ZOOMS = (3, 4, 5)
 # ask cbk a different question, and a black answer to the wrong question would read as "gone".
 _PANO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
 
-# The widest frame fetch_equirect accepts: eight times the largest GSV frame (16384). A wider one is a caller's bug,
-# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent. The cap does
-# not bound memory: a frame 4x or 8x the pano's own size passes the frame check (the same grid at a lower level)
-# and, with no max_width, is upscaled to the whole frame after the fan-out - 8 GiB at 65536 wide, 32 GiB at the
-# cap (docs/geometry.md, "What the frame check cannot see").
-_MAX_FRAME_WIDTH = 2 ** 17
+# The widest frame fetch_equirect accepts: twice the largest GSV frame (16384). A wider one is a caller's bug,
+# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent. The cap
+# limits memory without making it small: a frame 2x, 4x or 8x the pano's own size passes the frame check (the
+# same grid at a lower level) and, with no max_width, is upscaled to the whole frame after the fan-out - 2 GiB
+# at the cap, where the first cap of 2**17 allowed 32 GiB (docs/geometry.md, "What the frame check cannot see").
+_MAX_FRAME_WIDTH = 2 ** 15
 
 
 def _whole_number(value, name, minimum, maximum=None):
@@ -1178,7 +1178,7 @@ async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=N
     pano_id   - a GSV pano id (A-Z, a-z, 0-9, _ and -). A `CAoS` id is a user photosphere: refused.
     width, height - the pano's full frame as the Project Sidewalk app records it; required, because the probe
                 returns only a zoom. Whole numbers (numpy integers are fine), exactly 2:1 as every GSV frame
-                is, and width at most 2**17. The frame check compares TILE GRIDS (512 px at the fetched zoom):
+                is, and width at most 2**15. The frame check compares TILE GRIDS (512 px at the fetched zoom):
                 a 2:1 frame less than one tile smaller than the pano's true frame passes it and comes back as
                 the pano's top-left corner at that size, with nothing to show it (16000x8000 of a 16384x8192
                 pano drops its right 384 columns and bottom 192 rows). Only photometa can catch that.

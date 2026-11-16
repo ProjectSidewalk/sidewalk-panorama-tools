@@ -510,10 +510,11 @@ class TestRefusedBeforeAnyRequest:
         assert '2:1' in str(raised.value)
         assert cbk.probe_urls == []
 
-    @pytest.mark.parametrize('width', [2 ** 17 + 2, 16384 * 2 ** 20, 10 ** 400])
+    @pytest.mark.parametrize('width', [2 ** 15 + 2, 2 ** 16, 2 ** 17, 16384 * 2 ** 20, 10 ** 400])
     def test_an_absurd_width_is_refused_before_any_request(self, monkeypatch, width):
-        """Above 2**17 (eight times the largest GSV frame) a width is a caller's bug; unbounded, it reached
-        float arithmetic and raised OverflowError after the requests had been spent."""
+        """Above 2**15 (twice the largest GSV frame) a width is a caller's bug: with no max_width a 65536-wide
+        frame asked Pillow for 8 GiB, and unbounded it reached float arithmetic and raised OverflowError after
+        the requests had been spent."""
         cbk = FakeCbk(monkeypatch)
 
         with pytest.raises(ValueError):
@@ -521,11 +522,11 @@ class TestRefusedBeforeAnyRequest:
 
         assert cbk.probe_urls == []
 
-    def test_the_largest_width_allowed_is_two_to_the_seventeen(self, monkeypatch):
+    def test_the_largest_width_allowed_is_two_to_the_fifteen(self, monkeypatch):
         cbk = FakeCbk(monkeypatch, levels=())
 
         with pytest.raises(gsv_tiles.PanoGoneError):         # past validation: the probe was asked
-            gsv_tiles.fetch_equirect(PANO, 2 ** 17, 2 ** 16)
+            gsv_tiles.fetch_equirect(PANO, 2 ** 15, 2 ** 14)
 
         assert len(cbk.probe_urls) == 2
 

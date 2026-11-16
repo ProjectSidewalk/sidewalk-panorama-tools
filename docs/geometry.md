@@ -311,7 +311,7 @@ zoom 5 is 32x16 = 512 tiles, 517 in all; 13312x6656 at zoom 5 is 26x13 = 338, 34
 
 | Exception | When | Requests | What to do |
 |---|---|---|---|
-| `ValueError` | a bad `pano_id` (not a non-empty `str` of `A-Z a-z 0-9 _ -`), `width`, `height`, `zoom` or `max_width`; a frame that is not exactly 2:1, or wider than 2**17 (a frame up to the cap is accepted; one many times the pano's own size costs memory, see "What the frame check cannot see") | 0 | fix the call |
+| `ValueError` | a bad `pano_id` (not a non-empty `str` of `A-Z a-z 0-9 _ -`), `width`, `height`, `zoom` or `max_width`; a frame that is not exactly 2:1, or wider than 2**15 (a frame up to the cap is accepted; one many times the pano's own size costs memory, see "What the frame check cannot see") | 0 | fix the call |
 | `PhotosphereUnsupportedError` (a `ValueError`) | the id starts with `CAoS`, a user photosphere, which cbk does not serve as tiles (#223) | 0 | not fetchable here |
 | `RuntimeError` | `fetch_equirect` called while an event loop runs in this thread | 0 | `await fetch_equirect_async(...)` |
 | `PanoGoneError` (a `ValueError`) | the probe got tile (0, 0) exactly black on a 200 at zooms 3 and 5: cbk's answer for a retired pano, the same evidence the scraper's permanent "no imagery" verdict rests on | 2 | never retry |
@@ -361,8 +361,8 @@ pre-2022 13312x6656 record of a 16384 pano is six tile columns off and is refuse
 less than one tile. The other way
 round, a frame 2, 4 or 8 times the pano's size has the pano's grid at a lower level, so it is fetched, and
 upscaled to the frame and flagged `upscaled`, unless `max_width` brings it back to or under the fetched width
-(then neither). With no `max_width` that upscale allocates the whole frame after the fan-out: 8 GiB for a frame
-four times a 16384x8192 pano and 32 GiB at the 2**17 width cap (Pillow stores RGB at four bytes a pixel), so
+(then neither). With no `max_width` that upscale allocates the whole frame after the fan-out: 2 GiB at the
+2**15 width cap, which is a frame twice a 16384x8192 pano (Pillow stores RGB at four bytes a pixel), so
 pass `max_width` for such a frame, or a corrected one.
 
 **Async callers.** Never call the sync name in a handler. `fetch_equirect_async` runs the probe, the frame
@@ -451,7 +451,7 @@ that they match), tag it, and say in the release what a consumer will see change
   and `is_photosphere_id` (moved from `downloaders/gsv.py`, which re-exports it). A consumer replacing a copied
   fetcher should expect `FrameDisagreementError` where its copy returned a silently cropped pano (the frame check;
   see the section above), and a `ValueError` at zero requests for a frame that is not exactly 2:1 or is wider
-  than 2**17. It is not complete protection: a 2:1 frame less than one tile smaller than the pano's true frame
+  than 2**15. It is not complete protection: a 2:1 frame less than one tile smaller than the pano's true frame
   still comes back as its top-left corner, which only photometa can tell. The three new errors pickle intact.
   Otherwise additions only: `fetch_pano_image`, `probe_zoom` and `frame_covers_pano` behave as in 1.2.0, the
   `[gsv]` extra and the base dependencies are unchanged, and nothing in `geometry`, `pose`, `torch_geometry`,
