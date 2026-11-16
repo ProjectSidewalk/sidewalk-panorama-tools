@@ -510,6 +510,8 @@ class TestRefusedBeforeAnyRequest:
         assert '2:1' in str(raised.value)
         assert cbk.probe_urls == []
 
+    # 2 ** 15 + 2, not + 1: an odd width cannot be 2:1, so + 1 would be refused by the 2:1 check and pass for the
+    # wrong reason. + 2 is the smallest width only the cap refuses.
     @pytest.mark.parametrize('width', [2 ** 15 + 2, 2 ** 16, 2 ** 17, 16384 * 2 ** 20, 10 ** 400])
     def test_an_absurd_width_is_refused_before_any_request(self, monkeypatch, width):
         """Above 2**15 (twice the largest GSV frame) a width is a caller's bug: with no max_width a 65536-wide

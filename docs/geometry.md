@@ -361,9 +361,12 @@ pre-2022 13312x6656 record of a 16384 pano is six tile columns off and is refuse
 less than one tile. The other way
 round, a frame 2, 4 or 8 times the pano's size has the pano's grid at a lower level, so it is fetched, and
 upscaled to the frame and flagged `upscaled`, unless `max_width` brings it back to or under the fetched width
-(then neither). With no `max_width` that upscale allocates the whole frame after the fan-out: 2 GiB at the
-2**15 width cap, which is a frame twice a 16384x8192 pano (Pillow stores RGB at four bytes a pixel), so
-pass `max_width` for such a frame, or a corrected one.
+(then neither). With no `max_width` that upscale allocates the whole frame after the fan-out: a 2 GiB
+returned image at the 2**15 width cap, which is a frame twice a 16384x8192 pano (Pillow stores RGB at four
+bytes a pixel). That is a floor, not the peak: while the resize runs, the fetched canvas, its crop and Pillow's
+intermediate are alive too, so the transient peak is nearer 4 GiB (read from the code, not measured), and a
+`numpy.asarray` of the result adds 1.5 GiB more. Size a worker for that, or pass `max_width` for such a frame,
+or a corrected one.
 
 **Async callers.** Never call the sync name in a handler. `fetch_equirect_async` runs the probe, the frame
 check and the stitch in a worker thread (`asyncio.to_thread`) and the tile fan-out on your loop, so N concurrent
