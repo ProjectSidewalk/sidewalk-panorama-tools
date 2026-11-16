@@ -970,6 +970,27 @@ class TestTheQueueLogIsEvidenceNotCargo:
         logging.warning('still logging')
         assert 'Could not open' in capsys.readouterr().err
 
+    @posix_only
+    def test_the_queue_log_is_group_writable(self, tmp_path):
+        """On a shared store the rest of the lab must be able to append to it (#247)."""
+        log_path = tmp_path / 'scrape_queue.log'
+
+        scrape_queue.configure_logging(str(log_path))
+
+        assert os.stat(log_path).st_mode & 0o777 == 0o664
+
+    def test_a_log_owned_by_another_account_is_still_used(self, monkeypatch, tmp_path):
+        """Its modes cannot be changed by this account; the queue logs to it anyway (#247)."""
+        def refuse(path, mode):
+            raise PermissionError(1, 'Operation not permitted', path)
+        monkeypatch.setattr(os, 'chmod', refuse)
+        log_path = tmp_path / 'scrape_queue.log'
+
+        scrape_queue.configure_logging(str(log_path))
+
+        logging.warning('still logging')
+        assert 'still logging' in log_path.read_text()
+
     def test_the_posix_lock_api_is_driven_correctly(self, monkeypatch, tmp_path):
         """The mirror of the msvcrt test above: substitute an fcntl-shaped module so the arm this platform
         does not take is still exercised. Between the two, both arms are covered on both platforms rather

@@ -4,6 +4,7 @@ import enum
 import errno
 import importlib
 import logging
+import logging.handlers
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -470,6 +471,26 @@ class DownloadResult(enum.Enum):
     #: plain success. See gsv.download_single_pano for the predicate, and log.csv column 8.
     fallback_success = 'fallback_success'
     failure = 'failure'
+
+
+def make_group_writable(path, mode=0o664):
+    """Set something this run created on the store to `mode`, so other lab accounts can write to it too.
+
+    A failure is swallowed: the path then belongs to another account, and its modes are theirs to set.
+    """
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+class GroupWritableRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """A rotating log that is group-writable (0664) on a shared store, and stays so after each rollover."""
+
+    def _open(self):
+        stream = super()._open()
+        make_group_writable(self.baseFilename)
+        return stream
 
 
 @contextlib.contextmanager

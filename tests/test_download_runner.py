@@ -1160,6 +1160,26 @@ class TestLedgerHygiene:
 
         assert os.stat(storage / 'pano_id_log.csv').st_mode & 0o777 == 0o664
 
+    @posix_only
+    def test_city_folder_and_run_logs_are_created_group_writable(self, monkeypatch, tmp_path):
+        """A city this run creates is open to the rest of the lab: folder 2775 like its shards, logs 664
+        like its ledgers (#247)."""
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        assert os.stat(storage).st_mode & 0o2777 == 0o2775
+        assert os.stat(storage / 'log.csv').st_mode & 0o777 == 0o664
+        assert os.stat(storage / 'scrape.log').st_mode & 0o777 == 0o664
+
+    @posix_only
+    def test_an_existing_city_folder_keeps_its_modes(self, monkeypatch, tmp_path):
+        """Only a folder this run creates is re-moded; an operator's pre-made one is theirs (#247)."""
+        (tmp_path / 'storage').mkdir()
+        os.chmod(tmp_path / 'storage', 0o750)
+
+        storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        assert os.stat(storage).st_mode & 0o2777 == 0o750
+
     def test_a_failed_chmod_does_not_take_the_phase_down(self, monkeypatch, tmp_path):
         """Losing the exists()/open() race to another user's run means chmod'ing a file we don't own. The
         ledger is open and writable either way, so a PermissionError there must not end the image phase -

@@ -178,7 +178,7 @@ def configure_logging(log_path):
     guaranteed to see a leak no matter which module's message carries it (2026-09 PR #100 review, finding 2).
     """
     try:
-        handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+        handler = common.GroupWritableRotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
         fallback_error = None
     except OSError as e:
         handler = logging.StreamHandler()
@@ -1474,9 +1474,13 @@ def write_log_csv_row(storage_location, fields):
         "log.csv row has %d fields, more than the %d the analyzer parses: %r" \
         % (len(fields), LOG_CSV_FIELD_COUNT, fields)
     row = ",".join(str(f) for f in fields + [''] * (LOG_CSV_FIELD_COUNT - len(fields)))
+    log_path = os.path.join(storage_location, "log.csv")
     try:
-        with open(os.path.join(storage_location, "log.csv"), 'a') as log:
+        log_existed = exists(log_path)
+        with open(log_path, 'a') as log:
             log.write("\n" + row)
+        if not log_existed:
+            common.make_group_writable(log_path)  # like the ledgers: other lab users' runs append here too
     except BaseException:
         print("Failed to append this run's row to log.csv; it was: %s" % row, file=sys.stderr)
         raise
@@ -1926,7 +1930,11 @@ def main(argv=None):
     raise_decompression_bomb_ceiling()
 
     # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
+    city_dir_existed = os.path.isdir(args.s)
     os.makedirs(args.s, exist_ok=True)
+    if not city_dir_existed:
+        # 2775 like the shard folders, so other lab users can add shards and they inherit the store's group.
+        common.make_group_writable(args.s, 0o2775)
 
     # scrape.log lives on the pano store next to log.csv, NOT the CWD: cron runs this from whatever directory
     # it likes, so a relative path scatters the log - and every per-pano failure detail - somewhere nobody

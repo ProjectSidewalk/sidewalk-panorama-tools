@@ -192,8 +192,9 @@ Four things to know before a long run:
   conditions, among them "every attempt raised" and `mapillary-token-missing`, are `WARNING` lines and
   entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
   pass `--run-summary-file`.
-* **Permissions are the copy's to set.** The runner creates shard folders `2775` (group-writable, setgid;
-  not on Windows), but the city folder itself is a plain `os.makedirs`, and a copy carries the source's modes.
+* **Permissions are the copy's to set.** The runner creates the city folder and its shard folders `2775`
+  (group-writable, setgid; not on Windows) and its ledgers and logs `664`, but a folder that already existed
+  keeps its modes, and a copy carries the source's.
 
 **Copying the folder to the lab pano store** is enough as it is, because the ledgers hold no paths, host or
 city names. Preserve modification times, since for every blank-stamp row the mtime is the only fetch

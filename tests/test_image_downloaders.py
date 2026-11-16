@@ -20,6 +20,7 @@ from PIL import Image
 
 import downloaders
 from sidewalk_panorama_tools import gsv_tiles
+from downloaders import common
 from downloaders.common import DownloadResult, atomic_output_path
 
 from conftest import posix_only
@@ -1751,3 +1752,27 @@ class TestPanoramaxSeams:
             downloaders.panoramax.require_picture_record({'status': message, 'message': message}, 'some-id')
 
         assert len(str(excinfo.value)) < 1000
+
+
+class TestGroupWritable:
+    """What the scraper creates on a shared store stays writable by the rest of the lab (#247)."""
+
+    @posix_only
+    def test_rotating_log_is_group_writable_and_stays_so_after_rollover(self, tmp_path):
+        log_path = tmp_path / 'scrape.log'
+        handler = common.GroupWritableRotatingFileHandler(str(log_path), maxBytes=10, backupCount=1)
+        try:
+            assert os.stat(log_path).st_mode & 0o777 == 0o664
+            handler.doRollover()
+            assert os.stat(log_path).st_mode & 0o777 == 0o664
+        finally:
+            handler.close()
+
+    def test_a_refused_chmod_is_not_an_error(self, monkeypatch, tmp_path):
+        """Another account's file cannot be re-moded; that must not take the run down."""
+        def refuse(path, mode):
+            raise PermissionError(1, 'Operation not permitted', path)
+        monkeypatch.setattr(os, 'chmod', refuse)
+
+        common.make_group_writable(str(tmp_path / 'log.csv'))
+

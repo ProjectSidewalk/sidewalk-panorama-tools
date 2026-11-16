@@ -222,8 +222,8 @@ def configure_logging(log_path):
         handler = logging.StreamHandler()
     else:
         try:
-            handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024,
-                                                           backupCount=3)
+            handler = common.GroupWritableRotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024,
+                                                              backupCount=3)
         except OSError as e:
             handler = logging.StreamHandler()
             fallback_error = e

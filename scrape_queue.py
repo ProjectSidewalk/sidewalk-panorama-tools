@@ -400,6 +400,22 @@ def exclusive_lock(path):
         os.close(fd)
 
 
+class GroupWritableRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """A rotating log that is group-writable (0664) on a shared store, and stays so after each rollover.
+
+    A copy of the one in downloaders/common.py, kept apart like the lock idiom: the fleet driver does not
+    import the image package.
+    """
+
+    def _open(self):
+        stream = super()._open()
+        try:
+            os.chmod(self.baseFilename, 0o664)
+        except OSError:
+            pass  # another account's log: its modes are theirs to set
+        return stream
+
+
 def configure_logging(log_path):
     """Send the queue's own narrative to a rotating log beside the per-city stores.
 
@@ -409,7 +425,7 @@ def configure_logging(log_path):
     A failure to open it is a warning, not a fatal: the log is evidence, not cargo.
     """
     try:
-        handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+        handler = GroupWritableRotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
         fallback_error = None
     except OSError as e:
         handler = logging.StreamHandler()
