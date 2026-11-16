@@ -1,7 +1,7 @@
 # Tests
 
 ```bash
-pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+pip3 install -r requirements.txt -r requirements-dev.txt -c constraints.txt -c constraints-ci.txt   # and the pytest CI runs
 pip3 install --no-deps -r requirements-nodeps.txt -c constraints.txt
 python3 -m pytest tests
 

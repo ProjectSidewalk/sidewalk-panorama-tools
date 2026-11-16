@@ -15,6 +15,8 @@ jobs:
     # a runner) that long before failing. Measured 2026-09-27: the job takes 5.5-6.5 minutes end to end
     # (runs 36270192977 and 36337717048), most of it the pip install; pytest itself ~2m45s. 20 is ~3x that -
     # room for a slow runner or a cold pip resolve - while still failing a hang in minutes, not hours (#165).
+    # Re-measured 2026-11-16 (#237): master's job took 13m37s-15m25s (runs 43726007931, 43727474183 and
+    # 43727565985) and #237's 9m34s, so the margin is now under 1.5x on master's figures; not changed here.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

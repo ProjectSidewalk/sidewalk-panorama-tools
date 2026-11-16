@@ -383,15 +383,18 @@ DOC_FILES = sorted([os.path.join(REPO_ROOT, name) for name in ('README.md', 'CON
                    + glob.glob(os.path.join(REPO_ROOT, '.claude', 'rules', '*.md')))
 DOCS_THAT_SHOW_IT = ['README.md', 'CONTRIBUTING.md', 'CLAUDE.md', os.path.join('docs', 'downloader.md'),
                      os.path.join('docs', 'testing.md'), os.path.join('docs', 'ops.md')]
-_INSTALLS_REQUIREMENTS = re.compile(r'\bpip3?\s+install\b.*(^|\s)-r\s+requirements\.txt(\s|$)')
-_INSTALLS_NODEPS = re.compile(r'\bpip3?\s+install\b.*--no-deps\s+-r\s+requirements-nodeps\.txt(\s|$)')
+# `-r FILE`, `-rFILE` and `--requirement[= ]FILE` are the same option to pip.
+_REQ = r'(-r\s*|--requirement[\s=]+)'
+_INSTALLS_REQUIREMENTS = re.compile(r'\bpip3?\s+install\b.*(^|\s)' + _REQ + r'requirements\.txt(\s|$)')
+_INSTALLS_NODEPS = re.compile(r'\bpip3?\s+install\b.*--no-deps\s+' + _REQ + r'requirements-nodeps\.txt(\s|$)')
 
 
 def _fenced_blocks(path):
-    """Each fenced code block in a Markdown file, as (line number of its opening fence, its lines)."""
+    """Each fenced code block in a Markdown file (``` or ~~~), as (line number of its opening fence, its lines).
+    Indented code blocks are not read: the docs here use fences only."""
     blocks, current, start = [], None, None
     for number, line in enumerate(_read(path).splitlines(), 1):
-        if line.strip().startswith('```'):
+        if line.strip().startswith(('```', '~~~')):
             if current is None:
                 current, start = [], number
             else:

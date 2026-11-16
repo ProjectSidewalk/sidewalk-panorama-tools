@@ -6,7 +6,7 @@ aiohttp>=3.7.4
 backoff>=1.10.0
 numpy>=1.21
 # streetlevel itself is in requirements-nodeps.txt and is installed with --no-deps (#237): it declares
-# pyequilib, whose 0.6.0 requires torch, and a normal resolve puts torch, triton and sixteen nvidia-*/cuda-*
+# pyequilib, whose 0.6.0 requires torch, and a normal resolve puts torch, triton and eighteen nvidia-*/cuda-*
 # wheels (several GB) into a venv where no production module imports any of them. pip has no per-requirement
 # --no-deps, so the requirements streetlevel really needs are listed here instead. The five below, with
 # aiohttp, requests, numpy and Pillow above, are everything `from streetlevel import streetview` imports,
