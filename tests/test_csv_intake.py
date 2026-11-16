@@ -490,8 +490,9 @@ class TestLabelCsvIntake:
         assert CropRunner._metadata_dims(labels[0]) == (16384, 8192)
 
     def test_the_real_cvmetadata_sample_parses(self):
-        """samples/cvmetadata-seattle.csv is the CURRENT live response, captured from sidewalk-sea on
-        2026-09-18 (#123) - the shape the endpoint has served since SidewalkWebpage#4103.
+        """samples/cvmetadata-seattle.csv is the live response captured from sidewalk-sea on 2026-09-18
+        (#123) - the shape the endpoint served from SidewalkWebpage#4103 until v11.21.0 appended
+        `source`, `copyright` and `license` (SidewalkWebpage#5990).
 
         The suite is network-free, so this file is the only record in the repo of what production
         actually sends. It is checked in rather than synthesised so that a future header change shows
@@ -507,7 +508,7 @@ class TestLabelCsvIntake:
         assert all(row['label_type'] in CropRunner.LABEL_TYPE_IDS_BY_NAME for row in labels)
         assert CropRunner.resolve_label_type_id(labels[0]) == 1  # CurbRamp
         assert CropRunner._metadata_dims(labels[0]) == (16384, 8192)
-        # camera_roll is served and blank for GSV rows; `source` is not served at all.
+        # camera_roll is served and blank for GSV rows; the capture predates `source`.
         assert labels[0]['camera_roll'] == ''
         assert 'source' not in labels[0]
 

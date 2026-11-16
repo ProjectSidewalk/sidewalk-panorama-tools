@@ -46,8 +46,8 @@ python3 flag_panos/json_to_csv.py --city <city> [--dir <dir>]
 # Log analyzer (needs PS_SFTP_HOST + PS_SFTP_BASE; PS_ROSTER_HOST optional, defaults to sidewalk-sea then -chicago; see docs/log-analyzer.md)
 python3 log_analyzer/analyze.py [--no-download] [--city <city_id>] [--stale-days N]
 
-# Does a live deployment still serve every cvMetadata field CropRunner needs? (#135) Outside tests/ on
-# purpose - the suite is network-free. No default host. Exits 0 ok / 1 field missing / 3 unreadable.
+# Does a live deployment still serve every cvMetadata field CropRunner requires or records? (#135) Outside
+# tests/ (the suite is network-free). No default host. Exits 0 ok / 1 field missing / 3 unreadable.
 python3 check_cvmetadata_schema.py --host <fqdn>            # or set PS_CVMETADATA_HOST
 
 # One-off migrator for pre-v2 depth artifacts
