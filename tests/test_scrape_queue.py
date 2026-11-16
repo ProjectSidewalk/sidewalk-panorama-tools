@@ -30,6 +30,7 @@ import pytest
 
 import scrape_queue
 from conftest import posix_only
+from downloaders import common
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -955,6 +956,62 @@ class TestThePassThroughSeparator:
         run_main(tmp_path, three_cities(tmp_path), fake_runner, '--no-rotate', '--', '--all-panos')
         starts = [line for line in journal.read() if line.startswith('START')]
         assert starts and all(' -- ' not in line and not line.endswith(' --') for line in starts), starts
+
+
+@pytest.mark.parametrize('handler_class', [scrape_queue.GroupWritableRotatingFileHandler,
+                                           common.GroupWritableRotatingFileHandler])
+class TestARotatingLogTheGroupCanWriteTo:
+    """The queue's handler and the runners' are two copies of one rule (#247); both face the same tests."""
+
+    @posix_only
+    def test_a_log_it_creates_gets_group_write_and_keeps_it_across_a_rollover(self, handler_class, tmp_path,
+                                                                              umask_077):
+        os.chmod(tmp_path, 0o2770)
+        handler = handler_class(str(tmp_path / 'x.log'), maxBytes=10, backupCount=1)
+        try:
+            assert os.stat(tmp_path / 'x.log').st_mode & 0o777 == 0o660
+            handler.emit(logging.makeLogRecord({'msg': 'longer than ten bytes'}))
+            handler.doRollover()
+            assert os.stat(tmp_path / 'x.log').st_mode & 0o777 == 0o660
+        finally:
+            handler.close()
+
+    @posix_only
+    def test_a_log_that_already_has_content_keeps_its_modes(self, handler_class, tmp_path, umask_077):
+        """Someone tightened it on purpose (scrape.log has held a token, #100)."""
+        os.chmod(tmp_path, 0o2770)
+        (tmp_path / 'x.log').write_text('earlier\n')
+        os.chmod(tmp_path / 'x.log', 0o600)
+
+        handler_class(str(tmp_path / 'x.log')).close()
+
+        assert os.stat(tmp_path / 'x.log').st_mode & 0o777 == 0o600
+
+    @posix_only
+    def test_a_log_in_a_folder_the_group_cannot_write_to_stays_private(self, handler_class, tmp_path,
+                                                                       umask_077):
+        """Rotating renames inside the folder. An account that could open the log but not rotate it would
+        lose every record once the log filled; failing the open sends it to stderr instead."""
+        os.chmod(tmp_path, 0o750)
+
+        handler_class(str(tmp_path / 'x.log')).close()
+
+        assert os.stat(tmp_path / 'x.log').st_mode & 0o777 == 0o600
+
+    def test_a_refused_chmod_still_leaves_a_working_log(self, handler_class, monkeypatch, tmp_path):
+        os.chmod(tmp_path, 0o2770)  # group-writable, so the handler does try
+
+        def denied(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+        monkeypatch.setattr(os, 'chmod', denied)
+
+        handler = handler_class(str(tmp_path / 'x.log'))
+        try:
+            handler.emit(logging.makeLogRecord({'msg': 'still logging'}))
+        finally:
+            handler.close()
+
+        assert 'still logging' in (tmp_path / 'x.log').read_text()
 
 
 class TestTheQueueLogIsEvidenceNotCargo:

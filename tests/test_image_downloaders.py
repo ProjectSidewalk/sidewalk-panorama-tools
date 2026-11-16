@@ -20,6 +20,7 @@ from PIL import Image
 
 import downloaders
 from sidewalk_panorama_tools import gsv_tiles
+from downloaders import common
 from downloaders.common import DownloadResult, atomic_output_path
 
 from conftest import posix_only
@@ -1751,3 +1752,27 @@ class TestPanoramaxSeams:
             downloaders.panoramax.require_picture_record({'status': message, 'message': message}, 'some-id')
 
         assert len(str(excinfo.value)) < 1000
+
+
+
+class TestMakeGroupWritable:
+    """Group bits are added to what the umask left, never set outright (#247)."""
+
+    @posix_only
+    def test_a_file_gains_group_read_write_and_nothing_for_other(self, tmp_path, umask_077):
+        (tmp_path / 'f').write_text('x')
+
+        common.make_group_writable(str(tmp_path / 'f'))
+
+        assert os.stat(tmp_path / 'f').st_mode & 0o7777 == 0o660
+
+    @posix_only
+    def test_a_folder_also_gains_setgid(self, tmp_path, umask_077):
+        (tmp_path / 'd').mkdir()
+
+        common.make_group_writable(str(tmp_path / 'd'))
+
+        assert os.stat(tmp_path / 'd').st_mode & 0o7777 == 0o2770
+
+    def test_a_path_that_is_gone_is_not_an_error(self, tmp_path):
+        common.make_group_writable(str(tmp_path / 'gone'))

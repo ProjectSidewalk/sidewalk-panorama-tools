@@ -193,7 +193,9 @@ Four things to know before a long run:
   entries in `--run-summary-file`; only `scrape_queue.py` turns them into an exit code. Read the output, or
   pass `--run-summary-file`.
 * **Permissions are the copy's to set.** The runner creates shard folders `2775` (group-writable, setgid;
-  not on Windows), but the city folder itself is a plain `os.makedirs`, and a copy carries the source's modes.
+  not on Windows) and ledgers `664`. A city folder, `log.csv` or log that it creates gets group write added
+  (and setgid, for the folder) to whatever the umask left; one that already existed keeps its modes, and a
+  copy carries the source's.
 
 **Copying the folder to the lab pano store** is enough as it is, because the ledgers hold no paths, host or
 city names. Preserve modification times, since for every blank-stamp row the mtime is the only fetch
