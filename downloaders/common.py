@@ -6,6 +6,7 @@ import importlib
 import logging
 import logging.handlers
 import os
+import stat
 import tempfile
 from datetime import datetime, timezone
 
@@ -473,23 +474,35 @@ class DownloadResult(enum.Enum):
     failure = 'failure'
 
 
-def make_group_writable(path, mode=0o664):
-    """Set something this run created on the store to `mode`, so other lab accounts can write to it too.
+def make_group_writable(path):
+    """Let the store's group write to something this run created: a file, or a folder (which also gets setgid).
 
+    Bits are added to what the umask left, never set outright, so a umask that keeps "other" out still does.
     A failure is swallowed: the path then belongs to another account, and its modes are theirs to set.
     """
     try:
-        os.chmod(path, mode)
+        mode = os.stat(path).st_mode
+        os.chmod(path, stat.S_IMODE(mode) | (0o2070 if stat.S_ISDIR(mode) else 0o060))
     except OSError:
         pass
 
 
 class GroupWritableRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    """A rotating log that is group-writable (0664) on a shared store, and stays so after each rollover."""
+    """A rotating log the store's group can write to, as long as this handler is what created the file.
+
+    A log that already has content keeps its modes. So does a new one in a folder the group cannot write
+    to: a rollover renames inside the folder, and an account that can open the log but not rotate it loses
+    every record once the log is full. scrape_queue.py carries a copy, since it does not import this package.
+    """
 
     def _open(self):
         stream = super()._open()
-        make_group_writable(self.baseFilename)
+        try:
+            folder_mode = os.stat(os.path.dirname(self.baseFilename)).st_mode
+            if stream.tell() == 0 and folder_mode & 0o020:
+                os.chmod(self.baseFilename, (os.stat(self.baseFilename).st_mode & 0o7777) | 0o060)
+        except OSError:
+            pass  # another account's log: its modes are theirs to set
         return stream
 
 

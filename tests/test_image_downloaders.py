@@ -1754,25 +1754,25 @@ class TestPanoramaxSeams:
         assert len(str(excinfo.value)) < 1000
 
 
-class TestGroupWritable:
-    """What the scraper creates on a shared store stays writable by the rest of the lab (#247)."""
+
+class TestMakeGroupWritable:
+    """Group bits are added to what the umask left, never set outright (#247)."""
 
     @posix_only
-    def test_rotating_log_is_group_writable_and_stays_so_after_rollover(self, tmp_path):
-        log_path = tmp_path / 'scrape.log'
-        handler = common.GroupWritableRotatingFileHandler(str(log_path), maxBytes=10, backupCount=1)
-        try:
-            assert os.stat(log_path).st_mode & 0o777 == 0o664
-            handler.doRollover()
-            assert os.stat(log_path).st_mode & 0o777 == 0o664
-        finally:
-            handler.close()
+    def test_a_file_gains_group_read_write_and_nothing_for_other(self, tmp_path, umask_077):
+        (tmp_path / 'f').write_text('x')
 
-    def test_a_refused_chmod_is_not_an_error(self, monkeypatch, tmp_path):
-        """Another account's file cannot be re-moded; that must not take the run down."""
-        def refuse(path, mode):
-            raise PermissionError(1, 'Operation not permitted', path)
-        monkeypatch.setattr(os, 'chmod', refuse)
+        common.make_group_writable(str(tmp_path / 'f'))
 
-        common.make_group_writable(str(tmp_path / 'log.csv'))
+        assert os.stat(tmp_path / 'f').st_mode & 0o7777 == 0o660
 
+    @posix_only
+    def test_a_folder_also_gains_setgid(self, tmp_path, umask_077):
+        (tmp_path / 'd').mkdir()
+
+        common.make_group_writable(str(tmp_path / 'd'))
+
+        assert os.stat(tmp_path / 'd').st_mode & 0o7777 == 0o2770
+
+    def test_a_path_that_is_gone_is_not_an_error(self, tmp_path):
+        common.make_group_writable(str(tmp_path / 'gone'))

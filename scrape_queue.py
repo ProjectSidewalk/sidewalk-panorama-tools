@@ -401,16 +401,18 @@ def exclusive_lock(path):
 
 
 class GroupWritableRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    """A rotating log that is group-writable (0664) on a shared store, and stays so after each rollover.
+    """A rotating log the store's group can write to, as long as this handler is what created the file.
 
-    A copy of the one in downloaders/common.py, kept apart like the lock idiom: the fleet driver does not
-    import the image package.
+    A copy of the one in downloaders/common.py (see there for the two conditions), kept apart like the lock
+    idiom: the fleet driver does not import the image package. One set of tests runs against both.
     """
 
     def _open(self):
         stream = super()._open()
         try:
-            os.chmod(self.baseFilename, 0o664)
+            folder_mode = os.stat(os.path.dirname(self.baseFilename)).st_mode
+            if stream.tell() == 0 and folder_mode & 0o020:
+                os.chmod(self.baseFilename, (os.stat(self.baseFilename).st_mode & 0o7777) | 0o060)
         except OSError:
             pass  # another account's log: its modes are theirs to set
         return stream

@@ -34,6 +34,7 @@ import downscale_panos  # noqa: E402
 import refetch_panos as rp  # noqa: E402
 from downloaders import common, gsv  # noqa: E402
 from sidewalk_panorama_tools import gsv_tiles
+from conftest import posix_only  # noqa: E402
 from test_gsv_stitcher import BLACK_BODY, IMAGERY_BODY, canned_cbk, cbk_query  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'tiles')
@@ -1353,6 +1354,15 @@ class TestTheCommandLineSurface:
         assert counts['replaced'] == 1
         assert open(stored, 'rb').read() != before
         assert not os.path.exists(os.path.join(str(tmp_path), rp.MEASUREMENTS_FILENAME))
+
+    @posix_only
+    def test_a_new_refetch_log_gets_group_write(self, tmp_path, umask_077):
+        """Like scrape.log: the next lab account to run a repair appends to the same file (#247)."""
+        os.chmod(tmp_path, 0o2770)
+
+        rp.configure_logging(os.path.join(str(tmp_path), rp.LOG_FILENAME))
+
+        assert os.stat(tmp_path / rp.LOG_FILENAME).st_mode & 0o777 == 0o660
 
     def test_logging_lands_on_the_store_not_the_cwd(self, tmp_path):
         """Same reason DownloadRunner puts scrape.log on the store: under cron the CWD is wherever the

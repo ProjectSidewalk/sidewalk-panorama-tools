@@ -29,6 +29,15 @@ if REPO_ROOT not in sys.path:
 # assertions about POSIX file modes are skipped rather than failed there.
 posix_only = pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes are unavailable on Windows')
 
+
+@pytest.fixture
+def umask_077():
+    """A umask no group bit survives, so a mode assertion fails on any host if the code under test did not
+    set it - the developer umask 002 creates files 664 on its own."""
+    prior = os.umask(0o077)
+    yield
+    os.umask(prior)
+
 # The desk studies' gitignored download cache. Gitignored is exactly what makes a write into it dangerous:
 # `git status` cannot see it, the fetcher skips any file already there (fetch_rawlabels.py), and every study
 # globs `*.csv` over it - so one fake file written by a test becomes a sticky, invisible change to the corpus

@@ -5,7 +5,6 @@ import collections
 import csv
 import json
 import logging
-import logging.handlers
 import math
 import os
 import random
@@ -1476,14 +1475,14 @@ def write_log_csv_row(storage_location, fields):
     row = ",".join(str(f) for f in fields + [''] * (LOG_CSV_FIELD_COUNT - len(fields)))
     log_path = os.path.join(storage_location, "log.csv")
     try:
-        log_existed = exists(log_path)
         with open(log_path, 'a') as log:
+            created = log.tell() == 0
             log.write("\n" + row)
-        if not log_existed:
-            common.make_group_writable(log_path)  # like the ledgers: other lab users' runs append here too
     except BaseException:
         print("Failed to append this run's row to log.csv; it was: %s" % row, file=sys.stderr)
         raise
+    if created:
+        common.make_group_writable(log_path)  # like the ledgers: other lab users' runs append here too
 
 
 def run_scraper_and_log_results(storage_location, image_pano_infos, depth_pano_infos, skip_depth,
@@ -1929,12 +1928,13 @@ def main(argv=None):
     # it prevents is silent - a warning per pano, then no sidecar on precisely the widest images.
     raise_decompression_bomb_ceiling()
 
-    # exist_ok: concurrent city runs (or the operator pre-creating the dir) race on the exists check.
-    city_dir_existed = os.path.isdir(args.s)
-    os.makedirs(args.s, exist_ok=True)
-    if not city_dir_existed:
-        # 2775 like the shard folders, so other lab users can add shards and they inherit the store's group.
-        common.make_group_writable(args.s, 0o2775)
+    try:
+        os.makedirs(args.s)
+    except FileExistsError:
+        pass  # the operator's folder, or a concurrent run's: its modes are theirs to set
+    else:
+        # Like the shard folders: other lab users can add shards, and they inherit the store's group.
+        common.make_group_writable(args.s)
 
     # scrape.log lives on the pano store next to log.csv, NOT the CWD: cron runs this from whatever directory
     # it likes, so a relative path scatters the log - and every per-pano failure detail - somewhere nobody

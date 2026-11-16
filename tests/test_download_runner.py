@@ -1161,24 +1161,48 @@ class TestLedgerHygiene:
         assert os.stat(storage / 'pano_id_log.csv').st_mode & 0o777 == 0o664
 
     @posix_only
-    def test_city_folder_and_run_logs_are_created_group_writable(self, monkeypatch, tmp_path):
-        """A city this run creates is open to the rest of the lab: folder 2775 like its shards, logs 664
-        like its ledgers (#247)."""
+    def test_a_new_city_folder_and_its_run_logs_get_group_write(self, monkeypatch, tmp_path, umask_077):
+        """A city this run creates is open to the rest of the lab (#247). Bits are added to what the umask
+        left, so "other" stays shut out here."""
         storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
-        assert os.stat(storage).st_mode & 0o2777 == 0o2775
-        assert os.stat(storage / 'log.csv').st_mode & 0o777 == 0o664
-        assert os.stat(storage / 'scrape.log').st_mode & 0o777 == 0o664
+        assert os.stat(storage).st_mode & 0o7777 == 0o2770
+        assert os.stat(storage / 'log.csv').st_mode & 0o777 == 0o660
+        assert os.stat(storage / 'scrape.log').st_mode & 0o777 == 0o660
 
     @posix_only
-    def test_an_existing_city_folder_keeps_its_modes(self, monkeypatch, tmp_path):
-        """Only a folder this run creates is re-moded; an operator's pre-made one is theirs (#247)."""
+    def test_an_existing_city_folder_keeps_its_modes_and_its_new_log_stays_private(self, monkeypatch, tmp_path,
+                                                                                    umask_077):
+        """An operator's pre-made folder is theirs. The group cannot rotate a log inside it, so the log is
+        not opened up to them either (#247)."""
         (tmp_path / 'storage').mkdir()
         os.chmod(tmp_path / 'storage', 0o750)
 
         storage, _ = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
 
-        assert os.stat(storage).st_mode & 0o2777 == 0o750
+        assert os.stat(storage).st_mode & 0o7777 == 0o750
+        assert os.stat(storage / 'scrape.log').st_mode & 0o777 == 0o600
+
+    @posix_only
+    def test_an_existing_log_csv_keeps_its_modes(self, tmp_path, umask_077):
+        (tmp_path / 'log.csv').write_text('\nan earlier run')
+        os.chmod(tmp_path / 'log.csv', 0o600)
+
+        DownloadRunner.write_log_csv_row(str(tmp_path), ['2026-08-06 01:00:00', 1, 2])
+
+        assert os.stat(tmp_path / 'log.csv').st_mode & 0o777 == 0o600
+
+    def test_refused_chmods_do_not_take_the_run_down(self, monkeypatch, tmp_path):
+        """Every mode this run sets is a courtesy to the next account; none may cost the night (#247)."""
+        def denied(*args, **kwargs):
+            raise PermissionError(1, 'Operation not permitted')
+        monkeypatch.setattr(os, 'chmod', denied)
+
+        storage, calls = call_main(monkeypatch, tmp_path, GSV_CSV_ROWS)
+
+        assert calls
+        assert (storage / 'log.csv').read_text().strip()
+        assert (storage / 'scrape.log').exists()
 
     def test_a_failed_chmod_does_not_take_the_phase_down(self, monkeypatch, tmp_path):
         """Losing the exists()/open() race to another user's run means chmod'ing a file we don't own. The

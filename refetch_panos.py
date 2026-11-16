@@ -52,7 +52,6 @@ import csv
 import gzip
 import json
 import logging
-import logging.handlers
 import os
 import random
 import signal
