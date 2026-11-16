@@ -29,13 +29,15 @@ import CropRunner  # noqa: E402
 import check_cvmetadata_schema as schema  # noqa: E402
 
 
-# The shape sidewalk-sea actually serves, measured 2026-09-18 (samples/cvmetadata-seattle.csv). Written out
-# here rather than read from that file because this battery is about what the check does with a field set,
-# and the file is the record of one deployment on one day.
-SERVED_TODAY = ('label_id', 'pano_id', 'label_type', 'agree_count', 'disagree_count', 'unsure_count',
-                'pano_width', 'pano_height', 'pano_x', 'pano_y', 'canvas_width', 'canvas_height',
-                'canvas_x', 'canvas_y', 'zoom', 'heading', 'pitch', 'camera_heading', 'camera_pitch',
-                'camera_roll')
+# The shape sidewalk-sea served when measured 2026-09-18 (samples/cvmetadata-seattle.csv), plus the three
+# provenance fields SidewalkWebpage#5928 appended. Written out here rather than read from that file because
+# this battery is about what the check does with a field set, and the file is the record of one deployment
+# on one day.
+SERVED_BEFORE_5928 = ('label_id', 'pano_id', 'label_type', 'agree_count', 'disagree_count', 'unsure_count',
+                      'pano_width', 'pano_height', 'pano_x', 'pano_y', 'canvas_width', 'canvas_height',
+                      'canvas_x', 'canvas_y', 'zoom', 'heading', 'pitch', 'camera_heading', 'camera_pitch',
+                      'camera_roll')
+SERVED_TODAY = SERVED_BEFORE_5928 + ('source', 'copyright', 'license')
 
 # What the same endpoint served until SidewalkWebpage#4103 (released 2026-09-02): an integer id, not a name.
 SERVED_BEFORE_4103 = tuple('label_type_id' if f == 'label_type' else f for f in SERVED_TODAY)
@@ -136,6 +138,19 @@ class TestTheVerdict:
         assert sorted(result.missing) == sorted(CropRunner.REQUIRED_LABEL_COLUMNS)
         assert result.missing_groups == [tuple(CropRunner.LABEL_TYPE_COLUMNS)]
 
+    def test_a_deployment_without_the_provenance_fields_fails_and_names_all_three(self):
+        """The cropper still cuts from such a deployment, and every crop goes out with no source, credit or
+        licence (#111) - silent in exactly the way the label_type rename was."""
+        result = schema.compare_served_fields(SERVED_BEFORE_5928)
+        assert not result.ok
+        assert result.missing_provenance == ['source', 'copyright', 'license']
+        assert result.missing == [] and result.missing_groups == []
+
+    def test_the_provenance_fields_are_not_listed_as_beyond_what_is_required(self):
+        result = schema.compare_served_fields(SERVED_TODAY)
+        assert result.ok
+        assert not set(CropRunner.PROVENANCE_FIELDS) & set(result.not_required)
+
 
 class TestTheFieldListComesFromCropRunner:
     """The required list is READ from CropRunner, never restated (#135's acceptance criterion).
@@ -162,8 +177,15 @@ class TestTheFieldListComesFromCropRunner:
         """The other direction: the check must not outlive a requirement CropRunner gave up, or the first
         person to simplify the cropper gets a red cron mail about a field nothing reads."""
         monkeypatch.setattr(CropRunner, 'REQUIRED_LABEL_COLUMNS', ('pano_id', 'label_id'))
+        monkeypatch.setattr(CropRunner, 'PROVENANCE_FIELDS', ())
         result = schema.compare_served_fields(('pano_id', 'label_id', 'label_type'))
         assert result.ok
+
+    def test_the_provenance_fields_are_read_from_CropRunner_too(self, monkeypatch):
+        monkeypatch.setattr(CropRunner, 'PROVENANCE_FIELDS', ('sentinel_credit',))
+        result = schema.compare_served_fields(SERVED_TODAY)
+        assert result.missing_provenance == ['sentinel_credit']
+        assert not result.ok
 
 
 class TestReadingTheFieldNamesOffTheWire:
@@ -543,7 +565,8 @@ class TestTheTwoChannels:
     def test_the_report_of_a_lean_deployment_has_no_not_required_line_at_all(self, capsys):
         """The line is omitted, not printed with an empty list: a report that always prints every line is
         one an operator stops reading, and this one is read by eye once a night at most."""
-        lean = schema.compare_served_fields(('pano_id', 'pano_x', 'pano_y', 'label_id', 'label_type'))
+        lean = schema.compare_served_fields(('pano_id', 'pano_x', 'pano_y', 'label_id', 'label_type')
+                                            + CropRunner.PROVENANCE_FIELDS)
         assert schema.report('sidewalk-sea.cs.washington.edu', lean) == schema.EXIT_OK
         out = capsys.readouterr().out
         assert 'does not read' not in out
