@@ -1130,7 +1130,10 @@ _EQUIRECT_ZOOMS = (3, 4, 5)
 _PANO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
 
 # The widest frame fetch_equirect accepts: eight times the largest GSV frame (16384). A wider one is a caller's bug,
-# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent.
+# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent. The cap does
+# not bound memory: a frame 4x or 8x the pano's own size passes the frame check (the same grid at a lower level)
+# and, with no max_width, is upscaled to the whole frame after the fan-out - 8 GiB at 65536 wide, 32 GiB at the
+# cap (docs/geometry.md, "What the frame check cannot see").
 _MAX_FRAME_WIDTH = 2 ** 17
 
 
