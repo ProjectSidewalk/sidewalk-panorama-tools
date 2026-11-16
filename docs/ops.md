@@ -1424,8 +1424,10 @@ git log --oneline -1                                   # what is live now
 git diff --stat "$before" HEAD -- requirements.txt requirements-nodeps.txt constraints.txt   # non-empty -> both installs:
 #   .venv/bin/pip install -r requirements.txt -c constraints.txt
 #   .venv/bin/pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+diff <(.venv/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)   # must print nothing (see below)
 .venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
 .venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
+.venv/bin/python -c "from streetlevel import streetview"
 ```
 
 The order matters twice: the requirements check comes *before* the import check, because a new dependency
@@ -1438,12 +1440,29 @@ the box never reads it. Both take `-c constraints.txt` so the box gets the versi
 ([Refreshing `constraints.txt`](#refreshing-constraintstxt)). Neither is ever `-U`: an upgrade is a change to the
 pins, made in a PR and tested by CI, not something the box picks up from PyPI on its own.
 
+The `diff` is the check that the installs did what they should: since #237 the venv's `pip freeze` is exactly
+`constraints.txt`, so it prints nothing. A line marked `<` is a package the venv has and the pins do not (a
+`streetlevel` installed without `--no-deps` brings `pyequilib`, `torch` and the CUDA wheels back that way); `>`
+is a pin the venv lacks or holds at another version (line 2 run without `-c` installs a newer `streetlevel`). Until
+the box has [moved to the --no-deps install](#moving-the-box-to-the---no-deps-install-237), its old venv still
+holds the 41 packages #237 dropped, so the diff prints those 41 `<` lines and nothing else. The last line catches
+the one mistake the freeze cannot show as clearly, `streetlevel` missing because line 2 was not run.
+
+**An install that changes a pin `streetlevel` also requires prints a red `ERROR:` block and exits 0.** Since #237,
+moving the pin of `aiohttp`, `requests`, `numpy`, `pillow`, `pyproj`, `scipy`, `pyexiv2` or either converter makes
+pip print `ERROR: pip's dependency resolver does not currently take into account all the packages that are
+installed...`, then `streetlevel 0.12.11 requires cython, which is not installed.` and the same for `protobuf`,
+`pycryptodome`, `pyequilib`, `pyfrpc`, `pytest` and `pytest-asyncio`, then `Successfully installed`. That is
+expected and not a failed check: those 7 are never imported. **Do not install what it names**; `pyequilib` is the
+first step back to torch. The `diff` above is the check that counts.
+
 - **Pulling while the queue is running is safe; a `pip install` is less so.** Every repo import is at module
   level, so a city already running keeps the code it loaded, the next city starts on the new tree, and the
   queue process itself keeps its old code until the next night. The 2026-09-17 deploy landed with the queue on
   its 30th city. `streetlevel` is the exception: it is imported lazily when the depth phase starts, so a city in
   its image phase while pip rewrites the package loads whatever is half-written. If `requirements.txt`,
-  `requirements-nodeps.txt` or `constraints.txt` changed, do the two installs between cities (watch `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
+  `requirements-nodeps.txt` or `constraints.txt` changed, do the two installs between cities (watch
+  `scrape_queue.log` for the `ok`/`failed` line) or when the queue is idle.
   A half-written package that raises `ImportError` now says so on stdout and fails the night as
   `depth-unavailable` (#161) rather than skipping depth silently; one that raises something else still crashes
   the city and books it `failed`.
@@ -1523,10 +1542,11 @@ passing.
 Since [#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237) `streetlevel` is installed
 on its own with `--no-deps` (`requirements-nodeps.txt`), so the venv no longer holds `torch`, `triton`,
 `pyequilib` and the `nvidia-*`/`cuda-*` wheels. **Merging that change does nothing to the box's existing venv.**
-Re-running the two install lines in the old venv is a no-op (measured), so an ordinary [deploy](#deploying) is
-safe and the box keeps its 4.9 GB until someone takes the deliberate step below. It builds a fresh venv and keeps
-the old one beside it, so rollback is a rename. The measurements behind it are in
-[the #237 report](../reports/2026-11-15-streetlevel-no-deps.md).
+Re-running the two install lines in the old venv is a no-op (measured with the box's pip 22.0.2 on a venv built
+from master's files: `rerun_box_move.out.txt` in [the #237 report](../reports/2026-11-15-streetlevel-no-deps.md)'s
+data), so an ordinary [deploy](#deploying) is safe and the box keeps its 4.9 GB until someone takes the deliberate
+step below. The new venv is built and checked **beside** the old one while the old one keeps serving, then swapped
+in by one command line; the old one is kept whole, so rollback is one line from any state.
 
 **Do it in the daytime.** The queue runs from 19:00 to about 06:30 Pacific; do not start after 18:00. If the pull
 would also bring other merged PRs, deploy those first with the ordinary Deploying block and let a night pass, so a
@@ -1535,26 +1555,49 @@ bad night is attributable.
 ```bash
 cd /srv/sidewalk-panorama-tools
 pgrep -af 'scrape_queue\.py'                              # must print nothing
+git status --short                                        # must print nothing
 df -h .                                                   # the new venv needs about 0.3 GB beside the old one
 du -sm .venv                                              # BEFORE: record it (4.9 GB on 2026-10-06)
 cat .venv/pyvenv.cfg; .venv/bin/pip --version             # record; build the new venv the same way
 .venv/bin/pip freeze > ~/box-freeze-before-237.txt
-git status --short && before=$(git rev-parse HEAD) && git pull --ff-only && git log --oneline -1
+before=$(git rev-parse HEAD) && git pull --ff-only && git log --oneline -1
 
-mv .venv .venv-before-237                                 # kept whole for rollback (see the shebang note below)
-python3 -m venv .venv                                     # add --system-site-packages only if the old pyvenv.cfg says true
-.venv/bin/pip install -r requirements.txt -c constraints.txt
-.venv/bin/pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+# 1. Build and check the new venv BESIDE the old one. .venv is not touched, so the nightly keeps its venv, and
+#    every line of this step can be re-run from the top if it is interrupted.
+python3 -m venv .venv-237                                 # add --system-site-packages only if the old pyvenv.cfg says true
+.venv-237/bin/pip install -r requirements.txt -c constraints.txt
+.venv-237/bin/pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
+diff <(.venv-237/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)   # must print nothing
+.venv-237/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
+.venv-237/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
+.venv-237/bin/python -c "from streetlevel import streetview; from streetlevel.streetview import api"
+.venv-237/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run
 
-.venv/bin/pip freeze | grep -i -E '^(torch|triton|pyequilib|nvidia|cuda)'   # must print nothing
-.venv/bin/pip freeze | wc -l                              # 24
-.venv/bin/python -m py_compile DownloadRunner.py scrape_queue.py downloaders/*.py
-.venv/bin/python -c "import DownloadRunner, scrape_queue, cron_notify"
-.venv/bin/python -c "from streetlevel import streetview; from streetlevel.streetview import api"
-.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --dry-run
-du -sm .venv                                              # AFTER: record it (291-294 MB measured off-box)
+# 2. Swap, as ONE command line: the old venv is renamed and .venv becomes a symlink to .venv-237. The new venv is
+#    never renamed, so its scripts (bin/pip among them) keep the paths they were built with.
+mv .venv .venv-before-237 && ln -s .venv-237 .venv
+diff <(.venv/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)   # must print nothing
+.venv/bin/python -c "from streetlevel import streetview; import sys; print(sys.prefix)"   # .../sidewalk-panorama-tools/.venv
+git status --short                                        # must print nothing
+du -sm .venv-237                                          # AFTER: record it (291-294 MB measured off-box)
 .venv/bin/pip freeze > /tmp/box-freeze.txt; .venv/bin/python --version; .venv/bin/pip --version; git log --oneline -1
 ```
+
+**Rollback**, any time, from any of the states below, with the queue idle and no download running:
+
+```bash
+[ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv
+```
+
+It removes the symlink if the swap happened, then puts the old venv back if `.venv` is missing. Run twice, or
+after a rollback already done, it does nothing. `unlink` removes only the link, never `.venv-237`.
+
+| Interrupted | What is on disk | The 19:00 run | What to do |
+|---|---|---|---|
+| anywhere before step 2 (the pull, `python3 -m venv`, an install, a check) | `.venv` untouched; maybe a partial `.venv-237` | old venv, as before | nothing urgent: re-run step 1 from its first line (each line is idempotent), or leave `.venv-237` for later |
+| inside the swap line, after `mv` and before `ln` (the only way to have no `.venv`: a kill between two `rename`/`symlink` calls) | `.venv-before-237` and `.venv-237`, no `.venv` | **cannot start** | run the rollback line, or `ln -s .venv-237 .venv` to finish the swap |
+| after the swap, before or during the checks | `.venv` -> `.venv-237`, `.venv-before-237` | new venv | finish the checks; if one fails, run the rollback line |
+| inside the rollback line, after `unlink` | `.venv-before-237`, `.venv-237`, no `.venv` | cannot start | run the rollback line again |
 
 What to expect along the way:
 
@@ -1562,23 +1605,32 @@ What to expect along the way:
 - **The new venv's pip.** Stock Ubuntu 22.04 gives pip 22.0.2, which warns that a newer pip exists. Off the box it
   produced the identical 24 packages, building `CoordinatesConverter` with `setup.py install`. Do not upgrade it
   unless the old venv's pip was upgraded. Record both versions.
-- **`pip check`** exits 1, naming `streetlevel`'s 7 uninstalled requirements. That is expected.
-- **If any check fails before the dry run, roll back now.** Do not debug with `.venv` half-built.
-- **Never run `.venv-before-237/bin/pip` while it is renamed.** A venv is not relocatable: its console scripts'
-  shebangs still point at `.venv/bin/python`, which is now the *new* venv. Use `.venv-before-237/bin/python -m
-  pip` if you must.
-- **Rollback**, any time, with the queue idle and no download running:
-  `mv .venv .venv-237-failed && mv .venv-before-237 .venv`. The rename restores every path. The old venv is a
-  superset of the new requirements, so the checkout need not move, and the "roll forward, never back" rule above
-  (about the checkout) is unaffected.
+- **`pip check`** exits 1, naming `streetlevel`'s 7 uninstalled requirements, and a later install that moves one
+  of `streetlevel`'s requirements prints them as a red `ERROR:` block (see [Deploying](#deploying)). Both are
+  expected. Do not install what they name.
+- **If a check in step 1 fails, nothing has changed for the nightly.** Leave `.venv` alone and fix step 1. If a
+  check after the swap fails, run the rollback line.
+- **Why a symlink, not a second rename.** A venv's console scripts (`bin/pip` and the rest) carry the absolute
+  path of the interpreter they were built with in their first line. Renaming `.venv-237` to `.venv` would leave
+  `.venv/bin/pip` pointing at a `.venv-237/bin/python` that no longer exists ("bad interpreter", measured), while
+  the symlink keeps every path the new venv was built with and still gives `sys.prefix` as `.venv` (measured).
+  From then on `.venv` stays a symlink; `.gitignore` ignores `.venv`, `.venv-237` and `.venv-before-237`, so
+  `git status --short` stays empty for the next deploy.
+- **Never run `.venv-before-237/bin/pip` while it is renamed.** Its scripts' first lines point at
+  `.venv/bin/python`, which is now the *new* venv. Use `.venv-before-237/bin/python -m pip` if you must.
 - **Nothing else depends on `.venv`'s contents.** The crontab line, `cron_notify.py`, the SNS sink (a system
   `aws`; the old venv's freeze has no `awscli` or `botocore`), the heartbeat and `BASH_ENV` all use absolute
   `.venv/bin/python` paths or system tools, and the log analyzer does not run from this venv.
-- **The morning after.** `cron_notify.log`'s last line reads `exit 0`; `heartbeat.log` shows
-  `heartbeat published`; no SNS message arrived (production sends one only on a failure). If one did arrive, it
-  must not contain `depth-unavailable` or `streetlevel is not importable`. Then the usual checks: each GSV city's
-  `log.csv` row shows depth and image counts in their usual range (the [log analyzer](log-analyzer.md) is the
-  tool).
+- **Optional, and your call: one city in the daytime.** The last check above is the dry run, so the first real
+  photometa and depth requests from the new venv are made at 19:00. To see one while watching, run one city
+  through the queue (lever 3 of [Rolling back](#rolling-back-smallest-blast-radius-first)) with a short budget,
+  for example `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore
+  --only <city_id> --max-runtime 10`. It makes real requests and writes to that city's store like a night does.
+- **The morning after.** `tail -1 ~/cron_notify.log` carries last night's date and says
+  `nothing to publish (clean run, --only-on-failure)`; `heartbeat.log` shows `heartbeat published`; no SNS message
+  arrived. If one did arrive, it must not contain `depth-unavailable` or `streetlevel is not importable`. Then the
+  usual checks: each GSV city's `log.csv` row shows depth and image counts in their usual range (the
+  [log analyzer](log-analyzer.md) is the tool).
 - **Then, after a few clean nights:** remove `.venv-before-237` to actually free the 4.9 GB, and open the
   follow-up PR that refreshes `constraints.txt` from `/tmp/box-freeze.txt` per
   [Refreshing `constraints.txt`](#refreshing-constraintstxt): a new `Source:` line, and the temporary header

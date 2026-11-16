@@ -5,7 +5,9 @@ __pycache__/
 *.swp
 id_rsa
 venv
-.venv/
+# .venv itself, and the venvs and symlink the #237 move leaves beside it (docs/ops.md, "Moving the box to the
+# --no-deps install"). No trailing slash: a .venv that is a symlink is not a directory to git.
+.venv*
 *.log
 crop.log.bak.txt
 .idea

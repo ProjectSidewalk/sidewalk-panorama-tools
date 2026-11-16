@@ -20,6 +20,7 @@ SIDEWALK_REQUIRE_STREETLEVEL is set, as both CI workflows set it.
 """
 
 import ast
+import fnmatch
 import glob
 import importlib
 import importlib.metadata
@@ -424,6 +425,83 @@ class TestTheDocsShowBothInstallLines:
     def test_the_install_pages_show_the_second_line(self, name):
         assert any(_INSTALLS_NODEPS.search(line) for line in _read(os.path.join(REPO_ROOT, name)).splitlines()), \
             '%s shows no `pip install --no-deps -r requirements-nodeps.txt` line' % name
+
+
+OPS = os.path.join(REPO_ROOT, 'docs', 'ops.md')
+DEPLOYING = '### Deploying'
+BOX_MOVE = '### Moving the box to the --no-deps install (#237)'
+# The one check that catches every wrong install the #244 review measured (line 2 without -c or without --no-deps,
+# a by-name streetlevel install, the old one-line install, line 1 alone): the venv's freeze IS constraints.txt.
+FREEZE_CHECK = "diff <({venv}/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)"
+ROLLBACK = '[ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv'
+
+
+def _ops_section(heading):
+    """docs/ops.md from `heading` to the next heading of the same or a higher level."""
+    lines = _read(OPS).splitlines()
+    start = lines.index(heading)
+    level = len(heading) - len(heading.lstrip('#'))
+    fenced = False
+    for i in range(start + 1, len(lines)):
+        if lines[i].strip().startswith('```'):
+            fenced = not fenced
+        elif not fenced and re.match(r'^#{1,%d} ' % level, lines[i]):   # a shell comment in a block is no heading
+            return lines[start:i]
+    return lines[start:]
+
+
+def _first_block(section):
+    start = next(i for i, line in enumerate(section) if line.strip().startswith('```'))
+    end = next(i for i in range(start + 1, len(section)) if section[i].strip().startswith('```'))
+    return section[start + 1:end]
+
+
+class TestTheDeployInstructions:
+    """docs/ops.md's Deploying block and the #237 move (#244 review): what they check, and that the move never
+    leaves the box without a .venv."""
+
+    @pytest.mark.parametrize('heading, venvs', [(DEPLOYING, ['.venv']), (BOX_MOVE, ['.venv-237', '.venv'])],
+                             ids=['deploying', 'box-move'])
+    def test_the_block_compares_the_freeze_with_constraints_txt_and_imports_streetlevel(self, heading, venvs):
+        block = _first_block(_ops_section(heading))
+        for venv in venvs:
+            assert any(FREEZE_CHECK.format(venv=venv) in line for line in block), (heading, venv)
+            assert any(line.startswith('%s/bin/python -c "from streetlevel import streetview' % venv)
+                       for line in block), (heading, venv)
+
+    def test_the_move_builds_beside_the_old_venv_and_swaps_in_one_command(self):
+        block = _first_block(_ops_section(BOX_MOVE))
+        assert not any(re.match(r'^python3 -m venv \.venv(\s|$)', line) for line in block), \
+            'the move builds the new venv at .venv, so the box has none until the build finishes'
+        build = next(i for i, line in enumerate(block) if line.startswith('python3 -m venv .venv-237'))
+        swaps = [i for i, line in enumerate(block) if line.startswith('mv .venv ')]
+        assert len(swaps) == 1, swaps
+        assert block[swaps[0]].startswith('mv .venv .venv-before-237 && ln -s .venv-237 .venv'), block[swaps[0]]
+        checks = [i for i, line in enumerate(block) if FREEZE_CHECK.format(venv='.venv-237') in line]
+        assert build < min(checks) and max(checks) < swaps[0], 'the new venv must be checked before the swap'
+
+    def test_the_rollback_works_from_any_state(self):
+        assert any(ROLLBACK in line for line in _ops_section(BOX_MOVE))
+
+    def test_every_name_the_move_leaves_in_the_checkout_is_ignored(self):
+        """The Deploying block requires an empty `git status --short`; an untracked .venv-before-237/ (or a
+        .venv that is a symlink, which `.venv/` does not match) would block every later deploy."""
+        with open(os.path.join(REPO_ROOT, '.gitignore'), encoding='utf-8') as f:
+            patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+
+        for name in ('.venv', '.venv-237', '.venv-before-237'):
+            # Each is checked as a plain file, as git sees a symlink: a pattern ending in / does not match it.
+            assert any(not pattern.endswith('/') and fnmatch.fnmatch(name, pattern.lstrip('/'))
+                       for pattern in patterns), name
+
+    def test_the_depth_unavailable_remedy_reinstalls_streetlevel(self):
+        row = next(line for line in _read(OPS).splitlines()
+                   if line.startswith('| `WARNING - streetlevel is not importable`'))
+        assert 'requirements-nodeps.txt' in row and '--no-deps' in row, row
+
+    def test_the_deploying_section_says_the_resolver_error_is_expected(self):
+        text = '\n'.join(_ops_section(DEPLOYING))
+        assert "ERROR: pip's dependency resolver" in text and 'pyequilib' in text
 
 
 class TestTheGatedJobInstallsThePins:

@@ -46,8 +46,9 @@ wheels, none of which anything here imports: master's one-line install measured 
 about 291 MB. What `streetlevel` does import is listed in `requirements.txt`, from the measurement in
 [the #237 report](../reports/2026-11-15-streetlevel-no-deps.md). Two side effects are expected, not faults:
 `pip check` exits 1, naming the 7 requirements `streetlevel` declares and never imports, and a later
-`pip install` that touches `streetlevel` or its requirements may print pip's "dependency resolver does not
-currently take into account..." notice and still exit 0.
+`pip install` that changes one of `streetlevel`'s requirements prints a red block that starts `ERROR: pip's
+dependency resolver does not currently take into account...` and names the same 7, then exits 0. Do not install
+what either names: `pyequilib` is the way back to torch ([Deploying](ops.md#deploying) has the check that counts).
 
 Two platform notes:
 
