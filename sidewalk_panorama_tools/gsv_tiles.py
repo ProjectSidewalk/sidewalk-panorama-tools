@@ -1129,9 +1129,13 @@ _EQUIRECT_ZOOMS = (3, 4, 5)
 # ask cbk a different question, and a black answer to the wrong question would read as "gone".
 _PANO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
 
+# The widest frame fetch_equirect accepts: eight times the largest GSV frame (16384). A wider one is a caller's bug,
+# and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent.
+_MAX_FRAME_WIDTH = 2 ** 17
 
-def _whole_number(value, name, minimum):
-    """`value` as an int of at least `minimum`, or ValueError naming the argument.
+
+def _whole_number(value, name, minimum, maximum=None):
+    """`value` as an int of at least `minimum` (and at most `maximum`), or ValueError naming the argument.
 
     Anything operator.index accepts (int, numpy.int64, ...) passes; bool and numpy.bool_ are refused although
     both are integers to Python, and so are floats (4.0 included), strings and None.
@@ -1143,14 +1147,15 @@ def _whole_number(value, name, minimum):
     ...
     ValueError: width must be a whole number of at least 1, not True
     """
-    message = '%s must be a whole number of at least %d, not %r' % (name, minimum, value)
+    bounds = 'of at least %d' % (minimum,) if maximum is None else 'from %d to %d' % (minimum, maximum)
+    message = '%s must be a whole number %s, not %r' % (name, bounds, value)
     if isinstance(value, bool) or getattr(getattr(value, 'dtype', None), 'kind', None) == 'b':
         raise ValueError(message)
     try:
         number = operator.index(value)
     except TypeError:
         raise ValueError(message) from None
-    if number < minimum:
+    if number < minimum or (maximum is not None and number > maximum):
         raise ValueError(message)
     return number
 
@@ -1203,11 +1208,21 @@ async def fetch_equirect_async(pano_id, width, height, *, zoom=None, max_width=N
     """
     if not isinstance(pano_id, str) or not pano_id:
         raise ValueError('pano_id must be a non-empty str, not %r' % (pano_id,))
-    width, height = _whole_number(width, 'width', 1), _whole_number(height, 'height', 1)
+    width = _whole_number(width, 'width', 1, _MAX_FRAME_WIDTH)
+    height = _whole_number(height, 'height', 1)
+    if width != 2 * height:
+        # Every GSV frame is 2:1. The frame check compares tile grids, so a frame inside the pano's own grid
+        # passes it, and one that is not 2:1 would come back as a crop of the pano (#236 review, finding 4).
+        raise ValueError('the frame must be 2:1 (width == 2 * height), as every GSV frame is, not %dx%d'
+                         % (width, height))
     if zoom is not None:
-        zoom = _whole_number(zoom, 'zoom', 0)
+        asked = zoom
+        try:
+            zoom = _whole_number(zoom, 'zoom', 0)
+        except ValueError:
+            zoom = None
         if zoom not in _EQUIRECT_ZOOMS:
-            raise ValueError('zoom must be None, 3, 4 or 5, not %r' % (zoom,))
+            raise ValueError('zoom must be None, 3, 4 or 5, not %r' % (asked,))
     if max_width is not None:
         max_width = _whole_number(max_width, 'max_width', 1)
     if is_photosphere_id(pano_id):

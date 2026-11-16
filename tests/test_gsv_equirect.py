@@ -342,9 +342,10 @@ class TestAnExplicitZoom:
     def test_a_zoom_that_is_not_3_4_or_5_is_refused_before_any_request(self, monkeypatch, zoom):
         cbk = FakeCbk(monkeypatch)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as raised:
             gsv_tiles.fetch_equirect(PANO, 1024, 512, zoom=zoom)
 
+        assert 'zoom must be None, 3, 4 or 5' in str(raised.value)
         assert cbk.probe_urls == [] and cbk.tiles == []
 
     def test_a_numpy_integer_is_accepted(self, monkeypatch):
@@ -368,12 +369,16 @@ class TestMaxWidth:
         assert_color(stitched.image.getpixel((25, 64)), RED)
         assert_color(stitched.image.getpixel((230, 64)), BLUE)
 
-    def test_the_height_is_the_nearest_pixel(self, monkeypatch):
-        FakeCbk(monkeypatch, served=(1024, 500))
+    @pytest.mark.parametrize('max_width,height', [(101, 50), (103, 52), (1, 1)])
+    def test_the_height_is_the_nearest_pixel_and_at_least_one(self, monkeypatch, max_width, height):
+        """512 * max_width / 1024 is a half: 50.5 rounds to 50 and 51.5 to 52 (nearest, ties to even), so a
+        ceiling or a floor fails one of them; and max_width=1 is 0.5, which would be a zero-pixel height that
+        Pillow refuses only after the whole fan-out."""
+        FakeCbk(monkeypatch)
 
-        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 500, max_width=100)
+        stitched = gsv_tiles.fetch_equirect(PANO, 1024, 512, max_width=max_width)
 
-        assert stitched.image.size == (100, 49)          # 500 * 100 / 1024 = 48.8
+        assert stitched.image.size == (max_width, height)
 
     @pytest.mark.parametrize('max_width', [1024, 4096])
     def test_a_max_width_at_or_above_the_frame_changes_nothing(self, monkeypatch, max_width):
@@ -490,6 +495,38 @@ class TestRefusedBeforeAnyRequest:
             gsv_tiles.fetch_equirect(PANO, frame['width'], frame['height'])
 
         assert cbk.probe_urls == []
+
+    @pytest.mark.parametrize('frame', [(2048, 800), (1600, 801), (1024, 513), (1024, 1024), (16384, 7681)])
+    def test_a_frame_that_is_not_two_to_one_is_refused(self, monkeypatch, frame):
+        """The frame check compares tile grids, so a frame inside the pano's own grid would pass it and come
+        back as a crop: 2048x800 of a 2048x1024 pano is its top 800 rows. Every GSV frame is 2:1, so anything
+        else is refused before any request (#236 review, finding 4)."""
+        cbk = FakeCbk(monkeypatch, served=(2048, 1024))
+
+        with pytest.raises(ValueError) as raised:
+            gsv_tiles.fetch_equirect(PANO, *frame)
+
+        assert '2:1' in str(raised.value)
+        assert cbk.probe_urls == []
+
+    @pytest.mark.parametrize('width', [2 ** 17 + 2, 16384 * 2 ** 20, 10 ** 400])
+    def test_an_absurd_width_is_refused_before_any_request(self, monkeypatch, width):
+        """Above 2**17 (eight times the largest GSV frame) a width is a caller's bug; unbounded, it reached
+        float arithmetic and raised OverflowError after the requests had been spent."""
+        cbk = FakeCbk(monkeypatch)
+
+        with pytest.raises(ValueError):
+            gsv_tiles.fetch_equirect(PANO, width, width // 2, zoom=3)
+
+        assert cbk.probe_urls == []
+
+    def test_the_largest_width_allowed_is_two_to_the_seventeen(self, monkeypatch):
+        cbk = FakeCbk(monkeypatch, levels=())
+
+        with pytest.raises(gsv_tiles.PanoGoneError):         # past validation: the probe was asked
+            gsv_tiles.fetch_equirect(PANO, 2 ** 17, 2 ** 16)
+
+        assert len(cbk.probe_urls) == 2
 
 
 # --- the event loop -----------------------------------------------------------------------------------------
