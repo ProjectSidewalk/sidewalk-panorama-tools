@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import uuid
+from collections import Counter
 
 import pytest
 from PIL import Image
@@ -404,6 +405,11 @@ def _report():
         return f.read()
 
 
+def _prose():
+    """The report with every run of whitespace one space, so a phrase wrapped across lines still matches."""
+    return ' '.join(_report().split())
+
+
 def _summary():
     with open(SUMMARY, encoding='utf-8') as f:
         return json.load(f)
@@ -438,7 +444,7 @@ class TestTheCommittedRunFromItsRawFiles:
         result = bcc.manifest_check(rows, served, bcc.CITY)
         assert result['attribution_mismatch'] == [] and result['attribution_equal'] == len(served)
         assert result['city_ok'] and result['rule_versions'] == ['v2']
-        assert result['tilt_columns'] == [list(CropRunner.TILT_PROVENANCE_OFF)]
+        assert result['tilt_columns'] == [tuple(CropRunner.TILT_PROVENANCE_OFF)]
         pairs = {tuple(r[f] for f in ATTRIBUTION_FIELDS) for r in served}
         assert result['attribution_pairs'] == len(pairs)
 
@@ -470,6 +476,39 @@ class TestTheCommittedRunFromItsRawFiles:
         assert len(rows) == len({r['pano_id'] for r in _cvmetadata()})
         assert all((r['stored_w'], r['stored_h']) == (r['app_w'], r['app_h']) for r in rows)
         assert all(r['ledger'] == '1' for r in rows)
+
+
+class TestTheProseNumbers:
+    """The counts the report's prose quotes outside its tables, each from a raw file."""
+
+    def test_the_unclear_crops_by_type_and_the_posed_ones(self):
+        rows = _verdict_rows()
+        unclear = Counter(r['label_type'] for r in rows if r['verdict'] == 'unclear')
+        posed_unclear = sum(1 for r in rows if r['verdict'] == 'unclear' and r['pose_class'] == 'posed')
+        report = _prose()
+        assert ('%d SurfaceProblem labels' % unclear['SurfaceProblem'], '%d Occlusion labels' % unclear['Occlusion'],
+                '%d NoSidewalk labels' % unclear['NoSidewalk']) == ('23 SurfaceProblem labels', '7 Occlusion labels',
+                                                                    '3 NoSidewalk labels')
+        assert all(phrase in report for phrase in ('23 SurfaceProblem labels', '7 Occlusion labels',
+                                                   '3 NoSidewalk labels'))
+        assert sum(unclear.values()) == 33 and posed_unclear == 18
+        assert '18 of the posed crops are `unclear`' in report
+        off = [r for r in rows if r['verdict'] == 'in-crop-off-mark']
+        assert [(r['label_uid'], r['pose_class'], r['direction']) for r in off] == [('bayonne-fr:44', 'posed', 'up')]
+
+    def test_the_average_pano_and_the_decoded_sizes(self):
+        with open(os.path.join(DATA, 'panos.csv'), newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+        average_mb = sum(int(r['bytes']) for r in rows) / len(rows) / 1e6
+        assert 'the %d average %.1f MB' % (len(rows), average_mb) in _prose()
+        widest = max(rows, key=lambda r: int(r['stored_w']))
+        decoded = int(widest['stored_w']) * int(widest['stored_h']) * 3 / 1e6
+        assert 'decodes to %.1f MB' % decoded in _prose()
+        assert 'decodes to %d MB' % (12288 * 6144 * 3 // 10 ** 6) in _prose()
+
+    def test_the_grid_size_quoted(self):
+        n = len(TestTheStandaloneTranscription.GRID) * 4
+        assert 'a grid of %d windows' % n in _prose()
 
 
 class TestTheReportMatchesTheArtifact:

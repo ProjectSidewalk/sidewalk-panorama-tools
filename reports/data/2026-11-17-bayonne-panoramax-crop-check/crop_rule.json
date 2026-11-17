@@ -1,0 +1,58 @@
+{
+ "city": "bayonne-fr",
+ "constants_seen": {
+  "v2": {
+   "crop_aspect_w_over_h": [
+    1.5
+   ],
+   "crop_max_fov_deg": [
+    90.0
+   ],
+   "crop_max_stored_width": [
+    1440
+   ],
+   "crop_min_fov_deg": [
+    8.0
+   ],
+   "crop_size_scale": [
+    2.5
+   ],
+   "tilt_beta_npz_pose": [
+    0.0
+   ],
+   "tilt_beta_xml_pose": [
+    0.0
+   ]
+  }
+ },
+ "crop_aspect_w_over_h": 1.5,
+ "crop_max_fov_deg": 90.0,
+ "crop_max_stored_width": 1440,
+ "crop_min_fov_deg": 8.0,
+ "crop_rule_version": "v2",
+ "crop_size_scale": 2.5,
+ "distance_estimator": "linear-2013",
+ "previous_crop_rule_version": "v2",
+ "provenance_manifest": "crop_provenance.csv",
+ "provenance_manifest_known_gaps": 0,
+ "provenance_manifest_no_known_gap": true,
+ "provenance_manifest_pre_city": null,
+ "provenance_manifest_pre_tilt": null,
+ "provenance_manifest_started_under": "v2",
+ "rules_seen": [
+  "v2"
+ ],
+ "tilt_beta_npz_pose": 0.0,
+ "tilt_beta_xml_pose": 0.0,
+ "tilt_correction": "off",
+ "v3_blend_deg": 11.25,
+ "v3_camera_height_m": 2.341219672825709,
+ "v3_context_width_m": 5.8,
+ "v3_depth_lookup_beta": 0.95,
+ "v3_depth_lookup_pixel": "rig",
+ "v3_depth_min_format_version": 3,
+ "v3_depth_min_ground_verticality": 0.7,
+ "v3_depth_min_m": 0.5,
+ "v3_depth_min_valid_cells": 5,
+ "v3_dist_cap_m": 50.0
+}
