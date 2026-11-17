@@ -450,20 +450,23 @@ def pov_residuals(labels):
     base = heading - camera_heading + 180 is where a GSV-style frame puts the canvas centre; the residual
     r = azimuth(pano_x) - base (wrapped) should then be a per-zoom gain times the click's offset from the canvas
     centre in canvas widths. Fitted through the origin per zoom; the fit's leftover says whether the records
-    are self-consistent. It says nothing about which column of the served image is pano_x = 0."""
+    are self-consistent. It says nothing about which column of the served image is pano_x = 0.
+
+    The served zoom is a float (0.998, 1.07, 1.99 ...). A row is binned at its nearest integer zoom z, and its
+    offset scaled by 2^-(zoom - z), the view halving per zoom step, so each bin's gain is the gain at z."""
     by_zoom = {}
     for row in labels:
         try:
             values = [float(row[k]) for k in ('heading', 'camera_heading', 'canvas_x', 'canvas_width', 'pano_x',
-                                              'pano_width')]
-            zoom = int(row['zoom'])
+                                              'pano_width', 'zoom')]
         except (KeyError, TypeError, ValueError):
             continue
-        heading, camera_heading, canvas_x, canvas_width, pano_x, pano_width = values
+        heading, camera_heading, canvas_x, canvas_width, pano_x, pano_width, zoom = values
+        nearest = int(round(zoom))
         base = heading - camera_heading + 180.0
         r = (pano_x / pano_width * 360.0 - base + 180.0) % 360.0 - 180.0
-        f = (canvas_x - canvas_width / 2.0) / canvas_width
-        by_zoom.setdefault(zoom, []).append((f, r))
+        f = (canvas_x - canvas_width / 2.0) / canvas_width * 2.0 ** -(zoom - nearest)
+        by_zoom.setdefault(nearest, []).append((f, r))
     out = {}
     for zoom, pairs in sorted(by_zoom.items()):
         ff = sum(f * f for f, _ in pairs)

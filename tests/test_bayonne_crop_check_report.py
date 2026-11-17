@@ -358,6 +358,21 @@ class TestTheSmallReaders:
         assert result['1']['n'] == 5
         assert result['1']['raw_abs_deg']['median'] == pytest.approx(23.0)   # |115 f| over the five f
 
+    def test_a_fractional_zoom_joins_its_nearest_bin_at_that_bins_scale(self):
+        """cvMetadata's zoom is a float (0.998, 1.07, 1.99 in Bayonne). The view halves per zoom step, so a row
+        at zoom z' is put on its nearest integer zoom z with its offset scaled by 2^-(z'-z); truncating put
+        0.998 in a bin of its own and 1.99 in bin 1."""
+        rows = []
+        for i, (zoom, f) in enumerate(((0.998, -0.3), (1.0, 0.2), (1.07, 0.35), (1.99, -0.25), (2.0, 0.1))):
+            azimuth = 10.0 + i - 200.0 + 180 + 115.0 * 2 ** -(zoom - 1) * f
+            rows.append({'zoom': zoom, 'heading': 10.0 + i, 'camera_heading': 200.0, 'canvas_x': 360 + f * 720,
+                         'canvas_width': 720, 'pano_x': (azimuth % 360) / 360 * 5376, 'pano_width': 5376})
+        result = bcc.pov_residuals(rows)
+        assert sorted(result) == ['1', '2'] and (result['1']['n'], result['2']['n']) == (3, 2)
+        assert result['1']['gain_deg_per_canvas'] == pytest.approx(115.0)
+        assert result['2']['gain_deg_per_canvas'] == pytest.approx(57.5)
+        assert result['1']['fit_residual_abs_deg']['max'] == pytest.approx(0.0, abs=1e-6)
+
 
 # ------------------------------------------------------------------------------------- the committed run
 
