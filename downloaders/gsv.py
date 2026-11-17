@@ -1598,13 +1598,12 @@ def _decode_depth_planes(b64_payload):
     _DEPTH_HEADER, and tests/test_streetlevel_api.py for the end-to-end pin): the 8-byte header, then
     width*height uint8 per-pixel plane indices at `offset`, then 4 float32 (nx, ny, nz, d) per plane.
 
-    NB the offset is a true uint8 at byte 7. streetlevel reads it as a uint16 spanning bytes 7-8, and that is
-    STILL true in 0.12.11 - the latest release and the floor of our pin - whose depth.py is byte-for-byte
-    identical to 0.12.10's, so the pin does not fix it (pinned by test_streetlevel_api's
-    test_streetlevel_still_misreads_the_depth_offset, which also says what to simplify when upstream's fix,
-    sk-zk/streetlevel#45, ships). The misread parses correctly only when the first index byte is 0 - true on
-    most panos, whose zenith is sky, but false wherever Google models the surface overhead. That is why the
-    depth path no longer routes through streetlevel's parser at all: see _fetch_pano_with_depth_planes.
+    NB the offset is a true uint8 at byte 7. streetlevel read it as a uint16 spanning bytes 7-8 through
+    0.12.13, which parses correctly only when the first index byte is 0 - true on most panos, whose zenith is
+    sky, but false wherever Google models the surface overhead. 0.13.0, the floor of our pin, reads it
+    correctly (sk-zk/streetlevel#45). This decode is kept because streetlevel never exposes the planes; the
+    two decodes are held equal on that zenith class by test_streetlevel_api's
+    test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith. See _fetch_pano_with_depth_planes.
 
     @return DepthPlanes.
     @raise  DepthPayloadError on a truncated or malformed payload, rather than silently returning short
@@ -1762,15 +1761,17 @@ def _fetch_pano_with_depth_planes(pano_id, session):
     and the one-request-per-pano budget is unchanged. The msg paths and the api half's signature are pinned
     by tests/test_streetlevel_api.py.
 
-    WHY the parse half is bypassed, and when to revisit: parse_panorama_id_response calls streetlevel's
-    depth decoder unguarded, and every release through 0.12.11 misreads the payload's uint8 offset byte as
-    a uint16 (test_streetlevel_still_misreads_the_depth_offset). Any pano whose first index byte is nonzero
-    - a modelled zenith: tunnels, overpass soffits, parking structures; a bit under 1% of panos in a large
-    sample - therefore raises inside streetlevel on every attempt, is classed transient, and re-requests
-    forever without ever resolving. The fix is upstream but unmerged (sk-zk/streetlevel#45); once it ships
-    in a release and the pin moves past it, this bypass becomes unnecessary rather than wrong - either
-    simplify back to parse_panorama_id_response, or keep it as the first step of dropping the dependency
-    (see the #56 discussion).
+    WHY the parse half is bypassed: parse_panorama_id_response calls streetlevel's depth decoder unguarded,
+    and every release through 0.12.13 misread the payload's uint8 offset byte as a uint16. Any pano whose
+    first index byte is nonzero - a modelled zenith: tunnels, overpass soffits, parking structures; a bit
+    under 1% of panos in a large sample - therefore raised inside streetlevel on every attempt, was classed
+    transient, and re-requested forever without ever resolving. 0.13.0 fixed the read
+    (sk-zk/streetlevel#45) and is the floor of the pin. The bypass stays, on three grounds: streetlevel's
+    parser still returns only the collapsed raster, so the planes the artifact stores (#56) need our decode
+    anyway; it still fails a plane index past the list with a bare IndexError where ours raises
+    DepthPayloadError; and the two rasters agree, so routing back through upstream would change no artifact.
+    The parity tests (test_streetlevel_api's test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith
+    and test_depth_helpers' test_matches_streetlevels_own_decode) are the guard.
     """
     # Imported lazily: download_depth_maps' availability probe has already run, and tests reach this seam
     # through an adapter, so the real submodule only loads when a real request is about to happen.

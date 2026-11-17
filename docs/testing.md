@@ -105,7 +105,8 @@ Two settings there are load-bearing, and losing either shows up as a *lower numb
 `test_streetlevel_api.py` imports the *real* `streetlevel` to pin the handful of API details
 `downloaders/gsv.py` depends on — the mocked suite can't catch drift there, because the stub accepts any
 arguments. One test there runs streetlevel's real `find_panorama_by_id` body with a fake session (#237), so
-the session the seams pass is the one that is asked. Since #237 `streetlevel` installs everywhere without a
+the session the seams pass is the one that is asked. Another holds upstream's depth parser equal to the in-repo
+decode on a payload with a modelled zenith, the class it could not read before 0.13.0. Since #237 `streetlevel` installs everywhere without a
 compiler (it is installed `--no-deps`, with the requirements it imports listed in `requirements.txt`). The
 module still skips itself when `streetlevel` isn't installed — **except when `SIDEWALK_REQUIRE_STREETLEVEL` is set**, which CI does: there the import is hard, so a
 requirement that is missing fails the run with its real message instead of skipping every contract test behind

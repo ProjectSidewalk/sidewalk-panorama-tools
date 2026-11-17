@@ -10,7 +10,8 @@ numpy>=1.21
 # wheels (several GB) into a venv where no production module imports any of them. pip has no per-requirement
 # --no-deps, so the requirements streetlevel really needs are listed here instead. The five below, with
 # aiohttp, requests, numpy and Pillow above, are everything `from streetlevel import streetview` imports,
-# measured on Python 3.10 against streetlevel 0.12.11 (reports/2026-11-15-streetlevel-no-deps.md). They carry
+# measured on Python 3.10 against streetlevel 0.12.11 (reports/2026-11-15-streetlevel-no-deps.md) and checked
+# again on 0.13.0: same 9, same 7. They carry
 # no floor because streetlevel declares none; constraints.txt holds the versions that were tested. Declared by
 # streetlevel but never imported on that path, and so NOT installed: pyequilib, protobuf, pyfrpc,
 # pycryptodome, cython, pytest, pytest-asyncio. tests/test_constraints.py fails when streetlevel's

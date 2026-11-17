@@ -14,10 +14,11 @@ mixed corpus spends one photometa request per non-GSV pano. A city on another so
 nothing, which is correct rather than a stand-down (see
 [ops.md](ops.md) for how to tell the two apart).
 
-The depth payload itself is decoded in-repo: every streetlevel release through 0.12.11 misreads a header
-byte, which makes its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass
-soffits) — see [sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45). Once that fix ships, the
-bypass can be revisited.
+The depth payload itself is decoded in-repo. Every streetlevel release through 0.12.13 misread a header byte,
+which made its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass soffits).
+0.13.0 fixed it ([sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45)) and is the floor of the
+pin. The payload is still decoded here because streetlevel does not expose the planes the artifact stores, and a
+test holds the two decodes equal on that class of pano.
 
 > **Read [What the depth product is (and isn't)](#what-the-depth-product-is-and-isnt) before building
 > anything on this.** It is Google's plane-based model of the scene, not a measurement of it.
