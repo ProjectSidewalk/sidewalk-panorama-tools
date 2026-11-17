@@ -1,0 +1,128 @@
+{
+  "python": "3.10.21 (main, Sep  1 2026, 14:14:55) [MSC v.1944 64 bit (AMD64)]",
+  "targets": [
+    {
+      "module": "streetlevel",
+      "missing_then_installed": [],
+      "ok": true
+    },
+    {
+      "module": "streetlevel.streetview",
+      "missing_then_installed": [
+        {
+          "module": "aiohttp",
+          "distribution": "aiohttp"
+        },
+        {
+          "module": "multidict",
+          "distribution": "multidict"
+        },
+        {
+          "module": "attr",
+          "distribution": "attrs"
+        },
+        {
+          "module": "yarl",
+          "distribution": "yarl"
+        },
+        {
+          "module": "idna",
+          "distribution": "idna"
+        },
+        {
+          "module": "propcache",
+          "distribution": "propcache"
+        },
+        {
+          "module": "async_timeout",
+          "distribution": "async-timeout"
+        },
+        {
+          "module": "typing_extensions",
+          "distribution": "typing_extensions"
+        },
+        {
+          "module": "aiohappyeyeballs",
+          "distribution": "aiohappyeyeballs"
+        },
+        {
+          "module": "aiosignal",
+          "distribution": "aiosignal"
+        },
+        {
+          "module": "frozenlist",
+          "distribution": "frozenlist"
+        },
+        {
+          "module": "PIL",
+          "distribution": "pillow"
+        },
+        {
+          "module": "requests",
+          "distribution": "requests"
+        },
+        {
+          "module": "urllib3",
+          "distribution": "urllib3"
+        },
+        {
+          "module": "certifi",
+          "distribution": "certifi"
+        },
+        {
+          "module": "numpy",
+          "distribution": "numpy"
+        },
+        {
+          "module": "pyproj",
+          "distribution": "pyproj"
+        },
+        {
+          "module": "scipy",
+          "distribution": "scipy"
+        },
+        {
+          "module": "bd09convertor",
+          "distribution": "bd09convertor"
+        },
+        {
+          "module": "CoordinatesConverter",
+          "distribution": "CoordinatesConverter"
+        },
+        {
+          "module": "pyexiv2",
+          "distribution": "pyexiv2"
+        }
+      ],
+      "ok": true
+    },
+    {
+      "module": "streetlevel.streetview.api",
+      "missing_then_installed": [],
+      "ok": true
+    }
+  ],
+  "installed_in_order": [
+    "aiohttp",
+    "multidict",
+    "attrs",
+    "yarl",
+    "idna",
+    "propcache",
+    "async-timeout",
+    "typing_extensions",
+    "aiohappyeyeballs",
+    "aiosignal",
+    "frozenlist",
+    "pillow",
+    "requests",
+    "urllib3",
+    "certifi",
+    "numpy",
+    "pyproj",
+    "scipy",
+    "bd09convertor",
+    "CoordinatesConverter",
+    "pyexiv2"
+  ]
+}

@@ -1,0 +1,8 @@
+== origin/master 777d1ca, same interpreter: 3.10.21
+1 failed in 25.03s
+1 failed in 23.11s
+1 failed in 1.29s
+== branch
+1 failed in 1.22s
+1 failed in 1.24s
+1 failed in 1.21s

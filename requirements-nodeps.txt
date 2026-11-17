@@ -6,8 +6,8 @@
 # Without --no-deps this line pulls pyequilib -> torch and the CUDA wheels. The requirements streetlevel
 # actually needs are in requirements.txt, with the measurement behind them.
 #
-# 0.13.0 is the first release with the depth-header fix (sk-zk/streetlevel#45). No upper bound, like every
-# other requirement: the old `<0.13` kept the weekly unpinned job (tests-latest.yml) on 0.12.13 after 0.13.0
-# shipped, so the test written to notice the fix never saw it. The box and CI are pinned exactly by
-# constraints.txt.
+# 0.13.0 is the first release with the depth-header fix (sk-zk/streetlevel#45; measured in
+# reports/2026-11-17-streetlevel-0.13.0.md). No upper bound, like every other requirement: the old `<0.13`
+# kept the weekly unpinned job (tests-latest.yml) on 0.12.13 after 0.13.0 shipped, so the test written to
+# notice the fix never saw it. The box and CI are pinned exactly by constraints.txt.
 streetlevel>=0.13.0

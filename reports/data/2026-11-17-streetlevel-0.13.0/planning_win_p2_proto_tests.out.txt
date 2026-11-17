@@ -1,0 +1,36 @@
+2026-11-17T14:09:26Z
+== prototype replacement tests on streetlevel 0.13.0
+....UPSTREAM RAISES IndexError list index out of range
+.
+=================================== PASSES ====================================
+=========================== short test summary info ===========================
+PASSED tests/test_p2_proto.py::test_streetlevel_reads_the_depth_offset_as_one_byte
+PASSED tests/test_p2_proto.py::test_streetlevels_parser_resolves_a_modelled_zenith_and_agrees_with_ours
+PASSED tests/test_p2_proto.py::test_parity_on_a_larger_grid_whose_first_index_is_nonzero
+PASSED tests/test_p2_proto.py::test_the_installed_streetlevel_is_in_the_required_range
+PASSED tests/test_p2_proto.py::test_out_of_range_plane_index_still_fails_opaquely_upstream
+5 passed in 6.20s
+== same tests on streetlevel 0.12.11 (the discrimination run)
+E       assert 264 == 8
+E           IndexError: index 264 is out of bounds for axis 0 with size 44
+E           IndexError: index 520 is out of bounds for axis 0 with size 64
+E       AssertionError: assert False
+E        +  where False = contains('0.12.11')
+E        +    where contains = <SpecifierSet('<0.14,>=0.13.0')>.contains
+E        +    and   '0.12.11' = <function version at 0x000001E07B3549D0>('streetlevel')
+E        +      where <function version at 0x000001E07B3549D0> = <module 'importlib.metadata' from '<UVPYTHON>\\cpython-3.10-windows-x86_64-none\\lib\\importlib\\metadata\\__init__.py'>
+E        +        where <module 'importlib.metadata' from '<UVPYTHON>\\cpython-3.10-windows-x86_64-none\\lib\\importlib\\metadata\\__init__.py'> = importlib.metadata
+PASSED tests/test_p2_proto.py::test_out_of_range_plane_index_still_fails_opaquely_upstream
+FAILED tests/test_p2_proto.py::test_streetlevel_reads_the_depth_offset_as_one_byte
+FAILED tests/test_p2_proto.py::test_streetlevels_parser_resolves_a_modelled_zenith_and_agrees_with_ours
+FAILED tests/test_p2_proto.py::test_parity_on_a_larger_grid_whose_first_index_is_nonzero
+FAILED tests/test_p2_proto.py::test_the_installed_streetlevel_is_in_the_required_range
+4 failed, 1 passed in 3.09s
+== same tests on streetlevel 0.12.13 (newest release under the old cap)
+PASSED tests/test_p2_proto.py::test_out_of_range_plane_index_still_fails_opaquely_upstream
+FAILED tests/test_p2_proto.py::test_streetlevel_reads_the_depth_offset_as_one_byte
+FAILED tests/test_p2_proto.py::test_streetlevels_parser_resolves_a_modelled_zenith_and_agrees_with_ours
+FAILED tests/test_p2_proto.py::test_parity_on_a_larger_grid_whose_first_index_is_nonzero
+FAILED tests/test_p2_proto.py::test_the_installed_streetlevel_is_in_the_required_range
+4 failed, 1 passed in 2.90s
+streetlevel==0.13.0

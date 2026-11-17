@@ -1,0 +1,6 @@
+== 2026-11-17T14:31:41Z gh run view 43980786100 (tests-latest.yml), streetlevel lines of its log
+Tests (latest dependencies) event=schedule created=2026-11-16T23:36:46Z conclusion=success head=777d1ca01e611a59c7c442a88ced2de9e8f78c69
+Collecting streetlevel<0.13,>=0.12.11 (from -r requirements-nodeps.txt (line 8))
+Successfully installed streetlevel-0.12.13
+streetlevel==0.12.13
+tests/test_streetlevel_api.py::test_streetlevel_still_misreads_the_depth_offset PASSED [ 92%]

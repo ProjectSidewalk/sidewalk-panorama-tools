@@ -44,7 +44,8 @@ LATEST_WORKFLOW = os.path.join(WORKFLOWS, 'tests-latest.yml')
 
 # streetlevel's declared requirements, split by the #237 measurement (reports/2026-11-15-streetlevel-no-deps.md):
 # what `from streetlevel import streetview` imports, which requirements.txt must list, and what it never imports,
-# which no requirement file may list (pyequilib is the one that pulls torch). Checked again on 0.13.0, unchanged.
+# which no requirement file may list (pyequilib is the one that pulls torch). Checked again on 0.13.0, unchanged
+# (reports/2026-11-17-streetlevel-0.13.0.md).
 STREETLEVEL_REACHED = {'aiohttp', 'requests', 'numpy', 'pillow', 'pyproj', 'scipy', 'bd09convertor',
                        'coordinatesconverter', 'pyexiv2'}
 STREETLEVEL_UNREACHED = {'pyequilib', 'protobuf', 'pyfrpc', 'pycryptodome', 'cython', 'pytest', 'pytest-asyncio'}

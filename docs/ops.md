@@ -1558,7 +1558,8 @@ bad night is attributable.
 0.12.11, before the pin moved to 0.13.0. After the pull that brings a new pin, re-run step 1's two install lines
 in it: they replace only the package whose pin moved. Then run step 1's freeze diff, which must print nothing;
 that diff is the check that counts. The box's pip is 22.0.2, which has no `--dry-run` (it arrived in pip 22.2),
-so do not try one in `.venv-237`.
+so do not try one in `.venv-237`. The 0.13.0 move was rehearsed this way
+([the report](../reports/2026-11-17-streetlevel-0.13.0.md)).
 
 ```bash
 cd /srv/sidewalk-panorama-tools

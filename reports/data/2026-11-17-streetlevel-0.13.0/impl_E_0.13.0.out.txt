@@ -1,0 +1,6 @@
+== 2026-11-17T14:27:22Z Python 3.10.21 streetlevel 0.13.0
+== SIDEWALK_REQUIRE_STREETLEVEL=1 python -m pytest -p no:cacheprovider -q -rA tests/test_streetlevel_api.py::test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith tests/test_depth_helpers.py::TestComputeDepthRaster::test_matches_streetlevels_own_decode
+PASSED tests/test_streetlevel_api.py::test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith
+PASSED tests/test_depth_helpers.py::TestComputeDepthRaster::test_matches_streetlevels_own_decode
+2 passed in 1.32s
+exit 0

@@ -18,7 +18,8 @@ The depth payload itself is decoded in-repo. Every streetlevel release through 0
 which made its parser crash on the ~1% of panos whose zenith is a modeled surface (tunnels, overpass soffits).
 0.13.0 fixed it ([sk-zk/streetlevel#45](https://github.com/sk-zk/streetlevel/pull/45)) and is the floor of the
 pin. The payload is still decoded here because streetlevel does not expose the planes the artifact stores, and a
-test holds the two decodes equal on that class of pano.
+test holds the two decodes equal on that class of pano
+([the 0.13.0 report](../reports/2026-11-17-streetlevel-0.13.0.md)).
 
 > **Read [What the depth product is (and isn't)](#what-the-depth-product-is-and-isnt) before building
 > anything on this.** It is Google's plane-based model of the scene, not a measurement of it.
