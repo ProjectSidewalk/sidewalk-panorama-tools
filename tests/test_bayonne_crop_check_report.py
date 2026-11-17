@@ -76,6 +76,7 @@ def _build(tmp_path, n_panos=3):
     panos, labels = [], []
     os.makedirs(store)
     with open(os.path.join(store, 'pano_id_log.csv'), 'w', newline='', encoding='utf-8') as f:
+        f.write('pano_id,downloaded,fetched_at' + chr(10))      # the header the real ledger carries
         for i in range(n_panos):
             pano_id = _pano_id(i + 1)
             _write_pano(store, pano_id)
@@ -102,6 +103,7 @@ class TestTheCleanStoreReportsNothing:
         result = bcc.store_check(store, panos, labels)
         assert result['outside_shard'] == [] and result['frame_mismatch'] == []
         assert result['walk_equals_ledger'] and result['ledger_downloaded'] == 3
+        assert result['ledger_verdicts'] == {'1': 3}, 'the header row is not a verdict'
 
     def test_windows(self, tmp_path):
         _, crops, _, labels = _build(tmp_path)
