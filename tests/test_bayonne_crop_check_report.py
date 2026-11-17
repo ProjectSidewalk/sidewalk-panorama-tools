@@ -275,6 +275,18 @@ class TestTheVerdictRule:
                           ('on-mark', '', 'none', max(n_off, 10))])
         assert bcc.visual_verdict(rows)['outcome'] == outcome
 
+    @pytest.mark.parametrize('down_unposed, down_posed, up_posed, up_unposed, outcome', [
+        (7, 0, 3, 0, 'PASS'), (8, 0, 2, 0, 'FAIL'), (5, 3, 0, 2, 'PASS'), (6, 3, 0, 1, 'FAIL')])
+    def test_each_three_quarter_clause_is_its_own_line(self, down_unposed, down_posed, up_posed, up_unposed,
+                                                       outcome):
+        """7 of 10 down overall is under the line even when every unposed off-mark is down; 8 of 10 overall is
+        not enough when the unposed ones are only 5 of 7 down."""
+        rows = _verdicts([('in-crop-off-mark', 'down', 'none', down_unposed),
+                          ('in-crop-off-mark', 'down', 'posed', down_posed),
+                          ('in-crop-off-mark', 'up', 'posed', up_posed), ('in-crop-off-mark', 'up', 'zero', up_unposed),
+                          ('on-mark', '', 'none', 10)])
+        assert bcc.visual_verdict(rows)['outcome'] == outcome
+
     def test_under_half_off_mark_passes_whatever_the_direction(self):
         rows = _verdicts([('in-crop-off-mark', 'down', 'none', 9), ('on-mark', '', 'none', 11)])
         assert bcc.visual_verdict(rows)['outcome'] == 'PASS'
