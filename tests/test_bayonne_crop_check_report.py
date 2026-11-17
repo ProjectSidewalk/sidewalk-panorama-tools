@@ -356,6 +356,7 @@ class TestTheSmallReaders:
         assert result['2']['gain_deg_per_canvas'] == pytest.approx(58.0, abs=0.01)
         assert result['1']['fit_residual_abs_deg']['max'] == pytest.approx(0.0, abs=1e-6)
         assert result['1']['n'] == 5
+        assert result['1']['raw_abs_deg']['median'] == pytest.approx(23.0)   # |115 f| over the five f
 
 
 # ------------------------------------------------------------------------------------- the committed run
@@ -434,6 +435,13 @@ class TestTheCommittedRunFromItsRawFiles:
         result = bcc.visual_verdict(rows)
         assert _summary()['visual']['tallies'] == result['tallies']
         assert '**%s**' % result['outcome'] in _report()
+
+    def test_the_window_fov_figures_are_the_crops_tables(self):
+        with open(os.path.join(DATA, 'crops.csv'), newline='', encoding='utf-8') as f:
+            fovs = sorted(float(r['fov_deg']) for r in csv.DictReader(f))
+        median = fovs[len(fovs) // 2]
+        assert len(fovs) % 2 == 1
+        assert '| window fov min / median / max (deg) | %.1f / %.1f / %.1f |' % (fovs[0], median, fovs[-1]) in _report()
 
     def test_the_crops_table_is_whole(self):
         with open(os.path.join(DATA, 'crops.csv'), newline='', encoding='utf-8') as f:

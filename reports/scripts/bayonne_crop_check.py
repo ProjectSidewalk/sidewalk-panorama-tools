@@ -184,14 +184,14 @@ def dims_coverage(labels):
 
 
 def read_ledger(store):
-    """pano_id_log.csv -> {pano_id: verdict}; two- and three-field rows alike, the last row winning."""
+    """pano_id_log.csv -> {pano_id: verdict}; header skipped, two- and three-field rows alike, last row wins."""
     out = {}
     path = os.path.join(store, 'pano_id_log.csv')
     if not os.path.exists(path):
         return out
     with open(path, newline='', encoding='utf-8') as f:
         for row in csv.reader(f):
-            if len(row) >= 2:
+            if len(row) >= 2 and row[0] != 'pano_id':     # the header row, when the ledger has one
                 out[row[0]] = row[1]
     return out
 
@@ -472,7 +472,7 @@ def pov_residuals(labels):
         fit = [abs(r - gain * f) for f, r in pairs] if gain is not None else []
 
         def stats(values):
-            return {'min': num(min(values)) if values else None, 'median': num(percentile(values, 50))
+            return {'min': num(min(values)) if values else None, 'median': num(percentile(values, 0.5))
                     if values else None, 'max': num(max(values)) if values else None}
         out[str(zoom)] = {'n': len(pairs), 'gain_deg_per_canvas': None if gain is None else num(gain),
                           'raw_abs_deg': stats(raw), 'fit_residual_abs_deg': stats(fit)}
@@ -589,7 +589,7 @@ def collect(args):
             'store_bytes': sum(r['bytes'] or 0 for r in store['rows']),
             'shards': len({r['shard'] for r in store['rows']}),
             'uuid_ids': sum(1 for r in store['rows'] if re.fullmatch(r'[0-9a-f-]{36}', r['pano_id'])),
-            'fov_min': fovs[0] if fovs else None, 'fov_median': percentile(fovs, 50) if fovs else None,
+            'fov_min': fovs[0] if fovs else None, 'fov_median': percentile(fovs, 0.5) if fovs else None,
             'fov_max': fovs[-1] if fovs else None,
             'at_cap_by_width': dict(Counter(str(r['pano_w']) for r in windows if r['fov_deg'] >= cap)),
             'seam': sum(r['crosses_seam'] for r in windows), 'shifted': sum(r['shifted'] for r in windows),
