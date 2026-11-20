@@ -507,7 +507,7 @@ class GroupWritableRotatingFileHandler(logging.handlers.RotatingFileHandler):
 
 
 @contextlib.contextmanager
-def atomic_output_path(final_path, mode=0o664):
+def atomic_output_path(final_path, mode=0o664, overwrite=True):
     """Yield a '<final_path>.part' to write to, then chmod and rename it into place.
 
     Every artifact this repo writes is also its own resume marker: the image loop treats an existing .jpg as
@@ -519,10 +519,18 @@ def atomic_output_path(final_path, mode=0o664):
 
     The .part is removed on any exception (including SystemExit from the SIGTERM translation), because
     nothing else ever cleans it up and the retry writes to the same name.
+
+    `overwrite=False` re-checks the target immediately before the rename and refuses to replace it, raising
+    FileExistsError - for archive imagery written after a long fetch (#185), where a check made before the
+    fetch is minutes old by the rename and os.replace would silently replace whatever appeared meanwhile. It
+    narrows the race to the stat-to-rename gap; it does not close it.
     """
     tmp_path = final_path + '.part'
     try:
         yield tmp_path
+        # lexists, not isfile: a dangling symlink at the name is still a name this must not replace.
+        if not overwrite and os.path.lexists(final_path):
+            raise FileExistsError(final_path)
         os.chmod(tmp_path, mode)
         os.replace(tmp_path, final_path)
     except BaseException:
@@ -600,6 +608,23 @@ def downscaled_sidecar_path(pano_path, max_width=None):
     decision (a disk choice) and a test that moves it moves the name too.
     """
     return _sidecar_path(pano_path, DOWNSCALED_MAX_WIDTH if max_width is None else max_width)
+
+
+#: The kept larger original beside a GSV pano (#185 Part 2): an ordinary JPEG at Google's frame. Deliberately not a
+#: .jpg/.jpeg name, so no lister keyed on the extension - walk_store_panos included - takes it for a panorama.
+#: Defined here, not in sidewalk_panorama_tools/store.py: the walker already excludes it, so no package consumer
+#: needs the name, and the package's next release belongs to another change.
+NATIVE_ORIGINAL_SUFFIX = '.native'
+
+
+def native_original_path(pano_file):
+    """'<pano stem>.native': the kept larger original beside a pano (#185). A JPEG; never a panorama.
+
+    >>> native_original_path(os.path.join('s', 'ab', 'abc.jpg')) == os.path.join('s', 'ab', 'abc.native')
+    True
+    """
+    stem, _ = os.path.splitext(pano_file)
+    return stem + NATIVE_ORIGINAL_SUFFIX
 
 
 def downscaled_size(width, height, max_width):

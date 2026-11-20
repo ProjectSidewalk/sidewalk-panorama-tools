@@ -12,6 +12,7 @@ Everything lives under the storage root, sharded by the first two characters of 
 | `<pano_id[:2]>/<pano_id>.jpg` | Stitched panorama |
 | `<pano_id[:2]>/<pano_id>.depth.npz` | [Depth artifact](depth.md#the-artifact) |
 | `<pano_id[:2]>/<pano_id>.w8192.jpg` | [Display copy](#display-copies-of-wide-panoramas) of a panorama wider than 8192 px. **No longer written automatically** — see that section |
+| `<pano_id[:2]>/<pano_id>.native` | [Kept larger original](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records) of a GSV pano Google serves larger than the app records (#185); a JPEG, **not** a panorama. Written only while its switch is on, and it ships off |
 | `pano_id_log.csv` | Per-pano image ledger: `pano_id,downloaded,fetched_at` (rows written by a build older than #129 — on the production store, before 2026-09-17 — have no `fetched_at`) |
 | `depth_log.csv` | Per-pano depth ledger: `pano_id,saved\|unavailable` |
 | `log.csv` | One 20-column row per run |
@@ -265,6 +266,11 @@ The rule has two tiers, and they are not in tension:
    [`refetch_panos.py`'s gates](#what-it-will-and-will-not-do) are — `frame_grew`, `upscaled`, `undersized`,
    `too_black`, plus the `.part`-and-rename — with every other outcome leaving the stored bytes untouched.
 
+A [kept larger original](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records) (`<pano_id>.native`, #185 Part
+2, switched off) is archive imagery under tier 1, and its two writes are stricter still: both go through
+`atomic_output_path(..., overwrite=False)`, which refuses at the rename to replace a file that appeared during the
+fetch. The `<pano_id>.jpg` beside one is a derivative of it, so `refetch_panos.py` never swaps it (`kept_original`).
+
 **The gap this leaves, and what would close it.** A re-render that kept the frame size passes all four of
 those gates: `dims_changed` catches only the ones whose dimensions moved, and nothing downstream can see the
 rest, since `pano_x`/`pano_y` still index the file and it still looks right. The gate that would close it is a
@@ -326,7 +332,8 @@ or deletes a stored file on its own judgement, so the condition recurs every run
 readmit tools), re-judges each file, removes every bad pano's ledger row in one rewrite (with a `.bak-<stamp>`
 and a `.quarantined-<stamp>.csv` beside the ledger), and then moves each file to `DIR/<id[:2]>/<id>.jpg`:
 copied, compared byte for byte, and only then deleted from the store, with its `.w8192.jpg` display copy. The
-depth artifact stays. A destination that already exists is never overwritten: that pano is listed and keeps
+depth artifact stays, and so does a [kept original](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records)
+(`<pano_id>.native`). A destination that already exists is never overwritten: that pano is listed and keeps
 its row. The next scrape fetches each moved pano again. `DIR` must be outside the store. Exit codes: 0 nothing
 found or all moved, 1 found (read-only), anything left, or files left unjudged by `--max-runtime`, 2 usage, 3
 refused (a `--ledger` or `--report` naming a file it did not write included).
@@ -607,6 +614,7 @@ refused and ledgered as `too_black`. `too_black` remains the backstop for any ot
 | `not_affected` | the stored frame implies a max zoom below 5, and the band is a zoom-5-only effect | 0 |
 | `already_clean` | the file was written on or after `--fixed-after`, so it never carried `fover` | 0 |
 | `dims_changed` | the work-list's frame disagrees with the stored one — see below | 0 |
+| `kept_original` | a [kept larger original](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records) sits beside the stored file, which is a copy resampled from it; swapping the copy alone would leave the two disagreeing (#185) | 0 |
 | `gone` | Google no longer serves this pano at any zoom | ≤2 |
 | `frame_grew` | Google serves this pano **larger** than the stored frame, so this frame would fetch a crop of it | ≤4 |
 | `frame_shrank` | Google serves this pano **smaller** than the stored frame. Not swapped, **not ledgered**, not a failure ([#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181)) | 5 |
@@ -620,7 +628,7 @@ The outcomes that cost requests — every one except `undersized` and `frame_shr
 permanent.** Anything transient — a failed tile, a mostly-black stitch, a full store — is counted, logged, and
 left unledgered, so it retries on the next run.
 
-The five zero-request outcomes are **not** ledgered, on purpose. Each is recomputed from the store in
+The six zero-request outcomes are **not** ledgered, on purpose. Each is recomputed from the store in
 microseconds, so a row would buy nothing — and two of them are properties of the flags rather than of the
 pano: `already_clean` moves with `--fixed-after`, `dims_changed` with `--allow-dims-change` and whichever
 work-list was passed. Ledgering them would lock one run's flag values in. Not ledgering them is also what makes
@@ -852,8 +860,101 @@ the first refused pano; `grep "frame disagreement" <store>/<city>/scrape.log` st
 is Google answering, so it never feeds the `images-no-success` condition, however many there are. The remedy
 is on the app side: a SidewalkWebpage `gsv_data` refresh that corrects the stored dimensions to what Google
 serves. A pano's frame does not change, so a disagreement means the app's record is wrong
-([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)). Whether the refused pano
-should instead be kept at Google's larger frame is #185 Part 2, waiting on about 30 nights of these counts.
+([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)). Keeping such a pano at
+Google's larger frame instead is #185 Part 2, built behind a switch that ships **off**:
+[the next section](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records).
+
+## A GSV pano kept at a larger frame than the app records
+
+**Switched off.** `gsv.KEEP_SERVED_LARGER_ORIGINALS = False` ships off, and with it off nothing in this section
+happens: such a pano is [refused](#a-gsv-pano-refused-for-a-frame-disagreement) exactly as before, with no extra
+request, stat or write. It is off because the rate has stayed at zero
+([the 2026-10-06 report](../reports/2026-10-06-fleet-thresholds-and-frame-refusals.md) and every count since),
+and because a new kind of file on the archive is the owner's call. Like `common.WRITE_DISPLAY_COPIES` it is not a
+flag: turning it on is a one-line pull request, and a test pins the shipped value
+([#185](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/185) Part 2).
+
+**What it catches, with the switch on.** Photometa's own frame refusal for a pano whose app `width`/`height` is
+not a level Google serves, when Google's top level is **strictly larger on both axes at the same aspect ratio**,
+no larger than 16384×8192 (`MAX_PANO_PIXELS`), and fetchable natively (the stitcher's zoom for that frame is the
+top level, never assumed). A pano's frame does not change
+([#217](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/217)), so this is a pano whose app record
+is wrong and too small: the 13312×6656 the app hardcoded until SidewalkWebpage evolution 135 (2022-03), or a value
+inferred by evolution 366 part 1. Every other refusal stays a refusal: a non-512 tile size, a pano with no app
+dims (#184), the tile-probe arm, a frame not larger on both axes, another aspect, a frame over the ceiling, a
+pyramid whose top is not fetchable natively.
+
+**What it writes.** One fan-out at Google's frame, saved as **`<pano_id[:2]>/<pano_id>.native`**: an ordinary
+JPEG under a name that does not end in `.jpg`, so `walk_store_panos` and any lister keyed on the extension never
+take it for a panorama. It is read back from disk and its size checked, then **`<pano_id>.jpg`** is written as a
+uniform LANCZOS resample of it at the app's frame. The copy is therefore a **second JPEG generation** of the
+original, deliberately: the night's copy and a rebuilt one come from one code path and are the same bytes.
+**Neither write ever replaces a file** (`atomic_output_path(..., overwrite=False)` re-checks the target at the
+rename; an original or copy that appeared during the fan-out aborts the pano, transiently). The pano is ledgered
+`1` with tonight's stamp, as any success. The [width tripwire](#the-width-tripwire) is not run on Google's width:
+the viewer opens `<pano_id>.jpg` at the app's width, which is checked as for every pano, and never the original.
+
+**The labels: an assumption, not a measurement.** The app projects a label against its recorded frame, and stored
+`pano_x`/`pano_y` reproduce from the stored POV against the recorded dims for 95-100% of labels
+([era-replay study](../reports/2026-08-09-era-replay-study.md)). So a uniform resample of the whole pano to the
+recorded frame keeps a label on its referent **if** the label was computed against that recorded frame. That is
+unmeasured for this population, and no crop preflight can see the other case.
+
+**What you hear.** One `WARNING` per pano on both channels naming `<pano_id>.native`, an end-of-phase line
+
+```
+IMAGEDOWNLOAD: WARNING - 1 GSV pano(s) kept at Google's larger frame beside an app-frame copy (served-larger-kept condition); the app's record is wrong. See docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records
+```
+
+`served_larger_kept` in the run summary, and the `served-larger-kept`
+[condition](downloader.md#a-city-can-finish-ok-and-still-fail-the-night), so the night fails once per pano. None
+of these lines contains `frame disagreement`, so the refusal grep still counts only refusals. `scrape.log` also
+gets one line as the original lands (`kept the WxH original as ...`), the durable record if the run dies before
+the copy does.
+
+**What to do.** Fix the app's record (a SidewalkWebpage `gsv_data` refresh, as for a refusal). Once the record is
+corrected the copy fails the cropper's dims preflight (`dims_mismatch`), and the `.native` is the file to
+regenerate the copy from; nothing does that automatically.
+
+**A run that dies mid-pano.**
+
+| Stopped at | On disk | Next run, switch on | Next run, switch off |
+|---|---|---|---|
+| during the fan-out, or writing the original | nothing (a `.native.part` after a SIGKILL, which nothing reads) | the whole pano again | refused, as before |
+| after the original, before the copy | `<pano_id>.native`, no `.jpg`, no row | the copy is rebuilt from the original at **zero requests**: a skip, ledgered `1` with a blank stamp, checked as a found file (#239); the condition fires | refused while Google serves it; **once Google retires it, a permanent `0` is ledgered beside the original** (the orphan, below) |
+| after the copy, before the ledger row | both files, no row | a skip at the on-disk check, checked, ledgered `1` with a blank stamp; not counted again as kept | the same |
+
+An original that cannot be used (unreadable, not whole, not larger than the app's frame at its aspect) is left
+untouched with one `WARNING` on both channels, and the pano is refused as a frame disagreement naming the file.
+With the switch on, a pano Google no longer serves at all is never ledgered `0` while an original sits beside
+it: it raises `KeptOriginalError` naming the file, unledgered, every run, until someone decides (the orphan,
+below). Nothing re-checks a `.native` after it is written, and the whole-file check recovery runs (the same as
+for any found file, #239) cannot see damaged scan data under an intact header and end marker.
+
+**The other tools.** `downscale_panos.py`, `scan_black_bands.py` and `verify_store.py` judge `<pano_id>.jpg`
+only, never the original. `verify_store.py --quarantine` moves the `.jpg` and its display copy and **leaves the
+`.native`** (as it leaves the depth artifact); with the switch on, the next scrape rebuilds the copy from it.
+**With the switch off, a quarantine makes an orphan**: the row and the copy are gone, so the next scrape refuses
+the pano nightly while Google serves it, and ledgers it `0` once Google retires it.
+`refetch_panos.py` refuses a pano with an original at zero requests (`kept_original`). `--from-store` pulls
+`<pano_id>.jpg` by name, so a collaborator gets the copy only. The cropper reads `<pano_id>.jpg`.
+
+**The orphan, and its repair.** An original with no copy. Two kinds, told apart by `jpeg_dimensions` of the
+`.native` against the app's current frame:
+
+* **Larger than the app's frame** (the common one: a run died between the two writes, or a quarantine took the
+  copy, and the app's record is still the small one). With the switch on, the next run rebuilds the copy at zero
+  requests; so if the switch is off, turn it on for one more run, let it rebuild, then turn it off.
+* **Equal to the app's frame** (the record has since been corrected). Recovery will not use it; copy it to
+  `<pano_id>.jpg` by hand. Any other size: leave both files alone and ask.
+
+**Before turning the switch off again.** The rebuild of a lost copy is gated by the switch too, so first list
+every original and confirm each has its copy, and run the same check again after any `verify_store.py
+--quarantine` while the switch is off:
+
+```bash
+find /mnt/panostore -name '*.native' | while read n; do [ -f "${n%.native}.jpg" ] || echo "no copy: $n"; done
+```
 
 ## Edge black bands
 

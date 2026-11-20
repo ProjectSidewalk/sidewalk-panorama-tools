@@ -18,7 +18,9 @@ asked:
   matches its current size and mtime is not read again. A `--ledger` this tool did not write is refused (exit
   3): `pano_id_log.csv` is a typo away.
 
-`--quarantine DIR` moves each file that is not whole out of the store, so the next scrape fetches it again.
+`--quarantine DIR` moves each file that is not whole out of the store, so the next scrape fetches it again (or,
+for a copy beside a #185 kept `<pano_id>.native`, which stays, rebuilds it from that original - only while that
+switch is on; docs/ops.md, "A GSV pano kept at a larger frame than the app records").
 It takes the nightly queue's lock (exit 3 if the queue holds it), re-judges each file under the lock, and then,
 in this order:
 

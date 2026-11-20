@@ -76,10 +76,16 @@ CONDITION_IMAGE_LEDGER = 'image-ledger-unusable'
 # marker), so it recurs every run until an operator acts: verify_store.py --quarantine, or a hand-appended `1`
 # row for a file checked by eye (docs/ops.md, "A stored file that is not a whole JPEG").
 CONDITION_INCOMPLETE_ON_DISK = 'incomplete-on-disk'
+# One or more GSV panos Google serves LARGER than the app's frame were kept at Google's frame as <pano_id>.native
+# beside an app-frame copy (#185 Part 2; only while gsv.KEEP_SERVED_LARGER_ORIGINALS is on, and it ships off), or
+# had that copy rebuilt from an original on disk. CONDITION_EDGE_BAND's model: counted on gsv._served_larger_run,
+# reported once at the end of the image phase with the first pano in the detail. A condition although the pano
+# succeeded, because the app's record is wrong and, with the switch on, no frame disagreement says so any more.
+CONDITION_SERVED_LARGER_KEPT = 'served-larger-kept'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
     CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
     CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT,
-    CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER, CONDITION_INCOMPLETE_ON_DISK})
+    CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER, CONDITION_INCOMPLETE_ON_DISK, CONDITION_SERVED_LARGER_KEPT})
 
 # What makes the image ledger unusable rather than one row bad (#203): gsv.DEPTH_LEDGER_UNUSABLE_ERRORS' twin, for
 # the same reasons. OSError: it could not be read. csv.Error: a field over csv.field_size_limit(), the one damage
@@ -719,6 +725,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     # in-process caller) must report only its own flagged stitches. gsv counts there because download_pano's
     # return value is the ledger contract and must not be widened (#179, #213 S2).
     edge_bands_before = gsv._edge_band_run.saved
+    kept_larger_before = gsv._served_larger_run.kept     # #185 Part 2, the same before/after shape
 
     # The attempted-pano ledger, in 'storage' alongside the pano results (see progress_check for semantics).
     # Reading it here; the append handle is opened by the `with` below. Unusable: sit the run out (#203).
@@ -1154,6 +1161,22 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
         note_condition(stop_reasons, CONDITION_EDGE_BAND,
                        '%d pano(s) saved with a deep edge band; first: %s'
                        % (flagged_edge_bands, gsv._edge_band_run.details[edge_bands_before]))
+
+    kept_larger = gsv._served_larger_run.kept - kept_larger_before
+    if kept_larger:
+        # #185 Part 2 (switch on only). Each pano already had its own WARNING on both channels; this is the one
+        # end-of-phase line and the condition that fails the night. Worded without "frame disagreement", which
+        # the ops grep counts refusals by. The panos are ledgered; the remedy is the app's record.
+        message = ("IMAGEDOWNLOAD: WARNING - %d GSV pano(s) kept at Google's larger frame beside an app-frame copy "
+                   "(served-larger-kept condition); the app's record is wrong. See "
+                   "docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records" % (kept_larger,))
+        logging.warning("%s", message)
+        print(message)
+        note_condition(stop_reasons, CONDITION_SERVED_LARGER_KEPT,
+                       "%d pano(s) kept at Google's larger frame; first: %s"
+                       % (kept_larger, gsv._served_larger_run.details[kept_larger_before]))
+        if stop_reasons is not None:
+            stop_reasons['served_larger_kept'] = kept_larger
 
     if image_stats is not None:
         # Field 20 (#182). Here, not seeded before the loop: a phase that never got this far must leave the
@@ -1776,6 +1799,7 @@ def run(sidewalk_server_fqdn, storage_location, pano_metadata_csv=None, all_pano
     gsv.image_block_latch_path, gsv.image_pace_state_path = depth_block_latch, depth_pace_state
     gsv._photometa_run = gsv._PhotometaRunMemory()
     gsv._edge_band_run = gsv._EdgeBandRunMemory()
+    gsv._served_larger_run = gsv._ServedLargerRunMemory()
     try:
         return _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_panos, skip_depth,
                            max_runtime_minutes, min_depth_runtime, max_depth_requests, depth_block_latch,

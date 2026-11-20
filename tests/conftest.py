@@ -318,6 +318,7 @@ def _isolate_depth_host_state(monkeypatch, tmp_path_factory):
     # The edge-band count (#179) is the same shape of per-process memory: one test's flagged stitch must not be
     # the next test's edge-band condition.
     monkeypatch.setattr(gsv, '_edge_band_run', gsv._EdgeBandRunMemory())
+    monkeypatch.setattr(gsv, '_served_larger_run', gsv._ServedLargerRunMemory())     # #185 Part 2, the same shape
     monkeypatch.setattr(gsv, 'image_block_latch_path', None)
     monkeypatch.setattr(gsv, 'image_pace_state_path', None)
     # The width-alarm latch (#121) is the same shape of host state, and one test driving main() over a wide frame
