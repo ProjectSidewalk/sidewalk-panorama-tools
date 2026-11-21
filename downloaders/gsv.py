@@ -1648,7 +1648,7 @@ def _compute_depth_raster(planes):
     output (the mirror is its output convention, not the wire's). This is the reconstruction identity the
     artifact documents, running forward. Parity with upstream's decode is pinned by
     tests/test_depth_helpers.py's TestComputeDepthRaster, so swapping the raster source changed nothing for
-    the panos both decoders handle. Near the horizon the ground plane runs almost parallel to the ray and
+    any pano upstream can read. Near the horizon the ground plane runs almost parallel to the ray and
     distances legitimately grow huge - exactly as upstream's decode produces.
     """
     indices = planes.indices
