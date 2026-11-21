@@ -364,9 +364,11 @@ upscaled to the frame and flagged `upscaled`, unless `max_width` brings it back 
 (then neither). With no `max_width` that upscale allocates the whole frame after the fan-out: a 2 GiB
 returned image at the 2**15 width cap, which is a frame twice a 16384x8192 pano (Pillow stores RGB at four
 bytes a pixel). That is a floor, not the peak: while the resize runs, the fetched canvas, its crop and Pillow's
-intermediate are alive too, so the transient peak is nearer 4 GiB (read from the code, not measured), and a
-`numpy.asarray` of the result adds 1.5 GiB more. Size a worker for that, or pass `max_width` for such a frame,
-or a corrected one.
+intermediate are alive too, so the transient peak is about 4 GiB. A `numpy.asarray` of the result keeps a
+1.5 GiB array, but the conversion peaks about 3.5 GiB above the image while it runs, about 5.5 GiB in all.
+Those are process commit charge on one Windows machine (Pillow 12.3.0; numpy 2.5.0 and the pinned 2.2.6 read the
+same), read in the #246 review and its fix round, not Linux RSS. Size a worker for that, or pass `max_width` for
+such a frame, or a corrected one.
 
 **Async callers.** Never call the sync name in a handler. `fetch_equirect_async` runs the probe, the frame
 check and the stitch in a worker thread (`asyncio.to_thread`) and the tile fan-out on your loop, so N concurrent

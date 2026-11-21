@@ -1133,8 +1133,9 @@ _PANO_ID_CHARS = re.compile(r'[A-Za-z0-9_-]+')
 # and unbounded it reached float arithmetic and raised OverflowError after the probe had been spent. The cap
 # limits memory without making it small: a frame 2x, 4x or 8x the pano's own size passes the frame check (the
 # same grid at a lower level) and, with no max_width, is upscaled to the whole frame after the fan-out - a 2 GiB
-# returned image at the cap, with a transient peak nearer 4 GiB during the resize (read from _stitch_tiles, not
-# measured), where the first cap of 2**17 allowed 32 GiB (docs/geometry.md, "What the frame check cannot see").
+# returned image at the cap, with a transient peak of about 4 GiB during the resize (4107 MiB of commit charge,
+# measured on Windows in the #246 review), where the first cap of 2**17 allowed 32 GiB (docs/geometry.md, "What
+# the frame check cannot see").
 _MAX_FRAME_WIDTH = 2 ** 15
 
 
