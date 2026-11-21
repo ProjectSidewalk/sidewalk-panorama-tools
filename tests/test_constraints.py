@@ -219,6 +219,22 @@ class TestStreetlevelIsInstalledWithoutItsDependencies:
         assert os.path.isfile(NODEPS), 'requirements-nodeps.txt is missing'
         assert [canonicalize_name(Requirement(line).name) for line in _content_lines(NODEPS)] == ['streetlevel']
 
+    # Every release that misreads the depth header's offset byte as a uint16 (fixed by sk-zk/streetlevel#45,
+    # first released in 0.13.0): the 0.12.x line from 0.12.10, the oldest release the 2026-11-17 measurement
+    # listed, to 0.12.13, the last before the fix (reports/2026-11-17-streetlevel-0.13.0.md).
+    RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX = ('0.12.10', '0.12.11', '0.12.12', '0.12.13')
+
+    def test_its_floor_excludes_every_release_without_the_depth_header_fix(self):
+        """The comments in downloaders/gsv.py, tests/conftest.py, test_streetlevel_api.py and docs/depth.md say
+        0.13.0 is the floor of the pin. CI cannot notice a lowered floor (it installs the exact pin in
+        constraints.txt, which still satisfies it), so only this test does; an install without `-c` relies on
+        it. It says nothing about an upper bound."""
+        (line,) = _content_lines(NODEPS)
+        specifier = Requirement(line).specifier
+        admitted = [v for v in self.RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX if specifier.contains(v, prereleases=True)]
+        assert not admitted, ('requirements-nodeps.txt (%s) admits streetlevel %s, which misread the depth '
+                              'header (fixed in 0.13.0, sk-zk/streetlevel#45)' % (line, ', '.join(admitted)))
+
     def test_the_reached_requirements_are_listed(self):
         missing = sorted(STREETLEVEL_REACHED - _requirement_names(REQUIREMENTS))
         assert not missing, 'requirements.txt lacks what streetlevel imports: %s' % missing
