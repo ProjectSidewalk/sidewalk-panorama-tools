@@ -289,6 +289,26 @@ class TestTheWhiteBand:
         assert bcc.white_band(_band_image(200, 100, sky_rows=12)) == (None, None)
         assert bcc.white_band(_band_image(200, 100)) == (None, None)
 
+    def test_the_band_may_start_anywhere_in_the_lower_half(self):
+        """Review 2, N2: a band from just below the middle is found there, not at a later row, and white rows
+        that end just above the middle are sky."""
+        assert bcc.white_band(_band_image(200, 100, white_from=52))[0] == 52
+        assert bcc.white_band(_band_image(200, 100, sky_rows=50)) == (None, None)
+
+    def test_the_band_uses_the_same_luma_line_as_the_rows(self):
+        """Review 2, N2: a band at exactly WHITE_LUMA is not white, one grey level above it is, and the share
+        counts the same way."""
+        def band(level):
+            image = _band_image(200, 100, white_from=70)
+            image.paste((level,) * 3, (0, 70, 200, 100))
+            return image
+        assert bcc.white_band(band(bcc.WHITE_LUMA)) == (None, None)
+        top, share = bcc.white_band(band(bcc.WHITE_LUMA + 1))
+        assert top == 70 and share == pytest.approx(1.0)
+        mixed = band(bcc.WHITE_LUMA + 1)
+        mixed.paste((bcc.WHITE_LUMA,) * 3, (0, 90, 2, 100))     # 2 of 200 columns, 1%: rows stay white
+        assert bcc.white_band(mixed) == (70, pytest.approx(1 - 20 / (30 * 200)))
+
     def test_the_band_share_counts_its_pixels_from_the_top_row_down(self):
         image = _band_image(200, 100, white_from=60, blob=True)
         luma = image.convert('L')
@@ -303,13 +323,16 @@ class TestTheWhiteBand:
         width, height = 720, 360
         pano_id = _pano_id(5)
         os.makedirs(os.path.join(store, pano_id[:2]))
-        _band_image(width, height, white_from=288).save(os.path.join(store, pano_id[:2], pano_id + '.jpg'),
-                                                        quality=95)
+        image = _band_image(width, height, white_from=288)
+        image.paste((30, 30, 30), (400, 300, 410, 310))     # 1.4% of a row: the rows stay white, the share < 1
+        image.save(os.path.join(store, pano_id[:2], pano_id + '.jpg'), quality=95)
         panos = [{'pano_id': pano_id, 'has_labels': True, 'width': width, 'height': height}]
         labels = [_label(1, pano_id, 300, 180, width, height), _label(2, pano_id, 300, 300, width, height)]
         assert CropRunner.bulk_extract_crops([dict(r) for r in labels], store, crops, city=bcc.CITY)['success'] == 2
         [pano] = bcc.store_check(store, panos, labels)['rows']
         assert abs(pano['white_band_top'] - 288) <= 1 and pano['white_band_share'] > 0.99
+        with Image.open(os.path.join(store, pano_id[:2], pano_id + '.jpg')) as im:
+            assert pano['white_band_share'] == round(bcc.white_band(im)[1], 4), 'four places, as panos.csv has'
         rows = {r['label_id']: r for r in bcc.window_rows(labels, crops)}
         assert rows[1]['white_rows'] == 0
         band_in_window = rows[2]['top'] + rows[2]['height'] - 288
@@ -599,10 +622,19 @@ class TestMeasureEndToEnd:
         assert CropRunner.bulk_extract_crops([dict(first), dict(nadir)], store, crops, city=bcc.CITY)['success'] == 2
         assert CropRunner.crop_window_fov_deg(float(first['pano_y']), 360) < CropRunner.CROP_MAX_FOV_DEG
         assert CropRunner.crop_window_fov_deg(330.0, 360) >= CropRunner.CROP_MAX_FOV_DEG
+        # A second banded pano, lower and less white, so each min / max row has two different ends (review 2, N2).
+        second = labels[2]['pano_id']
+        _band_image(720, 360, white_from=270, blob=True).save(os.path.join(store, second[:2], second + '.jpg'),
+                                                               quality=95)
         bcc.main(argv)
         with open(summary_path, encoding='utf-8') as f:
             rows = json.load(f)['table_rows']
-        for row in ('| labelled panos with a white band in the lower half | 1 of 3 |',
+        [tops] = [r for r in rows if r.startswith('| band top as a share of the frame height, min / max |')]
+        assert tops == '| band top as a share of the frame height, min / max | 0.667 / 0.750 |'
+        [shares] = [r for r in rows if r.startswith('| white pixels from the band top to the last row, min / max |')]
+        low, high = (float(v) for v in shares.split('|')[2].split('/'))
+        assert low < 0.97 and high > 0.99
+        for row in ('| labelled panos with a white band in the lower half | 2 of 3 |',
                     '| crops with white rows | 2 of %d |' % (len(labels) + 1),
                     '| of those, windows at the 90 deg cap | 1 |'):
             assert row in rows, row
