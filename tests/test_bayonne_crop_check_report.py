@@ -118,6 +118,7 @@ class TestTheCleanStoreReportsNothing:
         assert result['rows'] == len(labels) and result['unique'] and result['city_ok']
         assert result['attribution_mismatch'] == [] and result['attribution_equal'] == len(labels)
         assert result['attribution_pairs'] == 1
+        assert result['not_in_manifest'] == [] and result['not_in_snapshot'] == []
 
     def test_dims(self):
         assert bcc.dims_coverage([_label(1, _pano_id(1), 1, 1)]) == {'usable': 1, 'total': 1, 'untested': []}
@@ -193,6 +194,55 @@ class TestEachDetectorCatchesItsPlant:
         result = bcc.store_check(store, panos, labels)
         assert result['outside_shard'] == ['zz/%s.jpg' % pano_id]
         assert not result['walk_equals_ledger']
+
+    def test_a_labelled_pano_the_ledger_wrote_off_is_not_downloaded(self, tmp_path):
+        """Mutant killed: every ledger verdict counted as downloaded (`downloaded = set(ledger)`), which would
+        make the report's "labelled panos not downloaded | 0" true whatever the ledger said."""
+        store, _, panos, labels = _build(tmp_path)
+        victim = panos[1]['pano_id']
+        with open(os.path.join(store, 'pano_id_log.csv'), 'a', newline='', encoding='utf-8') as f:
+            f.write('%s,0,2026-11-18T00:00:00+00:00\n' % victim)      # a later row wins
+        result = bcc.store_check(store, panos, labels)
+        assert result['labelled_not_downloaded'] == [victim]
+        assert result['ledger_downloaded'] == 2 and result['ledger_verdicts'] == {'1': 2, '0': 1}
+        assert not result['walk_equals_ledger'], 'the file is still on disk, the ledger says 0'
+
+    def test_a_served_label_without_a_manifest_row_and_a_row_for_no_served_label(self, tmp_path):
+        """Mutants killed: `not_in_manifest` or `not_in_snapshot` always empty (M9's drift rows read 0)."""
+        _, crops, _, labels = _build(tmp_path)
+        rows = _manifest_rows(crops)
+        dropped = rows.pop(1)
+        extra = dict(rows[0], label_id='99')
+        result = bcc.manifest_check(rows + [extra], labels, bcc.CITY)
+        assert result['not_in_manifest'] == ['%s:%s' % (bcc.CITY, dropped['label_id'])]
+        assert result['not_in_snapshot'] == ['%s:99' % bcc.CITY]
+
+    def test_a_window_wider_than_the_storage_cap_expects_the_downscaled_file(self, tmp_path):
+        """Mutant killed: `expected_stored_size` never expecting a downscale. Bayonne never takes this branch
+        (its widest window is exactly the cap), so a 7680-wide synthetic pano does, cut by the real cropper."""
+        store, crops = str(tmp_path / 'store'), str(tmp_path / 'crops' / bcc.CITY)
+        width, height = 7680, 3840
+        pano_id = _pano_id(9)
+        _write_pano(store, pano_id, width, height)
+        label = _label(1, pano_id, 100, int(0.9 * height), width, height)
+        counts = CropRunner.bulk_extract_crops([dict(label)], store, crops, city=bcc.CITY)
+        assert counts['success'] == 1, counts
+        [row] = bcc.window_rows([label], crops)
+        assert row['downscaled'] and row['width'] > CropRunner.CROP_MAX_STORED_WIDTH
+        assert row['expected_w'] == CropRunner.CROP_MAX_STORED_WIDTH < row['width']
+        assert (row['file_w'], row['file_h']) == (row['expected_w'], row['expected_h']) and row['size_ok']
+
+    def test_the_seam_flag_is_exactly_the_windows_that_wrap(self, tmp_path):
+        """Mutant killed: a seam test off by a window width or by one. Swept across both edges, with the
+        window that ends on the last column (no wrap) among them; the truth is the window's own columns."""
+        width, height = 720, 360
+        xs = list(range(0, 40)) + list(range(560, 720))
+        labels = [_label(i, _pano_id(1), x, 200, width, height) for i, x in enumerate(xs, start=1)]
+        rows = bcc.window_rows(labels, str(tmp_path / 'no-crops'))
+        wraps = [(r['left'] + r['width'] - 1) % width < r['left'] for r in rows]
+        assert [r['crosses_seam'] for r in rows] == wraps
+        assert any(wraps) and not all(wraps)
+        assert any(r['left'] + r['width'] == width for r in rows), 'the boundary case is in the sweep'
 
     def test_a_row_with_no_usable_dims_is_counted_untested(self):
         """Mutant killed: counting every row as usable, which makes dims_mismatch 0 vacuous for it."""
@@ -312,6 +362,16 @@ class TestTheVerdictRule:
         with pytest.raises(ValueError):
             bcc.visual_verdict(_verdicts([('maybe', '', 'none', 1)]))
 
+    @pytest.mark.parametrize('direction', ['', None, 'sideways'])
+    def test_an_off_mark_verdict_without_a_direction_is_refused(self, direction):
+        """Mutant killed: accepting an off-mark row with no direction, which the direction clause then cannot
+        count (the row would vanish from every direction tally and still count as off-mark)."""
+        rows = _verdicts([('on-mark', '', 'none', 20)]) + [
+            {'label_uid': 'bayonne-fr:999', 'verdict': 'in-crop-off-mark', 'direction': direction,
+             'pose_class': 'none'}]
+        with pytest.raises(ValueError, match='direction'):
+            bcc.visual_verdict(rows)
+
 
 class TestTheSmallReaders:
 
@@ -325,6 +385,14 @@ class TestTheSmallReaders:
                           'out_of_frame': 0, 'black_content': 0, 'no_pose': 0, 'errors': 0, 'total': 81}
         assert bcc.parse_exit('noise\n' + self.LINE + '\nexit=0\n') == 0
         assert set(counts) - {'total'} == set(CropRunner.DISJOINT_OUTCOMES)
+
+    def test_the_last_summary_and_exit_lines_are_read(self):
+        """Mutant killed: reading the first summary line of a capture that holds two."""
+        resumed = self.LINE.replace('81 crops extracted, 0 already existed', '0 crops extracted, 81 already existed')
+        text = self.LINE + '\nexit=1\n' + resumed + '\nexit=0\n'
+        counts = bcc.parse_crop_summary(text)
+        assert (counts['success'], counts['skipped_existing']) == (0, 81)
+        assert bcc.parse_exit(text) == 0
 
     def test_a_capture_with_no_summary_is_refused(self):
         with pytest.raises(ValueError):
