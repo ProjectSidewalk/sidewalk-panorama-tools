@@ -296,9 +296,11 @@ Method instead.
   the real cropper;
 * the headline counts re-derived from the raw files (the run-1 capture, the gzipped manifest and snapshot,
   `visual-verdicts.csv`, `crops.csv`), not from the summary JSON;
-* every other table row, the prose counts and the spot-check lists re-derived the same way (the window counts
-  from `crops.csv`, the POV table from the gzipped cvMetadata, runs 2-4 from their captures, the store rows from
-  the ledger and `panos.csv`);
+* every other table row but two, the prose counts and the spot-check lists re-derived the same way (the window
+  counts from `crops.csv`, the POV table from the gzipped cvMetadata, the run outcomes from their captures, the
+  store rows from the ledger and `panos.csv`). The two are `stored files outside a two-char shard` and
+  `walk_store_panos()` against the ledger: they describe the scratch store, which is not committed, so they rest
+  on the synthetic tests of their detectors alone;
 * `measure --write` end to end on a synthetic run, so a table row cannot outlive the detector behind it;
 * every table row the script emitted appears in this report;
 * no local path in any committed file.

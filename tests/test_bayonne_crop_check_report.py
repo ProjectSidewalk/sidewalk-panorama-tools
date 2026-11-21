@@ -966,6 +966,41 @@ class TestTheReportTablesFromTheirRawFiles:
         index = ' '.join(_read_repo('reports', 'README.md').split())
         assert 'flat white from %.3f of its height down, which %d crops carry' % (min(tops), len(white)) in index
 
+    def test_the_served_counts_run_1_and_the_remaining_rows(self):
+        """The fifteen rows review 2 of PR 251 found tied to no raw file (S1). Two rows cannot be: `stored files
+        outside a two-char shard` and `walk_store_panos() ids equal the ledger's 1 ids` describe the scratch store,
+        which is not committed; the report says so."""
+        panos, served = json.loads(_gz_bytes('panos.json.gz').decode('utf-8')), _cvmetadata()
+        run1 = _read('run-crop.stdout.txt')
+        counts = bcc.parse_crop_summary(run1)
+        crops, manifest, verdicts = _crops_rows(), _manifest(), _verdict_rows()
+        tilt = sorted({tuple(r[c] for c in CropRunner.TILT_PROVENANCE_COLUMNS) for r in manifest})
+        off = Counter(r['direction'] for r in verdicts if r['verdict'] == 'in-crop-off-mark')
+        expected = [
+            '| panos served, all / labelled | %d / %d |' % (len(panos), sum(1 for p in panos if p.get('has_labels'))),
+            '| labels served, on distinct panos | %d, on %d |' % (len(served), len({r['pano_id'] for r in served})),
+            '| run 1 crop files on disk, manifest rows | %d, %d |' % (sum(1 for r in crops if r['file_sha256']),
+                                                                     len(manifest)),
+            '| run 1 exit code | %d |' % bcc.parse_exit(run1),
+            "| crop file size equals the window's stored size | %d of %d |" % (
+                sum(r['size_ok'] == 'True' for r in crops), len(crops)),
+            '| standalone transcription gives the same window | %d of %d |' % (
+                sum(r['transcription_agrees'] == 'True' for r in crops), len(crops)),
+            '| tilt columns | %s |' % '; '.join(' / '.join(v or 'blank' for v in t) for t in tilt),
+            '| off-mark directions | %s |' % ', '.join('%s %d' % (d, off[d]) for d in bcc.DIRECTIONS)]
+        expected += ['| `%s` | %d |' % (k, counts[k]) for k in bcc.SUMMARY_KEYS[:-1] if k != 'success']
+        assert len(expected) == 15
+        assert not _missing_from_report(expected)
+
+    def test_the_white_facts_in_the_summary_are_the_tables(self):
+        """`facts` in the summary JSON is data too (review 2, N3): its white-band entries against the tables."""
+        facts, crops, panos = _summary()['facts'], _crops_rows(), _panos_rows()
+        white = [r for r in crops if int(r['white_rows'])]
+        assert facts['white_crops'] == len(white)
+        assert facts['white_rows_max'] == max(int(r['white_rows']) for r in white)
+        assert facts['white_crops_at_cap'] == sum(float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG for r in white)
+        assert facts['white_band_panos'] == sum(1 for r in panos if r['white_band_top'])
+
     def test_the_spot_check_lists(self):
         rows = _crops_rows()
         seam = [int(r['label_id']) for r in rows if r['crosses_seam'] == 'True']
