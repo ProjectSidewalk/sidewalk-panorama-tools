@@ -1,5 +1,5 @@
-# The production box's frozen dependency set (#167). Generated, not hand-edited, with one exception recorded
-# here: refresh it with the procedure in docs/ops.md, "Refreshing constraints.txt".
+# The production box's frozen dependency set (#167). Generated, not hand-edited, with the exceptions
+# recorded here: refresh it with the procedure in docs/ops.md, "Refreshing constraints.txt".
 #
 # Source: `.venv/bin/pip freeze` on the production host, Python 3.10.12, repo at c9ff03c, read 2026-10-06,
 # MINUS 41 packages #237 stopped installing, deleted by hand as docs/ops.md prescribes for a dropped
