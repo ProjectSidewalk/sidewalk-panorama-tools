@@ -1554,11 +1554,12 @@ in by one command line; the old one is kept whole, so rollback is one line from 
 would also bring other merged PRs, deploy those first with the ordinary Deploying block and let a night pass, so a
 bad night is attributable.
 
-**A `.venv-237` built before a pin moved is not rebuilt.** The box's was built on 2026-11-15 with `streetlevel`
-0.12.11, before the pin moved to 0.13.0. After the pull that brings a new pin, re-run step 1's two install lines
-in it: they replace only the package whose pin moved. Then run step 1's freeze diff, which must print nothing;
-that diff is the check that counts. The box's pip is 22.0.2, which has no `--dry-run` (it arrived in pip 22.2),
-so do not try one in `.venv-237`. The 0.13.0 move was rehearsed this way
+**A venv built before a pin moved is brought up to it, not rebuilt.** After the pull that brings the new pin,
+re-run the two install lines in it: step 1's lines for a `.venv-237` not yet swapped in, the
+[Deploying](#deploying) block's for `.venv`. They replace only the package whose pin moved. Then run the matching
+freeze diff, which must print nothing; that diff is the check that counts. A venv step 1 built has Ubuntu's pip
+22.0.2, which has no `--dry-run` (it arrived in pip 22.2), so do not try one in `.venv-237`, nor in `.venv` once it
+links there. Moving `streetlevel` from 0.12.11 to 0.13.0 was rehearsed this way
 ([the report](../reports/2026-11-17-streetlevel-0.13.0.md)).
 
 ```bash
