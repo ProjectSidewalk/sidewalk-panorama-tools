@@ -1,9 +1,11 @@
 """reports/2026-11-17-streetlevel-0.13.0.md (#237 Part 2): its quoted numbers against the committed raw outputs.
 
-Every number in the report's prose is transcribed from a file in reports/data/2026-11-17-streetlevel-0.13.0/
-(.claude/rules/desk-studies.md). This test re-derives those numbers from the files and checks that the report
-quotes them. Like tests/test_streetlevel_no_deps_report.py it reads only the report and its own data, never the
-live requirement or pin files, which are meant to move on.
+The numbers the report's findings rest on are transcribed from files in
+reports/data/2026-11-17-streetlevel-0.13.0/ (.claude/rules/desk-studies.md). This test re-derives those numbers
+from the files and checks that the report quotes them. It does not hold every number in the prose: the report's
+last section says which kinds it leaves out, and fix1_report_number_sweep.out.txt lists each one. Like
+tests/test_streetlevel_no_deps_report.py it reads only the report and its own data, never the live requirement or
+pin files, which are meant to move on.
 """
 
 import fnmatch
@@ -96,7 +98,11 @@ def test_the_review_rounds_mutation_counts():
     deletions = [line for line in lines if ' delete ' in line]
     assert (len(lines) - len(deletions), len(deletions)) == (11, 3)
     assert not [line for line in lines if line.startswith('SURVIVED')]
-    sweep = re.search(r'^tokens mutated: (\d+), survivors: (\d+)$', _read('fix1_report_number_sweep.out.txt'), re.M)
+    sweep_text = _read('fix1_report_number_sweep.out.txt')
+    sweep = re.search(r'^tokens mutated: (\d+), survivors: (\d+)$', sweep_text, re.M)
+    listed = re.findall(r'^L\d+ ', sweep_text, re.M)
+    assert len(listed) == int(sweep.group(2)), 'the sweep header says %s survivors and lists %d' % (
+        sweep.group(2), len(listed))
     report = _report()
     assert 'makes %d edits and %d deletions, one at a time, and each one fails the test' % (
         len(lines) - len(deletions), len(deletions)) in report
