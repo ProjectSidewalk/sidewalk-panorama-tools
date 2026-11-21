@@ -417,6 +417,20 @@ def _summary():
         return json.load(f)
 
 
+def _crops_rows():
+    with open(os.path.join(DATA, 'crops.csv'), newline='', encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+def _read_repo(*parts):
+    with open(os.path.join(REPO_ROOT, *parts), encoding='utf-8') as f:
+        return f.read()
+
+
+_WORDS = dict(enumerate(('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+                         'eleven', 'twelve')))
+
+
 class TestTheCommittedRunFromItsRawFiles:
 
     def test_the_snapshot_hashes_are_the_uncompressed_bytes(self):
@@ -511,6 +525,30 @@ class TestTheProseNumbers:
     def test_the_grid_size_quoted(self):
         n = len(TestTheStandaloneTranscription.GRID) * 4
         assert 'a grid of %d windows' % n in _prose()
+
+    def test_the_on_mark_share_of_the_seam_crossings_and_the_cap_windows(self):
+        """Joined from crops.csv and visual-verdicts.csv on label_uid. The report, the index row and the PR body
+        once said "all six" and "all ten" were on-mark; one of each is `unclear` (review of PR 251, finding 1)."""
+        verdict = {r['label_uid']: r['verdict'] for r in _verdict_rows()}
+        crops = _crops_rows()
+        groups = {'seam': [r['label_uid'] for r in crops if r['crosses_seam'] == 'True'],
+                  'cap': [r['label_uid'] for r in crops if float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG]}
+        on = {g: sum(verdict[u] == 'on-mark' for u in uids) for g, uids in groups.items()}
+        rest = {g: [u for u in uids if verdict[u] != 'on-mark'] for g, uids in groups.items()}
+        assert all(verdict[u] == 'unclear' for uids in rest.values() for u in uids), 'none is off-mark'
+        assert (len(groups['seam']), len(groups['cap'])) == (6, 10)
+        assert rest == {'seam': ['bayonne-fr:34'], 'cap': ['bayonne-fr:52']}
+        phrase = ('including %s of the %s seam crossings and %s of the %s windows at the cap; the other two, `%s` '
+                  '(seam) and `%s` (cap), are `unclear`, and none is off-mark'
+                  % (_WORDS[on['seam']], _WORDS[len(groups['seam'])], _WORDS[on['cap']], _WORDS[len(groups['cap'])],
+                     rest['seam'][0], rest['cap'][0]))
+        assert phrase in _prose()
+        index = ' '.join(_read_repo('reports', 'README.md').split())
+        assert ('including %s of the %s seam crossings and %s of the %s at the 90 deg cap (one `unclear` in each)'
+                % (_WORDS[on['seam']], _WORDS[len(groups['seam'])], _WORDS[on['cap']], _WORDS[len(groups['cap'])])
+                in index)
+        for text in (_prose(), index):
+            assert 'all six seam crossings' not in text and 'all ten' not in text
 
 
 class TestTheReportMatchesTheArtifact:

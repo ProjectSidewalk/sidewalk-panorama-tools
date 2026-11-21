@@ -200,7 +200,8 @@ outcome is inconclusive. A consistent offset on `posed` panos alone is a finding
 | none | 28 | 0 | 0 | 7 |
 
 What the 47 `on-mark` crops show: poles, posts, barriers, utility covers, zebra stripes and curb ramps under the
-dot, on windows from 16.6 to 90 deg wide, including all six seam crossings and all ten windows at the cap. A
+dot, on windows from 16.6 to 90 deg wide, including five of the six seam crossings and nine of the ten windows at
+the cap; the other two, `bayonne-fr:34` (seam) and `bayonne-fr:52` (cap), are `unclear`, and none is off-mark. A
 constant azimuth offset of a few degrees would move the dot off a pole or a post, so on these panos the hd image's
 column 0 is where the app's records put it. That is the measurement the 2026-09-08 report said was missing.
 
