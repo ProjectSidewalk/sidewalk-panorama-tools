@@ -775,6 +775,19 @@ class TestTheProseNumbers:
         assert 'decodes to %.1f MB' % decoded in _prose()
         assert 'decodes to %d MB' % (12288 * 6144 * 3 // 10 ** 6) in _prose()
 
+    def test_the_prose_names_the_second_attribution_field_and_never_its_value(self):
+        """The plan's wording gate (section 6), restored in review of PR 251 (nit 6)."""
+        values = {r[ATTRIBUTION_FIELDS[1]] for r in _cvmetadata()} - {'', None}
+        assert values and not any(v in _report() for v in values)
+        assert 'one value of the second attribution field' in _prose()
+
+    def test_the_transcription_is_described_as_it_was_written(self):
+        """It was transcribed from the v2 report and CropRunner's docstrings, and never names CropRunner in its
+        source; the report once said it was written "without reading CropRunner" (review of PR 251, nit 4)."""
+        prose = _prose()
+        assert 'without reading `CropRunner`' not in prose
+        assert "transcribed from the v2 report and `CropRunner`'s docstrings" in prose
+
     def test_the_grid_size_quoted(self):
         n = len(TestTheStandaloneTranscription.GRID) * 4
         assert 'a grid of %d windows' % n in _prose()

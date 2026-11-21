@@ -106,8 +106,9 @@ label and not a pass by default.
 | crop file size equals the window's stored size | 81 of 81 |
 | standalone transcription gives the same window | 81 of 81 |
 
-The standalone transcription is a second copy of rule v2 in the study script, written from the v2 report without
-reading `CropRunner`; a test asserts it does not. Two derivations agreeing is not proof that either is right, which
+The standalone transcription is a second copy of rule v2 in the study script, transcribed from the v2 report and
+`CropRunner`'s docstrings. It does not import or reference `CropRunner` at run time, and a test asserts that its
+source never names it. Two derivations agreeing is not proof that either is right, which
 is why M6 looks at the pixels.
 
 **The storage downscale never ran on Bayonne.** A 90 deg window on a 5760-wide pano is exactly 1440 px, which is
@@ -132,7 +133,7 @@ is why M6 looks at the pixels.
 | labels in run 1's manifest not in the snapshot / the reverse | 0 / 0 |
 
 The join is on `(city, label_id)` inside the one city, with uniqueness asserted on both sides. All 81 rows carry
-one attribution pair (`sig_bayonne`, `etalab-2.0`), so "filled on every crop and equal to the served row" is
+one attribution pair (the producer `sig_bayonne` and one value of the second attribution field), so "filled on every crop and equal to the served row" is
 checked here, and "varies per picture" is not observable.
 
 ### The tilt run (M10, a finding)
