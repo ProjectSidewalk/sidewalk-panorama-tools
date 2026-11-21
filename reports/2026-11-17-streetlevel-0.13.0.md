@@ -137,7 +137,9 @@ and the `Metadata-Version` move. The test now re-derives both from the files, al
 date 0.13.0 shipped, the weekly run's date and its gap to the upload, and it checks that every data file the report
 cites is committed. `fix1_report_mutants.py` makes 11 edits and 3 deletions, one at a time, and each one fails the
 test (`fix1_report_mutants.out.txt`). A wider sweep, `fix1_report_number_sweep.py`, bumps every number in the prose
-outside backticks and links, one at a time: 78 of 112 still pass (`fix1_report_number_sweep.out.txt`, which lists
-each one). Most survivors are names and history: issue and PR numbers, the Part and mutant labels, release numbers
+outside backticks and link text, one at a time: 78 of 112 still pass (`fix1_report_number_sweep.out.txt`, which lists
+each one). The script's docstring says it skips links, but its pattern skips only their text, so the numbers in link
+targets (the issue and PR URLs, and the dates and versions in linked paths) were bumped too, and all of them
+survive. Most survivors are names and history: issue and PR numbers, the Part and mutant labels, release numbers
 in running text, the wire format's byte offsets, and dates from the box or from Part 1. A few are recorded in this
 folder but not re-derived by the test, such as the interpreter and pip versions.
