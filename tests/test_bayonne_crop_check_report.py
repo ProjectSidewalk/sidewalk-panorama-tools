@@ -988,15 +988,43 @@ class TestTheReportTablesFromTheirRawFiles:
         others = [r['label_uid'] for r in white if r not in at_cap]
         assert len(at_cap) == len(all_cap) == 10 and others == ['bayonne-fr:42']
         prose = _prose()
+        assert round(100 * min(shares)) == round(100 * max(shares)) == 93
         for phrase in ('at least %d%% of its pixels above luma %d' % (round(100 * bcc.WHITE_ROW_FRACTION),
                                                                        bcc.WHITE_LUMA),
                        'the %s windows at the cap and `%s`' % (_WORDS[len(all_cap)], others[0]),
-                       'flat white from %.3f of its height down' % min(tops),
+                       'every stored pano is white from %.3f of its height down, with graphics drawn in the lower '
+                       'part of that band' % min(tops),
+                       'Every stored pano is white from %.3f of its height down, with graphics drawn in the lower '
+                       'part (%d%% of the band\'s pixels are white)' % (min(tops), round(100 * min(shares))),
                        '%d of the %d crops carry some of it, up to %s of %s rows' % (
                            len(white), len(crops), whitest['white_rows'], whitest['file_h'])):
-            assert phrase in prose, phrase
+            assert prose.count(phrase) == 1, phrase      # each once, so neither copy can change alone (review 2)
+        assert 'flat white' not in prose, 'the band has graphics in it (review 2, N1)'
         index = ' '.join(_read_repo('reports', 'README.md').split())
-        assert 'flat white from %.3f of its height down, which %d crops carry' % (min(tops), len(white)) in index
+        assert ('every stored pano is white from %.3f of its height down (graphics drawn in its lower part), which '
+                '%d crops carry' % (min(tops), len(white))) in index
+        assert 'flat white' not in index
+
+    def test_the_crops_reach_only_the_blank_top_of_the_band(self):
+        """Review 2, N1: a crop has white rows exactly when its window reaches its pano's band, and they cover
+        nearly all of that overlap, so the crops see the blank top of the band and not the graphics below."""
+        band_top = {r['pano_id']: int(r['white_band_top']) for r in _panos_rows()}
+        reach = []
+        for r in _crops_rows():
+            assert r['downscaled'] == 'False'      # so a file row is a window row
+            overlap = max(0, int(r['top']) + int(r['height']) - band_top[r['pano_id']])
+            white = int(r['white_rows'])
+            assert (overlap > 0) == (white > 0), r['label_uid']
+            assert 0 <= overlap - white <= 9, r['label_uid']
+            reach += [r['label_uid']] if overlap else []
+        assert len(reach) == 11
+        assert 'they reach only its blank top' in _prose()
+
+    def test_the_data_list_names_the_new_columns(self):
+        """Review 2, N4."""
+        data_list = _prose().split('## Where the data lives', 1)[1].split('## ', 1)[0]
+        for column in ('white_band_top', 'white_band_share', 'white_rows', 'label_w'):
+            assert '`%s`' % column in data_list or column == 'label_w' and 'label frame' in data_list, column
 
     def test_the_served_counts_run_1_and_the_remaining_rows(self):
         """The fifteen rows review 2 of PR 251 found tied to no raw file (S1). Two rows cannot be: `stored files

@@ -5,7 +5,8 @@ served source and both attribution fields on every row, every stored frame is th
 the dot on the labelled feature wherever the feature can be located. One crop on a posed pano has the dot above
 the ground, which is the direction the 2026-10-06 report predicts for a tilt leak; the posed panos are almost all
 uniform paving, so this run says little about that tilt either way. One property of the imagery is not a
-cropper fault but shows in the crops: every stored pano is flat white from 0.791 of its height down.
+cropper fault but shows in the crops: every stored pano is white from 0.791 of its height down, with graphics drawn
+in the lower part of that band.
 
 ## The question
 
@@ -257,8 +258,10 @@ the first real-label evidence of the tilt that the plan hoped this cross-tab mig
   to 49.8 MB.
 * **One attribution pair across all 81 labels.** The manifest copies it correctly; whether it would copy a
   per-picture value correctly is not observable in Bayonne.
-* **Every stored pano is flat white from 0.791 of its height down**, and 11 of the 81 crops carry some of it, up
-  to 210 of 960 rows. A consumer of these crops gets those white rows, and `black_content` cannot see white.
+* **Every stored pano is white from 0.791 of its height down, with graphics drawn in the lower part (93% of the
+  band's pixels are white)**, and 11 of the 81 crops carry some of it, up to 210 of 960 rows. Each of those crops
+  has white rows over nearly all of its overlap with the band, so they reach only its blank top. A consumer of
+  these crops gets those white rows, and `black_content` cannot see white.
 * **`--tilt-correction` is all `no_pose` on Panoramax**, by design (M10).
 * **The verdict by pose class** (above): the posed panos are nearly all uniform paving, so the cross-tab does not
   settle whether labels on posed panos sit at the stored point or the rig pixel.
@@ -271,9 +274,10 @@ the first real-label evidence of the tilt that the plan hoped this cross-tab mig
   platform, and the sha256 of each uncompressed file (the manifest's too, and that of the copy of it taken after
   run 1, which is not committed).
 * `pano_id_log.csv`, `download-log-row.csv`: the download ledger and its `log.csv` row, as written.
-* `panos.csv`: per labelled pano: shard, bytes, sha256, stored and app frames, ledger verdict.
-* `crops.csv`: per label (`label_uid`): the window, both derivations' sizes, and the crop file's size, bytes and
-  sha256.
+* `panos.csv`: per labelled pano: shard, bytes, sha256, stored and app frames, the label frame, ledger verdict,
+  and the white band's first row and pixel share (`white_band_top`, `white_band_share`).
+* `crops.csv`: per label (`label_uid`): the window, both derivations' sizes, the crop file's size, bytes and
+  sha256, and its count of white rows (`white_rows`).
 * `crop_provenance.csv.gz` (the store's manifest, read after run 2, verbatim, gzipped; byte for byte the copy
   taken after run 1, by the two hashes in `snapshot.json`) and `crop_rule.json` (the store's marker).
 * `visual-verdicts.csv`: the per-crop verdicts.
