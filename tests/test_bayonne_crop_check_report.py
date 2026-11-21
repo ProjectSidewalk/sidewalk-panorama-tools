@@ -252,6 +252,70 @@ class TestEachDetectorCatchesItsPlant:
                                            'untested': ['bayonne-fr:2', 'bayonne-fr:3']}
 
 
+def _band_image(width, height, white_from=None, sky_rows=0, blob=False, row_white_share=1.0):
+    """A mid-grey RGB image with optional white rows: `sky_rows` at the top and every row from `white_from` to the
+    bottom. `blob` paints a dark square inside the band; `row_white_share` < 1 leaves that share of each band
+    row's pixels white and the rest grey."""
+    image = Image.new('RGB', (width, height), (120, 120, 120))
+    if sky_rows:
+        image.paste((255, 255, 255), (0, 0, width, sky_rows))
+    if white_from is not None:
+        image.paste((255, 255, 255), (0, white_from, int(round(width * row_white_share)), height))
+        if blob:
+            image.paste((30, 30, 30), (10, white_from + 2, 10 + (height - white_from) // 2, height - 2))
+    return image
+
+
+class TestTheWhiteBand:
+    """Review of PR 251, finding 2: every stored Bayonne pano is flat white from about 0.79 of its height down,
+    and 11 crops carry some of it. `black_content` looks for black and cannot see it, so the study measures it."""
+
+    def test_a_white_row_is_one_with_at_least_the_fraction_of_its_pixels_above_the_luma(self):
+        flags = bcc.white_row_flags(_band_image(100, 50, white_from=40))
+        assert flags.sum() == 10 and flags[40:].all() and not flags[:40].any()
+        assert bcc.white_row_flags(_band_image(100, 50, white_from=40, row_white_share=0.98)).sum() == 10
+        assert bcc.white_row_flags(_band_image(100, 50, white_from=40, row_white_share=0.97)).sum() == 0
+        at_the_luma = Image.new('RGB', (100, 10), (bcc.WHITE_LUMA,) * 3)
+        assert not bcc.white_row_flags(at_the_luma).any(), 'strictly above the luma'
+        above = Image.new('RGB', (100, 10), (bcc.WHITE_LUMA + 1,) * 3)
+        assert bcc.white_row_flags(above).all()
+
+    def test_the_band_starts_at_the_first_white_row_in_the_lower_half(self):
+        """A white sky at the top is not the band: six of the 40 Bayonne panos have one."""
+        top, share = bcc.white_band(_band_image(200, 100, white_from=79, sky_rows=12))
+        assert top == 79 and share == pytest.approx(1.0)
+        assert bcc.white_band(_band_image(200, 100, white_from=79, row_white_share=0.98))[0] == 79
+        assert bcc.white_band(_band_image(200, 100, white_from=79, row_white_share=0.97)) == (None, None)
+        assert bcc.white_band(_band_image(200, 100, sky_rows=12)) == (None, None)
+        assert bcc.white_band(_band_image(200, 100)) == (None, None)
+
+    def test_the_band_share_counts_its_pixels_from_the_top_row_down(self):
+        image = _band_image(200, 100, white_from=60, blob=True)
+        luma = image.convert('L')
+        expected = sum(1 for y in range(60, 100) for x in range(200) if luma.getpixel((x, y)) > bcc.WHITE_LUMA)
+        top, share = bcc.white_band(image)
+        assert top == 60 and share == pytest.approx(expected / (40 * 200), abs=1e-4) and share < 0.95
+
+    def test_the_store_and_crop_tables_carry_it(self, tmp_path):
+        """A pano white from 0.8 of its height: its row says where the band starts, and a crop near the nadir
+        counts white rows while one at the horizon counts none. Cut by the real cropper."""
+        store, crops = str(tmp_path / 'store'), str(tmp_path / 'crops' / bcc.CITY)
+        width, height = 720, 360
+        pano_id = _pano_id(5)
+        os.makedirs(os.path.join(store, pano_id[:2]))
+        _band_image(width, height, white_from=288).save(os.path.join(store, pano_id[:2], pano_id + '.jpg'),
+                                                        quality=95)
+        panos = [{'pano_id': pano_id, 'has_labels': True, 'width': width, 'height': height}]
+        labels = [_label(1, pano_id, 300, 180, width, height), _label(2, pano_id, 300, 300, width, height)]
+        assert CropRunner.bulk_extract_crops([dict(r) for r in labels], store, crops, city=bcc.CITY)['success'] == 2
+        [pano] = bcc.store_check(store, panos, labels)['rows']
+        assert abs(pano['white_band_top'] - 288) <= 1 and pano['white_band_share'] > 0.99
+        rows = {r['label_id']: r for r in bcc.window_rows(labels, crops)}
+        assert rows[1]['white_rows'] == 0
+        band_in_window = rows[2]['top'] + rows[2]['height'] - 288
+        assert band_in_window > 0 and abs(rows[2]['white_rows'] - band_in_window) <= 2
+
+
 class TestTheStandaloneTranscription:
 
     GRID = [(y_frac, h) for h in (1664, 2688, 2880, 3328, 6656, 8192) for y_frac in
@@ -503,8 +567,35 @@ class TestMeasureEndToEnd:
                     '| run 2 `skipped_existing` | %d of %d |' % (n, n), '| tilt run `no_pose` | %d of %d |' % (n, n),
                     '| marked run `success` | %d of %d |' % (n, n), '| manifest bytes unchanged by run 2 | yes |',
                     "| labels in run 1's manifest not in the snapshot / the reverse | 0 / 0 |",
-                    '| labelled panos not downloaded | 0 |', '| labelled pano ids that are 36-char UUIDs | 3 of 3 |'):
+                    '| labelled panos not downloaded | 0 |', '| labelled pano ids that are 36-char UUIDs | 3 of 3 |',
+                    '| labelled panos with a white band in the lower half | 0 of 3 |',
+                    '| crops with white rows | 0 of %d |' % n, '| most white rows in one crop | 0 |'):
             assert row in rows, row
+
+    def test_the_white_band_rows_come_from_the_pixels(self, tmp_path, monkeypatch):
+        """One pano repainted white from 2/3 of its height, then re-cut: its first label's window (45.8 deg, rows
+        190-250) takes the band's top rows, and a label near its nadir (at the 90 deg cap) takes a whole window."""
+        argv, _, summary_path, labels = _measure_setup(tmp_path, monkeypatch)
+        store, crops = argv[argv.index('--store') + 1], argv[argv.index('--crops') + 1]
+        first = labels[0]
+        pano_id = first['pano_id']
+        _band_image(720, 360, white_from=240).save(os.path.join(store, pano_id[:2], pano_id + '.jpg'), quality=95)
+        nadir = _label(99, pano_id, 300, 330)
+        cvmetadata = os.path.join(argv[argv.index('--snapshot') + 1], 'cvmetadata.json.gz')
+        with open(cvmetadata, 'wb') as f:
+            f.write(gzip.compress(json.dumps(labels + [nadir]).encode('utf-8'), mtime=0))
+        os.remove(os.path.join(crops, '1', '%d.jpg' % first['label_id']))
+        assert CropRunner.bulk_extract_crops([dict(first), dict(nadir)], store, crops, city=bcc.CITY)['success'] == 2
+        assert CropRunner.crop_window_fov_deg(float(first['pano_y']), 360) < CropRunner.CROP_MAX_FOV_DEG
+        assert CropRunner.crop_window_fov_deg(330.0, 360) >= CropRunner.CROP_MAX_FOV_DEG
+        bcc.main(argv)
+        with open(summary_path, encoding='utf-8') as f:
+            rows = json.load(f)['table_rows']
+        for row in ('| labelled panos with a white band in the lower half | 1 of 3 |',
+                    '| crops with white rows | 2 of %d |' % (len(labels) + 1),
+                    '| of those, windows at the 90 deg cap | 1 |'):
+            assert row in rows, row
+        assert any(r.startswith('| most white rows in one crop |') and '`bayonne-fr:99`' in r for r in rows)
 
     def test_the_run_1_manifest_hash_is_recorded_beside_the_stores(self, tmp_path, monkeypatch):
         """`manifest bytes unchanged by run 2` was a yes/no only the scratch root could check; snapshot.json now
@@ -819,6 +910,37 @@ class TestTheReportTablesFromTheirRawFiles:
                      for pc in bcc.POSE_CLASSES]
         expected += ['| judgeable crops | %d |' % (len(rows) - tally['unclear'])]
         assert not _missing_from_report(expected)
+
+    def test_the_white_band_rows_and_prose_from_panos_csv_and_crops_csv(self):
+        panos, crops = _panos_rows(), _crops_rows()
+        banded = [r for r in panos if r['white_band_top']]
+        tops = [int(r['white_band_top']) / int(r['stored_h']) for r in banded]
+        shares = [float(r['white_band_share']) for r in banded]
+        white = [r for r in crops if int(r['white_rows'])]
+        whitest = max(white, key=lambda r: int(r['white_rows']))
+        at_cap = [r for r in white if float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG]
+        expected = [
+            '| labelled panos with a white band in the lower half | %d of %d |' % (len(banded), len(panos)),
+            '| band top as a share of the frame height, min / max | %.3f / %.3f |' % (min(tops), max(tops)),
+            '| white pixels from the band top to the last row, min / max | %.3f / %.3f |' % (min(shares), max(shares)),
+            '| crops with white rows | %d of %d |' % (len(white), len(crops)),
+            '| of those, windows at the 90 deg cap | %d |' % len(at_cap),
+            '| most white rows in one crop | %s of %s (`%s`) |' % (whitest['white_rows'], whitest['file_h'],
+                                                                 whitest['label_uid'])]
+        assert not _missing_from_report(expected)
+        all_cap = [r for r in crops if float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG]
+        others = [r['label_uid'] for r in white if r not in at_cap]
+        assert len(at_cap) == len(all_cap) == 10 and others == ['bayonne-fr:42']
+        prose = _prose()
+        for phrase in ('at least %d%% of its pixels above luma %d' % (round(100 * bcc.WHITE_ROW_FRACTION),
+                                                                       bcc.WHITE_LUMA),
+                       'the %s windows at the cap and `%s`' % (_WORDS[len(all_cap)], others[0]),
+                       'flat white from %.3f of its height down' % min(tops),
+                       '%d of the %d crops carry some of it, up to %s of %s rows' % (
+                           len(white), len(crops), whitest['white_rows'], whitest['file_h'])):
+            assert phrase in prose, phrase
+        index = ' '.join(_read_repo('reports', 'README.md').split())
+        assert 'flat white from %.3f of its height down, which %d crops carry' % (min(tops), len(white)) in index
 
     def test_the_spot_check_lists(self):
         rows = _crops_rows()

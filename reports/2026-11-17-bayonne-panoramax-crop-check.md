@@ -4,7 +4,8 @@
 served source and both attribution fields on every row, every stored frame is the app's, and the marked crops put
 the dot on the labelled feature wherever the feature can be located. One crop on a posed pano has the dot above
 the ground, which is the direction the 2026-10-06 report predicts for a tilt leak; the posed panos are almost all
-uniform paving, so this run says little about that tilt either way.
+uniform paving, so this run says little about that tilt either way. One property of the imagery is not a
+cropper fault but shows in the crops: every stored pano is flat white from 0.791 of its height down.
 
 ## The question
 
@@ -167,6 +168,28 @@ The gain halves per zoom step, and the app's records agree with themselves under
 of a perspective view is weakest; it is not chased further here. This says nothing about the pixels. Whether the hd
 image follows the convention is what M6 checks.
 
+### A white band at the bottom of every pano (a finding, from the review)
+
+| check | result |
+|---|---|
+| labelled panos with a white band in the lower half | 40 of 40 |
+| band top as a share of the frame height, min / max | 0.791 / 0.792 |
+| white pixels from the band top to the last row, min / max | 0.930 / 0.932 |
+| crops with white rows | 11 of 81 |
+| of those, windows at the 90 deg cap | 10 |
+| most white rows in one crop | 210 of 960 (`bayonne-fr:56`) |
+
+A white row is one with at least 98% of its pixels above luma 250 (`WHITE_ROW_FRACTION` and `WHITE_LUMA` in the
+script). The band's top is the first white row in the lower half of the frame, because a bright sky can make
+white rows at the top too. Every stored pano turns white at the same height and stays mostly white to its last
+row; the band is not wholly white (the second share above), so something is drawn inside it. `panos.csv` has
+each pano's `white_band_top` and `white_band_share`, and `crops.csv` each crop's `white_rows`. The crops that
+carry some of it are the ten windows at the cap and `bayonne-fr:42`.
+
+This is the picture as stored, not something the cropper did: each crop is the pano's own pixels at its window.
+The cropper's content check (`black_content`) looks for exact-zero luma, so it cannot see a white band, and its 0
+above says nothing about one. What, if anything, the cropper should do about it is an open question below.
+
 ## The visual verdict (M6)
 
 **Who judged.** The implementing model (Claude Opus 5.5), not a person, from contact sheets of the 81
@@ -233,6 +256,8 @@ the first real-label evidence of the tilt that the plan hoped this cross-tab mig
   to 49.8 MB.
 * **One attribution pair across all 81 labels.** The manifest copies it correctly; whether it would copy a
   per-picture value correctly is not observable in Bayonne.
+* **Every stored pano is flat white from 0.791 of its height down**, and 11 of the 81 crops carry some of it, up
+  to 210 of 960 rows. A consumer of these crops gets those white rows, and `black_content` cannot see white.
 * **`--tilt-correction` is all `no_pose` on Panoramax**, by design (M10).
 * **The verdict by pose class** (above): the posed panos are nearly all uniform paving, so the cross-tab does not
   settle whether labels on posed panos sit at the stored point or the rig pixel.
@@ -266,6 +291,8 @@ Method instead.
 * the standalone transcription against `CropRunner` on a grid of 312 windows, and a perturbed constant on either
   side reported as a disagreement;
 * the verdict rule on synthetic tallies on both sides of each threshold;
+* the white-band detector on synthetic images on both sides of each threshold, and on a synthetic pano cut by
+  the real cropper;
 * the headline counts re-derived from the raw files (the run-1 capture, the gzipped manifest and snapshot,
   `visual-verdicts.csv`, `crops.csv`), not from the summary JSON;
 * every other table row, the prose counts and the spot-check lists re-derived the same way (the window counts
@@ -295,6 +322,8 @@ Nothing in production. This PR adds the study script, its test, the data and thi
 * The tilt hand-off: the follow-up for Panoramax labels on posed panos that `reports/2026-10-06-non-gsv-levelling.md`
   recommended was never filed, and its pool is mostly uniform paving (above). Whether to file it or note it on #197
   is Jon's decision.
+* The white band: whether the cropper should treat a white region the way it treats a black one, or leave it
+  to consumers, is Jon's decision. Nothing in production changed here.
 * The zoom-1 leftover of up to 4.5 deg at the canvas edges, if anyone needs the app's view record to that
   precision.
 

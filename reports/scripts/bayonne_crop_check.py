@@ -47,6 +47,7 @@ for _p in (REPO_ROOT, HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 import CropRunner  # noqa: E402
@@ -196,6 +197,34 @@ def read_ledger(store):
     return out
 
 
+# The white band (review of PR 251, finding 2). A pixel is white when its luma is above WHITE_LUMA; a row is white
+# when at least WHITE_ROW_FRACTION of its pixels are. CropRunner's content check looks for exact-zero luma, so it
+# does not see this; the study measures it per pano and per crop.
+WHITE_LUMA = 250
+WHITE_ROW_FRACTION = 0.98
+
+
+def white_row_flags(image):
+    """A boolean per row of a PIL image: is it a white row."""
+    luma = np.asarray(image.convert('L'))
+    return (luma > WHITE_LUMA).mean(axis=1) >= WHITE_ROW_FRACTION
+
+
+def white_band(image):
+    """(top, share) of the white band at the bottom of a pano, or (None, None) without one.
+
+    `top` is the first white row in the lower half (a white sky in the upper half is not the band), and `share`
+    the share of white pixels from that row to the last. Usage: `white_band(Image.open(path))`."""
+    luma = np.asarray(image.convert('L'))
+    rows = (luma > WHITE_LUMA).mean(axis=1)
+    half = luma.shape[0] // 2
+    hits = np.flatnonzero(rows[half:] >= WHITE_ROW_FRACTION)
+    if not len(hits):
+        return None, None
+    top = half + int(hits[0])
+    return top, float((luma[top:] > WHITE_LUMA).mean())
+
+
 def _all_jpegs(store):
     for folder, _, files in os.walk(store):
         for name in files:
@@ -220,10 +249,11 @@ def store_check(store, panos, labels):
     for pano_id in sorted(label_frames):
         path = os.path.join(store, pano_id[:2], pano_id + '.jpg')
         stored = (None, None)
-        size = digest = None
+        size = digest = band_top = band_share = None
         if os.path.isfile(path):
             with Image.open(path) as im:
                 stored = im.size
+                band_top, band_share = white_band(im)
             size, digest = os.path.getsize(path), sha256_file(path)
         else:
             missing.append(pano_id)
@@ -234,7 +264,8 @@ def store_check(store, panos, labels):
         rows.append({'pano_id': pano_id, 'shard': pano_id[:2], 'bytes': size, 'sha256': digest,
                      'stored_w': stored[0], 'stored_h': stored[1], 'app_w': app.get(pano_id, (None,))[0],
                      'app_h': app.get(pano_id, (None, None))[1], 'label_w': label_w, 'label_h': label_h,
-                     'ledger': ledger.get(pano_id, '')})
+                     'ledger': ledger.get(pano_id, ''), 'white_band_top': band_top,
+                     'white_band_share': None if band_share is None else round(band_share, 4)})
     downloaded = {i for i, v in ledger.items() if v == '1'}
     return {'rows': rows, 'outside_shard': outside, 'frame_mismatch': mismatch, 'missing': missing,
             'walk_equals_ledger': walked_ids == downloaded, 'ledger_downloaded': len(downloaded),
@@ -314,10 +345,11 @@ def window_rows(labels, crops_store):
         mine = standalone_v2_window(float(row['pano_x']), float(row['pano_y']), width, height)
         type_id = CropRunner.resolve_label_type_id(row)
         path = os.path.join(crops_store, str(type_id), '%d.jpg' % int(row['label_id']))
-        file_w = file_h = size = digest = None
+        file_w = file_h = size = digest = white = None
         if os.path.isfile(path):
             with Image.open(path) as im:
                 file_w, file_h = im.size
+                white = int(white_row_flags(im).sum())
             size, digest = os.path.getsize(path), sha256_file(path)
         exp_w, exp_h = expected_stored_size(box)
         rows.append({
@@ -331,7 +363,7 @@ def window_rows(labels, crops_store):
             'expected_w': exp_w, 'expected_h': exp_h, 'standalone_w': mine[2], 'standalone_h': mine[3],
             'transcription_agrees': label_uid(row) not in disagree,
             'file_w': file_w, 'file_h': file_h, 'file_bytes': size, 'file_sha256': digest,
-            'size_ok': (file_w, file_h) == (exp_w, exp_h)})
+            'size_ok': (file_w, file_h) == (exp_w, exp_h), 'white_rows': white})
     uids = [r['label_uid'] for r in rows]
     assert len(uids) == len(set(uids)), 'label_uid is not unique'
     return rows
@@ -575,6 +607,11 @@ def collect(args):
     frames = Counter((r['stored_w'], r['stored_h']) for r in store['rows'])
     fovs = sorted(r['fov_deg'] for r in windows)
     cap = CropRunner.CROP_MAX_FOV_DEG
+    banded = [r for r in store['rows'] if r['white_band_top'] is not None]
+    band_tops = [r['white_band_top'] / r['stored_h'] for r in banded]
+    band_shares = [r['white_band_share'] for r in banded]
+    white = [r for r in windows if r['white_rows']]
+    whitest = max(white, key=lambda r: r['white_rows'], default=None)
     return {
         'snapshot': snap, 'panos': panos, 'labels': labels, 'poses': poses, 'store': store, 'windows': windows,
         'manifest': manifest, 'manifest_path': manifest_path, 'marker': marker, 'captures': captures,
@@ -601,6 +638,15 @@ def collect(args):
             'size_ok': sum(r['size_ok'] for r in windows),
             'transcription_agrees': sum(r['transcription_agrees'] for r in windows),
             'crop_files': _count_jpegs(args.crops),
+            'white_band_panos': len(banded),
+            'white_band_top_frac_min': min(band_tops, default=None),
+            'white_band_top_frac_max': max(band_tops, default=None),
+            'white_band_share_min': min(band_shares, default=None),
+            'white_band_share_max': max(band_shares, default=None),
+            'white_crops': len(white), 'white_crops_at_cap': sum(r['fov_deg'] >= cap for r in white),
+            'white_rows_max': None if whitest is None else whitest['white_rows'],
+            'white_rows_max_of': None if whitest is None else whitest['file_h'],
+            'white_rows_max_label': None if whitest is None else whitest['label_uid'],
         },
     }
 
@@ -667,6 +713,15 @@ def table_rows(c):
         '| tilt run `crop.log` lines naming the reason | %d |' % c['tilt']['reason_lines'],
         '| tilt run exit code | %d |' % tilt_run['exit'],
         '| marked run `success` | %d of %d |' % (marked['counts']['success'], marked['counts']['total']),
+        '| labelled panos with a white band in the lower half | %d of %d |' % (f['white_band_panos'], len(s['rows'])),
+        '| band top as a share of the frame height, min / max | %s / %s |' % (
+            fmt(f['white_band_top_frac_min'], '.3f'), fmt(f['white_band_top_frac_max'], '.3f')),
+        '| white pixels from the band top to the last row, min / max | %s / %s |' % (
+            fmt(f['white_band_share_min'], '.3f'), fmt(f['white_band_share_max'], '.3f')),
+        '| crops with white rows | %d of %d |' % (f['white_crops'], n),
+        '| of those, windows at the 90 deg cap | %d |' % f['white_crops_at_cap'],
+        '| most white rows in one crop | %s |' % ('0' if f['white_rows_max'] is None else '%d of %d (`%s`)' % (
+            f['white_rows_max'], f['white_rows_max_of'], f['white_rows_max_label'])),
     ]
     for zoom, z in c['pov'].items():
         rows.append('| zoom %s | %d | %s | %s | %s |' % (
