@@ -1,0 +1,4 @@
+Python 3.10.21 streetlevel 0.13.0 imports ok
+025001c Bump streetlevel to 0.13.0, the release with the depth-header fix (#237 Part 2)
+FAILED tests/test_scrape_queue.py::TestOnlyOneQueueRunsAtATime::test_the_lock_is_released_when_the_holder_exits_uncleanly
+1 failed, 7237 passed, 48 skipped, 27 warnings in 1626.76s (0:27:06)

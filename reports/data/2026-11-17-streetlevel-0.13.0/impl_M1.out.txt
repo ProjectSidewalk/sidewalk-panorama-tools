@@ -1,0 +1,9 @@
+== 2026-11-17T14:27:41Z M1
+M1 (streetlevel 0.13.0): _decode_depth_planes reads the offset as struct.unpack_from('<H', raw, 7)[0], _DEPTH_HEADER untouched
++    offset = struct.unpack_from('<H', raw, 7)[0]  # M1: read the offset as 0.12.x did
+E           downloaders.gsv.DepthPayloadError: depth payload truncated: 44 bytes, need 300
+E           downloaders.gsv.DepthPayloadError: depth payload truncated: 64 bytes, need 576
+FAILED tests/test_streetlevel_api.py::test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith
+FAILED tests/test_depth_helpers.py::TestComputeDepthRaster::test_matches_streetlevels_own_decode
+2 failed in 1.64s
+exit 1

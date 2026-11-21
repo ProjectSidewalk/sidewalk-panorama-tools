@@ -1,11 +1,13 @@
-# The production box's frozen dependency set (#167). Generated, not hand-edited, with one exception recorded
-# here: refresh it with the procedure in docs/ops.md, "Refreshing constraints.txt".
+# The production box's frozen dependency set (#167). Generated, not hand-edited, with the exceptions
+# recorded here: refresh it with the procedure in docs/ops.md, "Refreshing constraints.txt".
 #
 # Source: `.venv/bin/pip freeze` on the production host, Python 3.10.12, repo at c9ff03c, read 2026-10-06,
 # MINUS 41 packages #237 stopped installing, deleted by hand as docs/ops.md prescribes for a dropped
 # dependency: torch, triton, pyequilib and the nvidia-*/cuda-* wheels, streetlevel's other unused
 # requirements, and the pytest family streetlevel dragged onto the box. The 15 of those that CI still installs
-# are pinned in constraints-ci.txt at these same versions. The 24 pins below are unchanged from that freeze.
+# are pinned in constraints-ci.txt at these same versions. 23 of the 24 pins below are unchanged from that freeze;
+# streetlevel was moved from 0.12.11 to 0.13.0 by hand in #237 Part 2 (the depth-header fix). The box installs it
+# at a later deploy and the next refresh records it.
 # Until the #237 deploy the box's venv still holds the deleted packages; refresh this file from the box after
 # it, and this paragraph goes.
 #
@@ -34,7 +36,7 @@ pyexiv2==2.16.0
 pyproj==3.7.1
 requests==2.34.2
 scipy==1.15.3
-streetlevel==0.12.11
+streetlevel==0.13.0
 typing_extensions==4.16.0
 urllib3==2.7.0
 yarl==1.24.5

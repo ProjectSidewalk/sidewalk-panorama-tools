@@ -1452,7 +1452,7 @@ the one mistake the freeze cannot show as clearly, `streetlevel` missing because
 **An install that changes a pin `streetlevel` also requires prints a red `ERROR:` block and exits 0.** Since #237,
 moving the pin of `aiohttp`, `requests`, `numpy`, `pillow`, `pyproj`, `scipy`, `pyexiv2` or either converter makes
 pip print `ERROR: pip's dependency resolver does not currently take into account all the packages that are
-installed...`, then `streetlevel 0.12.11 requires cython, which is not installed.` and the same for `protobuf`,
+installed...`, then `streetlevel <version> requires cython, which is not installed.` and the same for `protobuf`,
 `pycryptodome`, `pyequilib`, `pyfrpc`, `pytest` and `pytest-asyncio`, then `Successfully installed`. That is
 expected and not a failed check: those 7 are never imported. **Do not install what it names**; `pyequilib` is the
 first step back to torch. The `diff` above is the check that counts.
@@ -1524,9 +1524,10 @@ Two gaps in this loop are known and accepted:
   the box requires a floor of it since torch left with #237. `pip freeze --all` would record it; use that for a
   refresh if it ever matters.
 
-**Changing a dependency** goes the other way: edit `requirements.txt` and `constraints.txt` together (pin the
-version you tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box
-to record what pip actually installed alongside it.
+**Changing a dependency** goes the other way: edit the requirement file (`requirements-nodeps.txt` for
+`streetlevel`, `requirements.txt` for everything else) and `constraints.txt` together (pin the version you
+tested), let CI pass, merge, deploy (the install above picks the pin up), then refresh from the box to record
+what pip actually installed alongside it.
 
 #237 installs `streetlevel` with `--no-deps` and lists the requirements it imports in `requirements.txt`, which
 drops `torch`, `triton`, `pyequilib` and the `nvidia-*`/`cuda-*` wheels that no production module imports. A fresh
@@ -1552,6 +1553,15 @@ in by one command line; the old one is kept whole, so rollback is one line from 
 **Do it in the daytime.** The queue runs from 19:00 to about 06:30 Pacific; do not start after 18:00. If the pull
 would also bring other merged PRs, deploy those first with the ordinary Deploying block and let a night pass, so a
 bad night is attributable.
+
+**A venv built before a pin moved is brought up to it, not rebuilt.** After the pull that brings the new pin,
+re-run the two install lines in it: step 1's lines for a `.venv-237` not yet swapped in, the
+[Deploying](#deploying) block's for `.venv`. They replace only the package whose pin moved. Then run the matching
+freeze diff, which must print nothing (an old `.venv` not yet swapped still prints its 41 `<` lines, and only
+those); that diff is the check that counts. A venv step 1 builds comes with Ubuntu's pip 22.0.2, which has no
+`--dry-run` (it arrived in pip 22.2), so do not try one in `.venv-237`, nor in `.venv` once it links there, unless
+that venv's `pip --version` says 22.2 or later. Moving `streetlevel` from 0.12.11 to 0.13.0 was rehearsed this way
+([the report](../reports/2026-11-17-streetlevel-0.13.0.md)).
 
 ```bash
 cd /srv/sidewalk-panorama-tools

@@ -1,0 +1,79 @@
+tokens mutated: 112, survivors: 78
+L1 0.13.0 -> 0.13.1 :: # Moving `streetlevel` to 0.13.0, the release with t
+L3 237 -> 238 :: Sidewalk/sidewalk-panorama-tools/issues/237) (Part 2). It follo
+L3 2 -> 3 :: dewalk-panorama-tools/issues/237) (Part 2). It follows [the P
+L4 2026 -> 2027 :: Part 2). It follows [the Part 1 report](2026-11-15-streetlevel-n
+L4 11 -> 12 :: 2). It follows [the Part 1 report](2026-11-15-streetlevel-no-d
+L4 15 -> 16 ::  It follows [the Part 1 report](2026-11-15-streetlevel-no-deps
+L4 2026 -> 2027 :: deps.md), which is not edited. Measured 2026-11-17 on Windows 11
+L4 11 -> 12 :: md), which is not edited. Measured 2026-11-17 on Windows 11 wi
+L4 17 -> 18 :: , which is not edited. Measured 2026-11-17 on Windows 11 with 
+L4 11 -> 12 ::  edited. Measured 2026-11-17 on Windows 11 with uv's CPython 3
+L5 3.10.21 -> 3.10.22 :: 6-11-17 on Windows 11 with uv's CPython 3.10.21 against the two PyP
+L5 3.10 -> 3.11 :: heels, both pure-Python `py3-none-any`. 3.10 is the production m
+L7 2026 -> 2027 :: a/2026-11-17-streetlevel-0.13.0/`](data/2026-11-17-streetlevel-0
+L7 11 -> 12 :: 6-11-17-streetlevel-0.13.0/`](data/2026-11-17-streetlevel-0.13
+L7 17 -> 18 :: 1-17-streetlevel-0.13.0/`](data/2026-11-17-streetlevel-0.13.0/
+L7 0.13.0 -> 0.13.1 :: l-0.13.0/`](data/2026-11-17-streetlevel-0.13.0/):  - `planning_win
+L16 256 -> 257 :: HOME>`. No wheel is committed; their sha256 hashes are in `plan
+L18 0.13.0 -> 0.13.1 :: **No live photometa request was made on 0.13.0.** The first real o
+L22 0.12.13 -> 0.12.14 :: e on the box.  ## The question  Through 0.12.13, `streetlevel` read
+L22 7 -> 8 :: depth payload's one-byte `offset` (byte 7) as a uint16 spanni
+L22 16 -> 17 :: d's one-byte `offset` (byte 7) as a uint16 spanning bytes 7-8.
+L22 7 -> 8 :: et` (byte 7) as a uint16 spanning bytes 7-8. Its parser there
+L22 8 -> 9 :: ` (byte 7) as a uint16 spanning bytes 7-8. Its parser therefo
+L23 1 -> 2 :: 8. Its parser therefore crashed on the ~1% of panos with a mo
+L23 56 -> 57 :: of panos with a modelled zenith. Since #56 the repo has decode
+L25 45 -> 46 :: tps://github.com/sk-zk/streetlevel/pull/45), shipped in 0.13.0
+L26 0.13.0 -> 0.13.1 :: port answers three questions: what else 0.13.0 changes on the path
+L26 1 -> 2 ::  the paths this repo uses, whether Part 1's `--no-deps` split
+L31 0.13.0 -> 0.13.1 :: hat changed upstream  - **The fix is in 0.13.0.** #45 merged on 20
+L32 0.13.0 -> 0.13.1 :: in_p2_upstream_github.out.txt`). In the 0.13.0 wheel, `depth.parse
+L33 0.12.11 -> 0.12.12 :: ader` reads   `"offset": depth_map[7]`. 0.12.11 and 0.12.13 read `g
+L33 0.12.13 -> 0.12.14 ::   `"offset": depth_map[7]`. 0.12.11 and 0.12.13 read `get_uint16(de
+L44 1 -> 2 :: e the same 16 in both wheels**, so Part 1's 9/7 split stands.
+L44 9 -> 0 :: e same 16 in both wheels**, so Part 1's 9/7 split stands. The
+L44 7 -> 8 :: same 16 in both wheels**, so Part 1's 9/7 split stands. The w
+L45 22.0.2 -> 22.0.3 :: -Version` went from 2.4 to 2.5, and pip 22.0.2 installed it withou
+L49 8 -> 9 ::  Master's tests ran unmodified over the 8 streetlevel-touchin
+L61 2 -> 3 ::  the same class: its first index is now 2. It had been held a
+L61 0 -> 1 :: rst index is now 2. It had been held at 0 so that the old par
+L65 0.12.11 -> 0.12.12 :: --|---|---| | Both tests, `streetlevel` 0.12.11 | 2 failed (`IndexE
+L66 0.12.13 -> 0.12.14 :: .out.txt` | | Both tests, `streetlevel` 0.12.13 | 2 failed, the sam
+L67 0.13.0 -> 0.13.1 :: .out.txt` | | Both tests, `streetlevel` 0.13.0 | 2 passed | `impl_
+L68 1 -> 2 :: 2 passed | `impl_E_0.13.0.out.txt` | | M1: our decode reads t
+L68 7 -> 8 :: decode reads the offset as `<H` at byte 7, as 0.12.x did | 2 
+L68 0.12 -> 0.13 ::  reads the offset as `<H` at byte 7, as 0.12.x did | 2 failed | 
+L69 2 -> 3 :: did | 2 failed | `impl_M1.out.txt` | | M2: `_compute_depth_ra
+L70 5 -> 6 :: mns | 2 failed | `impl_M2.out.txt` | | M5: one number this re
+L72 1 -> 2 :: rt's test fails | `impl_M5.out.txt` |  M1 and M2 were each re
+L72 2 -> 3 :: st fails | `impl_M5.out.txt` |  M1 and M2 were each restored 
+L72 5 -> 6 :: `git checkout --` before the next run. M5 was restored from a
+L83 56 -> 57 :: er, so the planes the artifact stores (#56) need the in-repo d
+L89 2026 -> 2027 :: 7`  `.venv-237` was built on the box on 2026-11-15 with `streetl
+L89 11 -> 12 :: .venv-237` was built on the box on 2026-11-15 with `streetleve
+L89 15 -> 16 :: nv-237` was built on the box on 2026-11-15 with `streetlevel` 
+L89 0.12.11 -> 0.12.12 :: he box on 2026-11-15 with `streetlevel` 0.12.11 and has not been sw
+L90 22.0.2 -> 22.0.3 ::  from master's files with the box's pip 22.0.2, then ran both inst
+L93 1 -> 2 :: in_p2_box_like_pip22.out.txt`):  - Line 1 was a no-op. - Line
+L94 2 -> 3 :: ut.txt`):  - Line 1 was a no-op. - Line 2 replaced `streetlev
+L95 0 -> 1 :: ifier, even without `-U`. - Both exited 0, with no resolver `
+L99 1 -> 2 :: erefore unnecessary. The box's own step-1 freeze diff in `doc
+L102 22.0.2 -> 22.0.3 ::  while `.venv-237` serves nothing.  pip 22.0.2 has no `--dry-run` 
+L102 22.2 -> 22.3 :: 2.0.2 has no `--dry-run` (it arrived in 22.2). The 2026-11-15 is
+L102 2026 -> 2027 :: o `--dry-run` (it arrived in 22.2). The 2026-11-15 issue comment
+L102 11 -> 12 :: dry-run` (it arrived in 22.2). The 2026-11-15 issue comment ra
+L102 15 -> 16 :: -run` (it arrived in 22.2). The 2026-11-15 issue comment ran `
+L108 39 -> 30 :: ent with an upper bound (`<0.13`, from #39). The weekly unpinn
+L122 1 -> 2 :: .out.txt`. - The first plan's mutation M1 widened the header 
+L122 9 -> 0 :: utation M1 widened the header struct to 9 bytes. That makes o
+L123 1 -> 2 :: he header   rather than misread it, so M1 was replaced: it no
+L123 7 -> 8 :: it now reads the offset as `<H` at byte 7 and leaves the stru
+L127 1 -> 2 :: arded `import cython` probe, which Part 1 traced   (`review/r
+L133 1 -> 2 :: dings to LF on commit.  ## Review round 1 (2026-11-21)  The P
+L133 2026 -> 2027 :: gs to LF on commit.  ## Review round 1 (2026-11-21)  The PR revi
+L133 11 -> 12 ::  LF on commit.  ## Review round 1 (2026-11-21)  The PR review 
+L133 21 -> 22 ::  on commit.  ## Review round 1 (2026-11-21)  The PR review cha
+L136 45 -> 46 :: th from the files, along with the date #45 merged, the date 0.
+L137 0.13.0 -> 0.13.1 :: long with the date #45 merged, the date 0.13.0 shipped, the weekly
+L144 1 -> 2 :: ts, and dates from the box or from Part 1. A few are recorded

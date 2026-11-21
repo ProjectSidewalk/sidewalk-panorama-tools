@@ -1,0 +1,38 @@
+streetlevel-0.12.11-py3-none-any.whl 811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4
+   ['Metadata-Version: 2.4', 'Requires-Python: >=3.8'] Requires-Dist: 16
+streetlevel-0.13.0-py3-none-any.whl 624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d
+   ['Metadata-Version: 2.5', 'Requires-Python: >=3.8'] Requires-Dist: 16
+streetlevel/streetview/api.py find_panorama_by_id IDENTICAL
+streetlevel/streetview/api.py build_find_panorama_by_id_request_url IDENTICAL
+  imports changed: ['from ..util import get_json, get_json_async, post_json, post_json_async', 'import json'] removed ['from ..util import get_json, get_json_async']
+streetlevel/util.py get_json DIFFERS
+streetlevel/streetview/depth.py parse IDENTICAL
+streetlevel/streetview/depth.py parse_header DIFFERS
+streetlevel/streetview/depth.py compute_depth_map IDENTICAL
+streetlevel/streetview/depth.py parse_planes IDENTICAL
+streetlevel/streetview/depth.py decode_b64 IDENTICAL
+streetlevel/streetview/parse.py parse_panorama_message IDENTICAL
+streetlevel/streetview/parse.py parse_panorama_id_response IDENTICAL
+--- 
++++ 
+@@ -1,7 +1,7 @@
+ def get_json(url: str, session: Session = None, preprocess_function: Callable = None,
+              headers: dict = None) -> dict:
+     """
+-    Fetches JSON from a URL using requests.
++    Fetches JSON from a GET endpoint using requests.
+ 
+     :param url: The URL.
+     :param session: *(optional)* A requests session.
+
+--- 
++++ 
+@@ -4,5 +4,7 @@
+         "number_of_planes": get_uint16(depth_map, 1),
+         "width": get_uint16(depth_map, 3),
+         "height": get_uint16(depth_map, 5),
+-        "offset": get_uint16(depth_map, 7),
++        # One byte, not two: the header is `header_size` (8) bytes long, so a uint16
++        # read here would extend to index 8, which is already the first plane index.
++        "offset": depth_map[7],
+     }

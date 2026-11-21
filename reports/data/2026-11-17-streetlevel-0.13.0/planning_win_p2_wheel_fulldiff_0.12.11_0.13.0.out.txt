@@ -1,0 +1,557 @@
+== PyPI latest: 0.13.0
+   0.12.10  2026-06-11T15:01:25.647810Z  streetlevel-0.12.10-py3-none-any.whl  sha256=98f21a94469639976b0c354f39388decb33cf7a5db8dc6b4069050a18b1b49e0 yanked=False requires_python=>=3.8
+   0.12.10  2026-06-11T15:01:26.730620Z  streetlevel-0.12.10.tar.gz  sha256=9bc85dd59fb30fcc2358621839eb8751c92766766c054ea39b397255491f7862 yanked=False requires_python=>=3.8
+   0.12.11  2026-08-05T11:56:32.275384Z  streetlevel-0.12.11-py3-none-any.whl  sha256=811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4 yanked=False requires_python=>=3.8
+   0.12.11  2026-08-05T11:56:33.363230Z  streetlevel-0.12.11.tar.gz  sha256=2c8748cc016d8c93c12fbc6d60bf84409a3efee2c4c1f18c9b59eaa71884897a yanked=False requires_python=>=3.8
+   0.12.12  2026-10-05T16:18:07.543248Z  streetlevel-0.12.12-py3-none-any.whl  sha256=87b6137a86e47f43e3c661b6f10e4569cbf1188ceaa77c1464e963528ce078b3 yanked=False requires_python=>=3.8
+   0.12.12  2026-10-05T16:18:08.889334Z  streetlevel-0.12.12.tar.gz  sha256=19dd167528cd045ca254bf90171435b5dbcd6a1fc3f263750c70f6b292c3904f yanked=False requires_python=>=3.8
+   0.12.13  2026-10-14T14:45:26.212027Z  streetlevel-0.12.13-py3-none-any.whl  sha256=60fe28fec2ce73e93eba7fbdbea1bac58173e4ba8661fda2127846eb989a682e yanked=False requires_python=>=3.8
+   0.12.13  2026-10-14T14:45:27.429960Z  streetlevel-0.12.13.tar.gz  sha256=eefa5ffa45bf0e00d3cf61d1e2c46d7d6fea5f8229f668b7e90cc588537af0fc yanked=False requires_python=>=3.8
+   0.12.14  (no such release)
+   0.13.0   2026-11-12T15:39:27.573399Z  streetlevel-0.13.0-py3-none-any.whl  sha256=624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d yanked=False requires_python=>=3.8
+   0.13.0   2026-11-12T15:39:28.697776Z  streetlevel-0.13.0.tar.gz  sha256=2e75fb2cca8c2a1800775e36510a92049e2f45c2cfe97c1271c5aed5ab4cd6b0 yanked=False requires_python=>=3.8
+   0.13.1   (no such release)
+   releases at or past 0.13: ['0.13.0']
+== old wheel sha256 811d51cdc9adf930b85d2f22e0bf9a8f2c847acc10ec5227ecd61704d8cc6ef4
+   Version: 0.12.11
+   Requires-Python: >=3.8
+   Requires-Dist: aiohttp
+   Requires-Dist: bd09convertor
+   Requires-Dist: coordinatesconverter
+   Requires-Dist: cython
+   Requires-Dist: numpy
+   Requires-Dist: pillow
+   Requires-Dist: protobuf>4
+   Requires-Dist: pycryptodome
+   Requires-Dist: pyequilib
+   Requires-Dist: pyexiv2
+   Requires-Dist: pyfrpc==0.2.13
+   Requires-Dist: pyproj
+   Requires-Dist: pytest
+   Requires-Dist: pytest-asyncio
+   Requires-Dist: requests
+   Requires-Dist: scipy
+== new wheel sha256 624c912a8522a47880cff2b5208d4ab4bd377810c86ca4d4850b57ec23a1192d
+   Version: 0.13.0
+   Requires-Python: >=3.8
+   Requires-Dist: aiohttp
+   Requires-Dist: bd09convertor
+   Requires-Dist: coordinatesconverter
+   Requires-Dist: cython
+   Requires-Dist: numpy
+   Requires-Dist: pillow
+   Requires-Dist: protobuf>4
+   Requires-Dist: pycryptodome
+   Requires-Dist: pyequilib
+   Requires-Dist: pyexiv2
+   Requires-Dist: pyfrpc==0.2.13
+   Requires-Dist: pyproj
+   Requires-Dist: pytest
+   Requires-Dist: pytest-asyncio
+   Requires-Dist: requests
+   Requires-Dist: scipy
+== .py files only in old: []
+== .py files only in new: []
+== per-file change (lines +/-), files present in both
+   +1    -1    streetlevel/__init__.py
+   same      streetlevel/baidu/__init__.py
+   same      streetlevel/baidu/api.py
+   same      streetlevel/baidu/baidu.py
+   same      streetlevel/baidu/panorama.py
+   same      streetlevel/baidu/parse.py
+   same      streetlevel/baidu/util.py
+   same      streetlevel/dataclasses.py
+   +8    -4    streetlevel/exif.py
+   same      streetlevel/geo.py
+   same      streetlevel/ja/__init__.py
+   same      streetlevel/ja/api.py
+   same      streetlevel/ja/ja.py
+   same      streetlevel/ja/panorama.py
+   same      streetlevel/ja/parse.py
+   same      streetlevel/ja/util.py
+   same      streetlevel/kakao/__init__.py
+   same      streetlevel/kakao/api.py
+   same      streetlevel/kakao/kakao.py
+   same      streetlevel/kakao/panorama.py
+   same      streetlevel/kakao/parse.py
+   same      streetlevel/kakao/util.py
+   +1    -1    streetlevel/lookaround/__init__.py
+   same      streetlevel/lookaround/api.py
+   same      streetlevel/lookaround/auth.py
+   same      streetlevel/lookaround/geo.py
+   same      streetlevel/lookaround/lookaround.py
+   same      streetlevel/lookaround/panorama.py
+   same      streetlevel/lookaround/parse.py
+   same      streetlevel/lookaround/proto/GroundMetadataTile_pb2.py
+   same      streetlevel/lookaround/proto/MuninViewState_pb2.py
+   same      streetlevel/lookaround/proto/__init__.py
+   same      streetlevel/lookaround/reproject.py
+   same      streetlevel/lookaround/util.py
+   same      streetlevel/mapy/__init__.py
+   same      streetlevel/mapy/api.py
+   same      streetlevel/mapy/mapy.py
+   same      streetlevel/mapy/panorama.py
+   same      streetlevel/mapy/parse.py
+   same      streetlevel/mapy/util.py
+   same      streetlevel/naver/__init__.py
+   +18   -12   streetlevel/naver/api.py
+   same      streetlevel/naver/model.py
+   +17   -17   streetlevel/naver/naver.py
+   +6    -0    streetlevel/naver/panorama.py
+   same      streetlevel/naver/parse.py
+   same      streetlevel/naver/proto/Model_pb2.py
+   same      streetlevel/naver/proto/__init__.py
+   same      streetlevel/naver/util.py
+   same      streetlevel/streetside/__init__.py
+   same      streetlevel/streetside/api.py
+   same      streetlevel/streetside/panorama.py
+   same      streetlevel/streetside/parse.py
+   same      streetlevel/streetside/streetside.py
+   same      streetlevel/streetside/util.py
+   same      streetlevel/streetview/__init__.py
+   +57   -52   streetlevel/streetview/api.py
+   +3    -1    streetlevel/streetview/depth.py
+   same      streetlevel/streetview/panorama.py
+   +2    -2    streetlevel/streetview/parse.py
+   same      streetlevel/streetview/protobuf.py
+   +43   -18   streetlevel/streetview/streetview.py
+   same      streetlevel/streetview/util.py
+   +55   -8    streetlevel/util.py
+   same      streetlevel/yandex/__init__.py
+   same      streetlevel/yandex/api.py
+   same      streetlevel/yandex/panorama.py
+   same      streetlevel/yandex/parse.py
+   same      streetlevel/yandex/util.py
+   +39   -12   streetlevel/yandex/yandex.py
+== full diff: streetlevel/__init__.py
+--- old/streetlevel/__init__.py
++++ new/streetlevel/__init__.py
+@@ -1 +1 @@
+-__version__ = "0.12.11"
++__version__ = "0.13.0"
+== full diff: streetlevel/exif.py
+--- old/streetlevel/exif.py
++++ new/streetlevel/exif.py
+@@ -24,4 +24,8 @@
+     pitch: Optional[float] = None
+     roll: Optional[float] = None
++    full_width: Optional[int] = None
++    full_height: Optional[int] = None
++    cropped_area_left: Optional[int] = None
++    cropped_area_top: Optional[int] = None
+ 
+ 
+@@ -85,8 +89,8 @@
+         "Xmp.GPano.CroppedAreaImageWidthPixels": m.width,
+         "Xmp.GPano.CroppedAreaImageHeightPixels": m.height,
+-        "Xmp.GPano.FullPanoWidthPixels": m.width,
+-        "Xmp.GPano.FullPanoHeightPixels": m.height,
+-        "Xmp.GPano.CroppedAreaLeftPixels": 0,
+-        "Xmp.GPano.CroppedAreaTopPixels": 0,
++        "Xmp.GPano.FullPanoWidthPixels": m.full_width if m.full_width else m.width,
++        "Xmp.GPano.FullPanoHeightPixels": m.full_height if m.full_height else m.height,
++        "Xmp.GPano.CroppedAreaLeftPixels": m.cropped_area_left if m.cropped_area_left else 0,
++        "Xmp.GPano.CroppedAreaTopPixels": m.cropped_area_top if m.cropped_area_top else 0,
+     }
+     if m.heading:
+== full diff: streetlevel/streetview/depth.py
+--- old/streetlevel/streetview/depth.py
++++ new/streetlevel/streetview/depth.py
+@@ -36,5 +36,7 @@
+         "width": get_uint16(depth_map, 3),
+         "height": get_uint16(depth_map, 5),
+-        "offset": get_uint16(depth_map, 7),
++        # One byte, not two: the header is `header_size` (8) bytes long, so a uint16
++        # read here would extend to index 8, which is already the first plane index.
++        "offset": depth_map[7],
+     }
+ 
+== full diff: streetlevel/streetview/parse.py
+--- old/streetlevel/streetview/parse.py
++++ new/streetlevel/streetview/parse.py
+@@ -24,5 +24,5 @@
+ 
+ def parse_panorama_radius_response(response: dict) -> Optional[StreetViewPanorama]:
+-    response_code = response[0][0][0]
++    response_code = response[0][0]
+     # 0: OK
+     # 5: search returned no images
+@@ -30,5 +30,5 @@
+     if response_code != 0:
+         return None
+-    return parse_panorama_message(response[0][1])
++    return parse_panorama_message(response[1])
+ 
+ 
+== full diff: streetlevel/streetview/api.py
+--- old/streetlevel/streetview/api.py
++++ new/streetlevel/streetview/api.py
+@@ -1,7 +1,10 @@
+ import aiohttp
++import json
+ from typing import Tuple
+ from .protobuf import *
+ from .util import is_third_party_panoid
+-from ..util import get_json, get_json_async
++from ..util import get_json, get_json_async, post_json, post_json_async
++
++_find_panorama_endpoint = "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/SingleImageSearch"
+ 
+ 
+@@ -22,5 +25,5 @@
+ 
+ 
+-def build_find_panorama_request_url(lat, lon, radius, download_depth, locale, search_third_party):
++def build_find_panorama_post_body(lat, lon, radius, download_depth, locale, search_third_party) -> str:
+     radius = float(radius)
+     toggles = []
+@@ -37,49 +40,51 @@
+ 
+     if download_depth:
+-        depth1 = {1: ProtobufEnum(0)}
+-        depth2 = {1: ProtobufEnum(2)}
++        depth1 = [0]
++        depth2 = [2]
+     else:
+-        depth1 = {}
+-        depth2 = {}
++        depth1 = []
++        depth2 = []
+ 
+     if include_resolution_info:
+-        toggles.append(ProtobufEnum(1))
++        toggles.append(1)
+     if include_street_name_and_date:
+-        toggles.append(ProtobufEnum(2))
++        toggles.append(2)
+     if include_copyright_information:
+-        toggles.append(ProtobufEnum(3))
+-    toggles.append(ProtobufEnum(4))
++        toggles.append(3)
++    toggles.append(4)
+     if include_neighbors_and_historical:
+-        toggles.append(ProtobufEnum(6))
+-    toggles.append(ProtobufEnum(8))
++        toggles.append(6)
++    toggles.append(8)
+ 
+     # Ari timestamp (and two other unknown values)
+-    toggles.append(ProtobufEnum(12))
+-
+-    search_message = {
+-        1: {
+-            1: 'apiv3',
+-            5: 'US',
+-            11: {1: {1: False}}
+-        },
+-        2: {1: {3: lat, 4: lon}, 2: radius},
+-        3: {
+-            2: {1: ietf_lang, 2: ietf_country},
+-            9: {1: ProtobufEnum(2)},
+-            11: {
+-                1: {1: ProtobufEnum(image_type), 2: True, 3: ProtobufEnum(2)}
+-            },
+-        },
+-        4: {
+-            1: toggles,
+-            5: depth1,
+-            6: depth2,
+-        }
+-    }
+-
+-    url = "https://maps.googleapis.com/maps/api/js/GeoPhotoService.SingleImageSearch?pb=" \
+-          + to_protobuf_url(search_message) + "&callback=_xdc_._v2mub5"
+-          
+-    return url
++    toggles.append(12)
++
++    search_message = [
++        ["apiv3", None, None, None, "US"],
++        [[None, None, lat, lon], radius],
++        [
++         None,
++         [ietf_lang, ietf_country],
++         None,
++         None,
++         None,
++         None,
++         None,
++         None,
++         [2],
++         None,
++         [[[image_type, True, 2]]],
++        ],
++        [
++            toggles,
++            None,
++            None,
++            None,
++            depth1,
++            depth2,
++        ]
++    ]
++
++    return json.dumps(search_message)
+ 
+ 
+@@ -165,15 +170,12 @@
+ 
+ 
+-def repair_find_panorama_response(text):
+-    first_paren = text.index("(")
+-    last_paren = text.rindex(")")
+-    return "[" + text[first_paren + 1:last_paren] + "]"
+-
+-
+ def find_panorama(lat, lon, radius=50, download_depth=False, locale="en", search_third_party=False, session=None):
+-    return get_json(
+-        build_find_panorama_request_url(lat, lon, radius, download_depth, locale, search_third_party),
+-        session=session,
+-        preprocess_function=repair_find_panorama_response
++    return post_json(
++        _find_panorama_endpoint,
++        build_find_panorama_post_body(lat, lon, radius, download_depth, locale, search_third_party),
++        headers={
++            "content-type": "application/json+protobuf",
++        },
++        session=session
+     )
+ 
+@@ -181,8 +183,11 @@
+ async def find_panorama_async(lat, lon, session: aiohttp.ClientSession, radius=50,
+                               download_depth=False, locale="en", search_third_party=False):
+-    return await get_json_async(
+-        build_find_panorama_request_url(lat, lon, radius, download_depth, locale, search_third_party),
++    return await post_json_async(
++        _find_panorama_endpoint,
++        build_find_panorama_post_body(lat, lon, radius, download_depth, locale, search_third_party),
+         session,
+-        preprocess_function=repair_find_panorama_response
++        headers={
++            "content-type": "application/json+protobuf",
++        },
+     )
+ 
+== full diff: streetlevel/util.py
+--- old/streetlevel/util.py
++++ new/streetlevel/util.py
+@@ -69,5 +69,5 @@
+              headers: dict = None) -> dict:
+     """
+-    Fetches JSON from a URL using requests.
++    Fetches JSON from a GET endpoint using requests.
+ 
+     :param url: The URL.
+@@ -89,5 +89,5 @@
+                          preprocess_function: Callable = None, headers: dict = None) -> dict:
+     """
+-    Fetches JSON from a URL using aiohttp.
++    Fetches JSON from a GET endpoint using aiohttp.
+ 
+     :param url: The URL.
+@@ -111,4 +111,51 @@
+ 
+ 
++def post_json(url: str, body: any, session: Session = None, preprocess_function: Callable = None,
++             headers: dict = None) -> dict:
++    """
++    Fetches JSON from a POST endpoint using requests.
++
++    :param url: The URL.
++    :param body: The post body.
++    :param session: *(optional)* A requests session.
++    :param preprocess_function: *(optional)* A function to run on the text before passing it to the JSON parser.
++    :param headers: *(optional)* Request headers.
++    :return: The requested document as dictionary.
++    """
++    requester = session if session else requests
++    response = requester.post(url, data=body, headers=headers)
++    if preprocess_function:
++        processed = preprocess_function(response.text)
++        return json.loads(processed)
++    else:
++        return response.json()
++
++
++async def post_json_async(url: str, body: any, session: ClientSession, json_function_parameters: dict = None,
++                         preprocess_function: Callable = None, headers: dict = None) -> dict:
++    """
++    Fetches JSON from a POST endpoint using aiohttp.
++
++    :param url: The URL.
++    :param body: The post body.
++    :param session: A ``ClientSession``.
++    :param json_function_parameters: *(optional)* Parameters to pass to the ``ClientResponse.json`` function.
++    :param preprocess_function: *(optional)* A function to run on the text before passing it to the JSON parser.
++    :param headers: *(optional)* Request headers.
++    :return: The requested document as dictionary.
++    """
++    if headers is None:
++        headers = {}
++    async with session.post(url, data=body, headers=headers) as response:
++        if preprocess_function:
++            text = await response.text()
++            processed = preprocess_function(text)
++            return json.loads(processed)
++        else:
++            if json_function_parameters:
++                return await response.json(**json_function_parameters)
++            return await response.json()
++
++
+ def get_equirectangular_panorama(width: int, height: int, tile_size: Size,
+                                  tile_list: List[Tile],
+@@ -190,10 +237,10 @@
+ 
+     tasks = [download_one(url, headers) for url in urls]
+-    data = await asyncio.gather(*tasks)
+-
+-    if close_session:
+-        await session.close()
+-
+-    return data
++    try:
++        data = await asyncio.gather(*tasks)
++        return data
++    finally:
++        if close_session:
++            await session.close()
+ 
+ 
+== full diff: streetlevel/streetview/streetview.py
+--- old/streetlevel/streetview/streetview.py
++++ new/streetlevel/streetview/streetview.py
+@@ -4,5 +4,5 @@
+ from PIL import Image
+ from requests import Session
+-from typing import List, Optional
++from typing import List, Optional, Tuple
+ 
+ from . import api
+@@ -10,5 +10,4 @@
+ from .parse import parse_coverage_tile_response, parse_panorama_id_response, \
+     parse_panorama_radius_response
+-from .util import is_third_party_panoid
+ from ..dataclasses import Tile
+ from ..exif import save_with_metadata, OutputMetadata, add_metadata
+@@ -17,4 +16,5 @@
+     download_file, download_file_async
+ 
++_tile_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0"
+ 
+ def find_panorama(lat: float, lon: float, radius: int = 50, locale: str = "en",
+@@ -126,5 +126,6 @@
+ 
+ 
+-def download_panorama(pano: StreetViewPanorama, path: str, zoom: int = 5, pil_args: dict = None) -> None:
++def download_panorama(pano: StreetViewPanorama, path: str, zoom: int = 5,
++                      pil_args: Optional[dict] = None, refetch: bool = False) -> None:
+     """
+     Downloads a panorama to a file. If the chosen format is JPEG, Exif and XMP GPano metadata are included.
+@@ -138,7 +139,9 @@
+         `Image.save <https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.save>`_
+         method, e.g. ``{"quality":100}``. Defaults to ``{}``.
+-    """
+-    if pano.is_third_party:
+-        zoom = _validate_get_panorama_params(pano, zoom)
++    :param refetch: *(optional)* If True, the metadata of the panorama will be refetched if ``pano.image_sizes``
++        is not set. This will make an additional network request. Defaults to False.
++    """
++    pano, zoom = _validate_get_panorama_params(pano, zoom, refetch, None)
++    if pano.is_third_party:
+         url = _build_sized_third_party_image_url(pano, zoom)
+         download_file(url, path)
+@@ -152,7 +155,7 @@
+ 
+ async def download_panorama_async(pano: StreetViewPanorama, path: str, session: ClientSession,
+-                                  zoom: int = 5, pil_args: dict = None) -> None:
+-    if pano.is_third_party:
+-        zoom = _validate_get_panorama_params(pano, zoom)
++                                  zoom: int = 5, pil_args: Optional[dict] = None, refetch: bool = False) -> None:
++    pano, zoom = await _validate_get_panorama_params_async(pano, zoom, refetch, session)
++    if pano.is_third_party:
+         url = _build_sized_third_party_image_url(pano, zoom)
+         await download_file_async(url, path, session)
+@@ -189,5 +192,5 @@
+ 
+ 
+-def get_panorama(pano: StreetViewPanorama, zoom: int = 5) -> Image.Image:
++def get_panorama(pano: StreetViewPanorama, zoom: int = 5, refetch: bool = False) -> Image.Image:
+     """
+     Downloads a panorama and returns it as PIL image.
+@@ -197,7 +200,9 @@
+         specific panorama depend on the camera used. If the requested zoom level does not exist,
+         the highest available level will be downloaded. Defaults to 5.
++    :param refetch: *(optional)* If True, the metadata of the panorama will be refetched if ``pano.image_sizes``
++        is not set. This will make an additional network request. Defaults to False.
+     :return: A PIL image containing the panorama.
+     """
+-    zoom = _validate_get_panorama_params(pano, zoom)
++    pano, zoom = _validate_get_panorama_params(pano, zoom, refetch, None)
+ 
+     if pano.is_third_party:
+@@ -209,5 +214,5 @@
+             "Origin": "https://www.google.com",
+             "Referer": "https://www.google.com/",
+-            "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
++            "User-Agent": _tile_user_agent
+         }
+     return get_equirectangular_panorama(
+@@ -217,6 +222,7 @@
+ 
+ 
+-async def get_panorama_async(pano: StreetViewPanorama, session: ClientSession, zoom: int = 5) -> Image.Image:
+-    zoom = _validate_get_panorama_params(pano, zoom)
++async def get_panorama_async(pano: StreetViewPanorama, session: ClientSession,
++                             zoom: int = 5, refetch: bool = False) -> Image.Image:
++    pano, zoom = await _validate_get_panorama_params_async(pano, zoom, refetch, session)
+ 
+     if pano.is_third_party:
+@@ -228,5 +234,5 @@
+             "Origin": "https://www.google.com",
+             "Referer": "https://www.google.com/",
+-            "User-Agent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
++            "User-Agent": _tile_user_agent
+         }
+     return await get_equirectangular_panorama_async(
+@@ -236,9 +242,28 @@
+ 
+ 
+-def _validate_get_panorama_params(pano: StreetViewPanorama, zoom: int) -> int:
++def _validate_get_panorama_params(pano: StreetViewPanorama, zoom: int,
++                                  refetch: bool, session: Session) -> Tuple[StreetViewPanorama, int]:
+     if not pano.image_sizes:
+-        raise ValueError("pano.image_sizes is None.")
++        if refetch:
++            pano = find_panorama_by_id(pano.id, session=session)
++            if pano is None:
++                raise ValueError("pano.image_sizes is None and refetch failed.")
++        else:
++            raise ValueError("pano.image_sizes is None.")
+     zoom = max(0, min(zoom, len(pano.image_sizes) - 1))
+-    return zoom
++    return pano, zoom
++
++
++async def _validate_get_panorama_params_async(pano: StreetViewPanorama, zoom: int,
++                                        refetch: bool, session: ClientSession) -> Tuple[StreetViewPanorama, int]:
++    if not pano.image_sizes:
++        if refetch:
++            pano = await find_panorama_by_id_async(pano.id, session)
++            if pano is None:
++                raise ValueError("pano.image_sizes is None and refetch failed.")
++        else:
++            raise ValueError("pano.image_sizes is None.")
++    zoom = max(0, min(zoom, len(pano.image_sizes) - 1))
++    return pano, zoom
+ 
+ 
+== full diff: streetlevel/lookaround/__init__.py
+--- old/streetlevel/lookaround/__init__.py
++++ new/streetlevel/lookaround/__init__.py
+@@ -5,4 +5,4 @@
+ from .auth import Authenticator
+ 
+-if importlib.util.find_spec("torch"):
++if importlib.util.find_spec("torch") and importlib.util.find_spec("torchvision"):
+     from .reproject import to_equirectangular

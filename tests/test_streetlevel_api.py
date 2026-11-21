@@ -1,14 +1,16 @@
 """Pins the parts of streetlevel's API that downloaders.gsv actually calls.
 
 Every other test in this suite runs against conftest's stub, which swallows anything via **kwargs. That means
-a renamed parameter or a moved attribute anywhere in the >=0.12.11,<0.13 range would pass the whole suite and
+a renamed parameter or a moved attribute anywhere in the >=0.13.0 range would pass the whole suite and
 only surface on the scraper box. These tests import the real library instead, so CI (which installs it from
 requirements-nodeps.txt) catches the drift.
 
 Since #56, production uses only streetlevel's api half (gsv._fetch_pano_with_depth_planes fetches the raw
-photometa response and parses the fields it needs in-repo - the parse half's unguarded depth decode dies on
-~1% of panos, see test_streetlevel_still_misreads_the_depth_offset), so the surface pinned here is
-api.find_panorama_by_id, the photometa response shape, and the depth decode's column order.
+photometa response and parses the fields it needs in-repo), so the surface pinned here is
+api.find_panorama_by_id, the photometa response shape, and the depth decode's column order. Through 0.12.13 the
+parse half's unguarded depth decode died on ~1% of panos; 0.13.0 fixed it (sk-zk/streetlevel#45), and the
+in-repo decode is kept all the same - see test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith and
+docs/depth.md.
 
 Skipped when streetlevel isn't installed, so a dev box without it can still run the rest of the suite. Since #237
 streetlevel is installed with --no-deps and the requirements it imports (pyproj, scipy, bd09convertor,
@@ -102,10 +104,7 @@ def test_depth_decode_mirrors_x_end_to_end():
     """Same pin as above, but through parse() on a synthetic base64 payload built from the documented wire
     layout (see conftest.encode_depth_payload) - so header parsing, index extraction, plane extraction,
     decode, and the (h, w) reshape are all covered. Output column c must hold the value decoded for payload
-    index w-1-c. NB indices[0] must be 0 in payloads fed to streetlevel's parser: it reads the offset as a
-    uint16 spanning bytes 7-8 (still true in 0.12.11 - see
-    test_streetlevel_still_misreads_the_depth_offset), so byte 8 (the first index) has to be zero for the
-    offset to parse as 8 under both that reading and the true wire format's.
+    index w-1-c.
     """
     from streetlevel.streetview import depth
 
@@ -120,37 +119,47 @@ def test_depth_decode_mirrors_x_end_to_end():
                                err_msg="streetlevel no longer mirrors x in its depth decode")
 
 
-def test_streetlevel_still_misreads_the_depth_offset():
-    """Pin the upstream bug our own decode deliberately does not inherit: the wire format's `offset` is a
-    uint8 at byte 7, but streetlevel reads it as a uint16 spanning bytes 7-8. That is still true in 0.12.11
-    - the latest release and the floor of our pin, whose depth.py is byte-identical to 0.12.10's - so the
-    pin does NOT fix it, whatever a version number might suggest.
+# A modelled zenith (tunnels, overpass soffits, parking structures): the FIRST payload index byte is nonzero.
+# Against MIRROR_PLANES payload order decodes to [1.0, 3.0, -1, -1] (cols 0 and 1 hit the same plane from two
+# azimuths); streetlevel hands it back x-mirrored. test_fetch_seam_survives_a_modelled_zenith uses the same case.
+ZENITH_INDICES = [1, 1, 0, 0]
+ZENITH_EXPECTED = [-1.0, -1.0, 3.0, 1.0]
 
-    Consequence: none for the depth path anymore - the raster is computed in-repo from our own decode
-    (gsv._compute_depth_raster), precisely because routing through streetlevel's parser made every pano with
-    a modelled zenith (nonzero first index byte: tunnels, soffits, parking structures) raise on every
-    attempt and re-request forever. The misread now only constrains the payload FIXTURES: the two mirror
-    pins above feed streetlevel's parser directly, so their indices[0] must stay 0.
 
-    If this test fails, upstream fixed the read (sk-zk/streetlevel#45): bump the pin past the fixed release,
-    drop the indices[0] == 0 constraint from the fixtures, update the notes in gsv._decode_depth_planes,
-    gsv._fetch_pano_with_depth_planes, and conftest.encode_depth_payload - and revisit whether the seam's
-    parse bypass is still wanted (it becomes unnecessary rather than wrong; see the #56 discussion).
+def test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith():
+    """Upstream's depth parser must read a payload whose first index byte is nonzero, and agree with ours.
+
+    The wire format's `offset` is a uint8 at byte 7. Through 0.12.13 streetlevel read it as a uint16 spanning
+    bytes 7-8, so on this class it computed offset 8 + 256 * indices[0] and ran off the end of the payload;
+    in production that made every such pano (a bit under 1%) raise on every attempt and re-request forever,
+    which is why the depth path stopped routing through streetlevel's parser. 0.13.0 reads the byte as one
+    byte (sk-zk/streetlevel#45) and is the floor of requirements-nodeps.txt.
+
+    The two decodes agreeing here is the evidence that keeping the in-repo one (gsv._decode_depth_planes and
+    gsv._compute_depth_raster) costs nothing: it still earns its place because streetlevel never exposes the
+    planes the artifact stores (#56) and fails an out-of-range plane index with a bare IndexError. If this
+    fails with `IndexError: index 264 ...`, the installed streetlevel is older than requirements-nodeps.txt
+    allows - `pip install --no-deps -r requirements-nodeps.txt -c constraints.txt` - or upstream regressed.
     """
     from streetlevel.streetview import depth
 
-    # header_size=8, 1 plane, 1x1, offset=8, then a single index byte of 1 - the one real payloads (almost)
-    # never have.
-    payload = encode_depth_payload([{'n': [0.0, 0.0, 1.0], 'd': 1.0}], [1], 1, 1)
+    payload = encode_depth_payload(MIRROR_PLANES, ZENITH_INDICES, MIRROR_HEADER['width'],
+                                   MIRROR_HEADER['height'])
 
-    header = depth.parse_header(depth.decode_b64(payload))
+    try:
+        theirs = np.asarray(depth.parse(payload).data)
+    except IndexError as e:
+        pytest.fail("streetlevel's depth parser died on a modelled zenith (%s: %s): it reads the offset byte as "
+                    "a uint16 again, so the installed streetlevel predates 0.13.0 or upstream regressed. Install "
+                    "the pin: pip install --no-deps -r requirements-nodeps.txt -c constraints.txt"
+                    % (type(e).__name__, e))
 
-    assert header['offset'] == 8 + (1 << 8), \
-        "streetlevel now reads the depth offset as a uint8 - see this test's docstring, the notes it names " \
-        "can be simplified"
-    # And it does not degrade quietly: the bad offset runs off the end of the payload.
-    with pytest.raises((IndexError, ValueError)):
-        depth.parse(payload)
+    assert theirs.shape == (1, 4)
+    np.testing.assert_allclose(np.ravel(theirs), ZENITH_EXPECTED, rtol=1e-5,
+                               err_msg="streetlevel's decode of a modelled zenith changed")
+    ours = gsv._compute_depth_raster(gsv._decode_depth_planes(payload))
+    np.testing.assert_allclose(ours, theirs[:, ::-1], rtol=1e-5,
+                               err_msg="the in-repo decode and streetlevel's disagree on a modelled zenith")
 
 
 def test_fetch_seam_extracts_pano_and_planes_from_the_raw_response(monkeypatch):
@@ -209,11 +218,10 @@ def test_fetch_seam_returns_none_pair_when_the_pano_is_gone(monkeypatch):
 
 def test_fetch_seam_survives_a_modelled_zenith(monkeypatch):
     """A payload whose FIRST index byte is nonzero - a modelled zenith: tunnels, overpass soffits, parking
-    structures, a bit under 1% of panos - is exactly the class streetlevel's parser dies on (its uint16
-    misread of the offset byte, see test_streetlevel_still_misreads_the_depth_offset, unfixed through
-    0.12.11 with the fix pending in sk-zk/streetlevel#45). Since the seam computes the raster from our own
-    decode instead of routing through streetlevel's, those panos must now resolve rather than re-request
-    forever."""
+    structures, a bit under 1% of panos - is the class streetlevel's parser died on through 0.12.13 (its
+    uint16 misread of the offset byte, fixed in 0.13.0 by sk-zk/streetlevel#45). The seam computes the raster
+    from our own decode, so those panos must resolve rather than re-request forever whatever the installed
+    parser does."""
     # Payload indices [1, 1, 0, 0]: the first byte is the nonzero one that breaks streetlevel's offset read.
     payload = encode_depth_payload(MIRROR_PLANES, [1, 1, 0, 0], MIRROR_HEADER['width'],
                                    MIRROR_HEADER['height'])
@@ -271,8 +279,8 @@ def _levels_msg(image_sizes_wire, tile_size_wire=(512, 512)):
 
 
 def test_panorama_still_exposes_image_sizes_and_tile_size():
-    """What _image_levels_from_msg mirrors. Held on 0.12.10 (this box) and the >=0.12.11 requirements pin
-    alike: the two fields and Size's x/y names are identical across both."""
+    """What _image_levels_from_msg mirrors. Held on 0.12.11 and on 0.13.0, the floor of the requirements pin:
+    the two fields and Size's x/y names are identical across both."""
     from streetlevel.dataclasses import Size
 
     fields = {f.name for f in dataclasses.fields(panorama.StreetViewPanorama)}

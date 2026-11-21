@@ -1,0 +1,94 @@
+2026-11-17T14:07:10Z
+== move streetlevel to 0.13.0, --no-deps (the proposed nodeps line and pin)
+    Found existing installation: streetlevel 0.12.11
+    Uninstalling streetlevel-0.12.11:
+      Successfully uninstalled streetlevel-0.12.11
+Successfully installed streetlevel-0.13.0
+== freeze diff 0.12.11 -> 0.13.0
+40c40
+< streetlevel==0.12.11
+---
+> streetlevel==0.13.0
+== deploy import checks
+runner imports ok
+streetlevel 0.13.0
+== MASTER's tests, unmodified, on 0.13.0, SIDEWALK_REQUIRE_STREETLEVEL=1
+tmp_path = WindowsPath('<TEMP>/pytest-of-<user>/pytest-9990/test_with_the_variable_the_con0')
+
+    def test_with_the_variable_the_contract_tests_are_collected_and_run(self, tmp_path):
+        """Where streetlevel really imports, requiring it must mean every contract test ran - none skipped.
+        CI sets the variable, so there this is the direct check that the module did not go quiet."""
+        try:
+            import streetlevel.streetview.api  # noqa: F401
+        except ImportError:
+            if os.environ.get('SIDEWALK_REQUIRE_STREETLEVEL', '') not in ('', '0'):
+                raise
+            pytest.skip('streetlevel is not importable here, and this run does not require it')
+        code, output, root = _run_contract_module(tmp_path, shadow=False, require='1')
+>       assert code == 0, output
+E       AssertionError: ....F.............                                                       [100%]
+E         ================================== FAILURES ===================================
+E         ______________ test_streetlevel_still_misreads_the_depth_offset _______________
+E         
+E             def test_streetlevel_still_misreads_the_depth_offset():
+E                 """Pin the upstream bug our own decode deliberately does not inherit: the wire format's `offset` is a
+E                 uint8 at byte 7, but streetlevel reads it as a uint16 spanning bytes 7-8. That is still true in 0.12.11
+E                 - the latest release and the floor of our pin, whose depth.py is byte-identical to 0.12.10's - so the
+E                 pin does NOT fix it, whatever a version number might suggest.
+E             
+E                 Consequence: none for the depth path anymore - the raster is computed in-repo from our own decode
+E                 (gsv._compute_depth_raster), precisely because routing through streetlevel's parser made every pano with
+E                 a modelled zenith (nonzero first index byte: tunnels, soffits, parking structures) raise on every
+E                 attempt and re-request forever. The misread now only constrains the payload FIXTURES: the two mirror
+E                 pins above feed streetlevel's parser directly, so their indices[0] must stay 0.
+E             
+E                 If this test fails, upstream fixed the read (sk-zk/streetlevel#45): bump the pin past the fixed release,
+E                 drop the indices[0] == 0 constraint from the fixtures, update the notes in gsv._decode_depth_planes,
+E                 gsv._fetch_pano_with_depth_planes, and conftest.encode_depth_payload - and revisit whether the seam's
+E                 parse bypass is still wanted (it becomes unnecessary rather than wrong; see the #56 discussion).
+E                 """
+E                 from streetlevel.streetview import depth
+E             
+E                 # header_size=8, 1 plane, 1x1, offset=8, then a single index byte of 1 - the one real payloads (almost)
+E                 # never have.
+E                 payload = encode_depth_payload([{'n': [0.0, 0.0, 1.0], 'd': 1.0}], [1], 1, 1)
+E             
+E                 header = depth.parse_header(depth.decode_b64(payload))
+E             
+E         >       assert header['offset'] == 8 + (1 << 8), \
+E                     "streetlevel now reads the depth offset as a uint8 - see this test's docstring, the notes it names " \
+E                     "can be simplified"
+E         E       AssertionError: streetlevel now reads the depth offset as a uint8 - see this test's docstring, the notes it names can be simplified
+E         E       assert np.int64(8) == (8 + (1 << 8))
+E         
+E         tests\test_streetlevel_api.py:148: AssertionError
+E         =========================== short test summary info ===========================
+E         FAILED tests/test_streetlevel_api.py::test_streetlevel_still_misreads_the_depth_offset
+E         1 failed, 17 passed in 1.69s
+E         
+E       assert 1 == 0
+
+tests\test_suite_isolation.py:375: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_streetlevel_api.py::test_streetlevel_still_misreads_the_depth_offset
+FAILED tests/test_suite_isolation.py::TestStreetlevelMustImportWhenRequired::test_with_the_variable_the_contract_tests_are_collected_and_run
+2 failed, 482 passed, 17 skipped in 44.98s
+== r2: real call paths offline
+image phase  _fetch_image_levels -> ImageLevels(sizes=[(512, 256)], tile_size=(512, 512))
+depth phase  _fetch_pano_with_depth_planes -> heading=3.1416 raster=[-1.0, -1.0, 2.9999711513519287, 0.9999904036521912] planes=2
+pano gone    _fetch_pano_with_depth_planes -> (None, None)
+request      https://www.google.com/maps/photometa/v1?authuser=0&hl=en&gl=en&pb=!1m4!1smaps_sv.tactile!... headers=['Accept', 'Alt-Used', 'Host', 'Referer', 'User-Agent'] kwargs=[]
+request      https://www.google.com/maps/photometa/v1?authuser=0&hl=en&gl=en&pb=!1m4!1smaps_sv.tactile!... headers=['Accept', 'Alt-Used', 'Host', 'Referer', 'User-Agent'] kwargs=[]
+streetlevel modules loaded (13): streetlevel, streetlevel.dataclasses, streetlevel.exif, streetlevel.geo, streetlevel.streetview, streetlevel.streetview.api, streetlevel.streetview.depth, streetlevel.streetview.panorama, streetlevel.streetview.parse, streetlevel.streetview.protobuf, streetlevel.streetview.streetview, streetlevel.streetview.util, streetlevel.util
+top-level modules newly loaded (152): CoordinatesConverter, PIL, __future__, _ast, _asyncio, _bisect, _blake2, _bz2, _codecs_cn, _codecs_hk, _codecs_iso2022, _codecs_jp, _codecs_kr, _codecs_tw, _compat_pickle, _compression, _contextvars, _csparsetools, _csv, _ctypes, _cython_3_0_12, _cython_3_1_0, _cython_3_1_4, _cython_3_2_4, _cython_3_2_5, _cython_3_2_8, _cython_3_2_9, _datetime, _decimal, _hashlib, _heapq, _lzma, _multibytecodec, _opcode, _overlapped, _pickle, _queue, _random, _sha512, _socket, _ssl, _string, _uuid, _weakrefset, aiohappyeyeballs, aiohttp, aiosignal, argparse, array, ast, async_timeout, asyncio, atexit, attr, backoff, bd09convertor, bisect, bz2, calendar, certifi, charset_normalizer, collections, concurrent, config, contextvars, copy, csv, ctypes, cython_runtime, dataclasses, datetime, decimal, difflib, dis, downloaders, email, encodings, errno, fileinput, fnmatch, frozenlist, gc, gettext, hashlib, heapq, hmac, http, idna, importlib, inspect, ipaddress, linecache, locale, logging, lzma, math, mimetypes, msvcrt, multidict, netrc, nturl2path, numbers, numpy, opcode, pathlib, pickle, pkgutil, platform, posixpath, pprint, propcache, pydoc, pyexiv2, pyproj, queue, quopri, random, requests, scipy, secrets, select, selectors, shlex, shutil, sidewalk_panorama_tools, signal, socket, ssl, streetlevel, string, stringprep, subprocess, sysconfig, tempfile, textwrap, threading, token, tokenize, traceback, typing, typing_extensions, unicodedata, unittest, urllib, urllib3, uu, uuid, warnings, weakref, yarl, zipfile, zlib
+imports of an unreached requirement ATTEMPTED: ['cython']
+unreached requirement modules in sys.modules: none
+r2 exit: 1
+== pip check
+streetlevel 0.13.0 requires cython, which is not installed.
+streetlevel 0.13.0 requires protobuf, which is not installed.
+streetlevel 0.13.0 requires pycryptodome, which is not installed.
+streetlevel 0.13.0 requires pyequilib, which is not installed.
+streetlevel 0.13.0 requires pyfrpc, which is not installed.
+streetlevel 0.13.0 requires pytest-asyncio, which is not installed.
+pip check exit: 1

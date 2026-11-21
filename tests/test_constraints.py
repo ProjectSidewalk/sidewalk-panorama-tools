@@ -44,7 +44,8 @@ LATEST_WORKFLOW = os.path.join(WORKFLOWS, 'tests-latest.yml')
 
 # streetlevel's declared requirements, split by the #237 measurement (reports/2026-11-15-streetlevel-no-deps.md):
 # what `from streetlevel import streetview` imports, which requirements.txt must list, and what it never imports,
-# which no requirement file may list (pyequilib is the one that pulls torch).
+# which no requirement file may list (pyequilib is the one that pulls torch). Checked again on 0.13.0, unchanged
+# (reports/2026-11-17-streetlevel-0.13.0.md).
 STREETLEVEL_REACHED = {'aiohttp', 'requests', 'numpy', 'pillow', 'pyproj', 'scipy', 'bd09convertor',
                        'coordinatesconverter', 'pyexiv2'}
 STREETLEVEL_UNREACHED = {'pyequilib', 'protobuf', 'pyfrpc', 'pycryptodome', 'cython', 'pytest', 'pytest-asyncio'}
@@ -217,6 +218,24 @@ class TestStreetlevelIsInstalledWithoutItsDependencies:
             'streetlevel is back in requirements.txt, where a normal install pulls pyequilib -> torch'
         assert os.path.isfile(NODEPS), 'requirements-nodeps.txt is missing'
         assert [canonicalize_name(Requirement(line).name) for line in _content_lines(NODEPS)] == ['streetlevel']
+
+    # Every release that misreads the depth header's offset byte as a uint16 (fixed by sk-zk/streetlevel#45,
+    # first released in 0.13.0): the 0.12.x line from 0.12.9, the oldest tag the 2026-11-17 measurement lists
+    # (planning_win_p2_upstream_github.out.txt), to 0.12.13, the last before the fix
+    # (reports/2026-11-17-streetlevel-0.13.0.md). Not every 0.12.x version string: `>=0.12.14` passes, and no
+    # such release exists.
+    RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX = ('0.12.9', '0.12.10', '0.12.11', '0.12.12', '0.12.13')
+
+    def test_its_floor_excludes_every_release_without_the_depth_header_fix(self):
+        """The comments in downloaders/gsv.py, tests/conftest.py, test_streetlevel_api.py and docs/depth.md say
+        0.13.0 is the floor of the pin. CI cannot notice a lowered floor (it installs the exact pin in
+        constraints.txt, which still satisfies it), so only this test does; an install without `-c` relies on
+        it. It says nothing about an upper bound."""
+        (line,) = _content_lines(NODEPS)
+        specifier = Requirement(line).specifier
+        admitted = [v for v in self.RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX if specifier.contains(v, prereleases=True)]
+        assert not admitted, ('requirements-nodeps.txt (%s) admits streetlevel %s, which misread the depth '
+                              'header (fixed in 0.13.0, sk-zk/streetlevel#45)' % (line, ', '.join(admitted)))
 
     def test_the_reached_requirements_are_listed(self):
         missing = sorted(STREETLEVEL_REACHED - _requirement_names(REQUIREMENTS))

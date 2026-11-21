@@ -1,0 +1,26 @@
+== 2026-11-17T14:27:45Z M2
+M2 (streetlevel 0.13.0): _compute_depth_raster returns its columns mirrored
+-    return np.where(index_grid == 0, DEPTH_NO_PLANE, raster).astype(np.float32)
++    return np.where(index_grid == 0, DEPTH_NO_PLANE, raster).astype(np.float32)[:, ::-1]  # M2: mirrored
+E       AssertionError: 
+E       Not equal to tolerance rtol=1e-05, atol=0
+E       the in-repo decode and streetlevel's disagree on a modelled zenith
+E       Mismatched elements: 4 / 4 (100%)
+E       Max absolute difference among violations: 3.99999986
+E       Max relative difference among violations: 3.99999976
+E        ACTUAL: array([[-1., -1.,  3.,  1.]], dtype=float32)
+E        DESIRED: array([[ 1.,  3., -1., -1.]])
+E       AssertionError: 
+E       Not equal to tolerance rtol=1e-05, atol=0
+E       
+E       Mismatched elements: 6 / 8 (75%)
+E       Max absolute difference among violations: 46.84862056
+E       Max relative difference among violations: 15.75493236
+E        ACTUAL: array([[ 3.953176,  2.973584, 11.358894,  3.953176],
+E              [ 2.973584,  4.778731, -1.      , 49.822205]], dtype=float32)
+E        DESIRED: array([[ 3.953176, 11.358894,  2.973584,  3.953176],
+E              [49.822205, -1.      ,  4.778731,  2.973584]])
+FAILED tests/test_streetlevel_api.py::test_streetlevels_parser_agrees_with_ours_on_a_modelled_zenith
+FAILED tests/test_depth_helpers.py::TestComputeDepthRaster::test_matches_streetlevels_own_decode
+2 failed in 1.46s
+exit 1

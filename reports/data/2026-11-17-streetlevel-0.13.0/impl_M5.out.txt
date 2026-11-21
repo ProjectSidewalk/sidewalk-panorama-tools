@@ -1,0 +1,12 @@
+== 2026-11-17T15:01:57Z M5: the report's '`v0.12.13...v0.13.0` is 16 commits' changed to 17 (the report is untracked until commit 2, so it was restored from a copy)
+1
+E       AssertionError: assert '`v0.12.13...v0.13.0` is 16 commits' in '# Moving `streetlevel` to 0.13.0, the release with the depth-header fix Issue: [#237](https://github.com/ProjectSidew...ted `impl_scrub.py` reads the name at run time, and reproduces the committed files byte for byte from the raw outputs.'
+E        +  where '# Moving `streetlevel` to 0.13.0, the release with the depth-header fix Issue: [#237](https://github.com/ProjectSidew...ted `impl_scrub.py` reads the name at run time, and reproduces the committed files byte for byte from the raw outputs.' = _report()
+PASSED tests/test_streetlevel_bump_report.py::test_both_wheels_declare_the_same_16_requirements
+PASSED tests/test_streetlevel_bump_report.py::test_the_freeze_moves_by_one_streetlevel_line
+PASSED tests/test_streetlevel_bump_report.py::test_the_two_tests_that_failed_on_0_13_0_are_the_ones_the_report_names
+PASSED tests/test_streetlevel_bump_report.py::test_the_pass_and_fail_counts
+PASSED tests/test_streetlevel_bump_report.py::TestNoLocalPathIsCommitted::test_no_file_carries_one
+FAILED tests/test_streetlevel_bump_report.py::test_the_release_is_16_commits_past_0_12_13
+1 failed, 5 passed in 0.95s
+exit 1

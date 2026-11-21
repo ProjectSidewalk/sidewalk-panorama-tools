@@ -1,0 +1,69 @@
+2026-11-17T14:08:53Z
+== PR 45
+{"base":"master","merge_commit_sha":"b1e8e59a6a4f8506e1815fb8d33f8e761650942a","merged":true,"merged_at":"2026-11-04T13:22:26Z","state":"closed","title":"Street View: Fix depth map parsing when top left pixel is not sky"}
+== tags
+v0.13.0 fcc34aee02d7b287863514e2d94ae4192d7c3f7e
+v0.12.13 9163821f299fba9405ac7ecdfa89b413964a1f8a
+v0.12.12 cac65a2cd66dbbf340d429ad71c54bc4f349d6ab
+v0.12.11 cfe2f6eb710994d09f27971e0d360d92b6629f9b
+v0.12.10 fbea5011e0766b9d598d20ffb24d0f2f21755f59
+v0.12.9 8460ab7fcae5afe154cfe6c499ffbbe7d7d49468
+== releases
+v0.13.0 2026-11-12T15:38:59Z
+v0.12.13 2026-10-14T14:45:00Z
+v0.12.12 2026-10-05T15:33:53Z
+v0.12.11 2026-08-05T11:56:03Z
+== compare v0.12.13...v0.13.0
+status=ahead ahead_by=16 total_commits=16
+447c77250b 2026-08-05T23:30:44Z Street View: Fix depth map parsing when top left pixel is not sky
+de96a90058 2026-11-04T13:02:43Z fix: close connection in download_files_async if exception occurs
+b1e8e59a6a 2026-11-04T13:22:25Z Merge pull request #45 from jonfroehlich/depth-header-offset-uint8
+21e7755405 2026-11-04T14:25:19Z [Naver] Update pano types
+48a4b1c735 2026-11-04T14:28:46Z [Naver] Update pano types
+e538d14a3c 2026-11-04T15:30:02Z [Naver] Update `get_depth()` to v3 endpoint
+0a55af212d 2026-11-04T16:22:23Z Add ability to set GPano crop tags
+99dd6db0f1 2026-11-04T16:27:19Z [Yandex] Set GPano crop tags
+f1010019ca 2026-11-04T16:43:27Z Merge pull request #47 from jontesek/fix/download-connection
+a947b75beb 2026-11-07T15:58:35Z [Street View] Add refetch option for `get`/`download` functions (#42)
+1065f81519 2026-11-07T16:18:54Z [Yandex] Add refetch option for `get`/`download` functions
+57af41e86e 2026-11-12T15:12:23Z [Naver] Update `get_depth` calls
+8492b638a0 2026-11-12T15:13:57Z [Naver] Fix whitespace for RTD?
+b4bac62ff4 2026-11-12T15:22:11Z [Street View] Fix whitespace for RTD
+5f8215d0b9 2026-11-12T15:23:27Z Increase version
+fcc34aee02 2026-11-12T15:29:02Z Update RTD config
+files:
+  modified +2 -2 .readthedocs.yaml
+  modified +1 -1 docs/conf.py
+  modified +1 -1 pyproject.toml
+  modified +1 -1 streetlevel/__init__.py
+  modified +8 -4 streetlevel/exif.py
+  modified +18 -12 streetlevel/naver/api.py
+  modified +15 -15 streetlevel/naver/naver.py
+  modified +6 -0 streetlevel/naver/panorama.py
+  modified +3 -1 streetlevel/streetview/depth.py
+  modified +40 -15 streetlevel/streetview/streetview.py
+  modified +6 -6 streetlevel/util.py
+  modified +39 -12 streetlevel/yandex/yandex.py
+  added +69 -0 tests/streetview/depth_test.py
+  added +23 -0 tests/util_test.py
+== compare v0.12.11...v0.12.13 (files)
+c8126ce616 Look Around: Import reproject only when torchvision is installed
+924d8c74dc Merge pull request #46 from zubko/lookaround-optional-torchvision
+cac65a2cd6 Increase version
+64369c6c34 Please work
+1276f201af Update python-publish.yml
+a23e1af0ba Update python-publish.yml
+f3b0ee11c1 Update python-publish.yml
+166b0d7760 [Street View] Update `find_panorama` to new endpoint
+aa964dadaa Merge branch 'master' of https://github.com/sk-zk/streetlevel
+9163821f29 Increase version
+files:
+  modified +4 -3 .github/workflows/python-publish.yml
+  modified +1 -1 docs/conf.py
+  modified +1 -1 pyproject.toml
+  modified +1 -1 streetlevel/__init__.py
+  modified +1 -1 streetlevel/lookaround/__init__.py
+  modified +57 -52 streetlevel/streetview/api.py
+  modified +2 -2 streetlevel/streetview/parse.py
+  modified +49 -2 streetlevel/util.py
+  modified +1 -1 tests/streetview/data/find.json
