@@ -1,0 +1,334 @@
+{
+  "attribution_1_values": [
+    "sig_bayonne"
+  ],
+  "attribution_2_values": [
+    "etalab-2.0"
+  ],
+  "city": "bayonne-fr",
+  "dims": {
+    "total": 81,
+    "untested": [],
+    "usable": 81
+  },
+  "facts": {
+    "at_cap_by_width": {
+      "5376": 5,
+      "5760": 5
+    },
+    "crop_files": 81,
+    "downscaled": 0,
+    "fov_max": 90.0,
+    "fov_median": 33.7117,
+    "fov_min": 16.6128,
+    "frames": {
+      "5376x2688": 13,
+      "5760x2880": 27
+    },
+    "label_panos": 40,
+    "label_pose_classes": {
+      "none": 35,
+      "posed": 22,
+      "zero": 24
+    },
+    "label_types": {
+      "Crosswalk": 9,
+      "CurbRamp": 16,
+      "NoCurbRamp": 4,
+      "NoSidewalk": 3,
+      "Obstacle": 9,
+      "Occlusion": 7,
+      "SurfaceProblem": 33
+    },
+    "labels": 81,
+    "panos_labelled": 40,
+    "panos_total": 98,
+    "pose_classes_labelled": {
+      "none": 13,
+      "posed": 16,
+      "zero": 11
+    },
+    "seam": 6,
+    "shards": 39,
+    "shifted": 0,
+    "size_ok": 81,
+    "store_bytes": 63771084,
+    "transcription_agrees": 81,
+    "uuid_ids": 40,
+    "white_band_panos": 40,
+    "white_band_share_max": 0.9316,
+    "white_band_share_min": 0.9304,
+    "white_band_top_frac_max": 0.7916666666666666,
+    "white_band_top_frac_min": 0.7909226190476191,
+    "white_crops": 11,
+    "white_crops_at_cap": 10,
+    "white_rows_max": 210,
+    "white_rows_max_label": "bayonne-fr:56",
+    "white_rows_max_of": 960,
+    "widest_window": 1440
+  },
+  "manifest": {
+    "attribution_equal": 81,
+    "attribution_mismatch": [],
+    "attribution_pairs": 1,
+    "city_ok": true,
+    "not_in_manifest": [],
+    "not_in_snapshot": [],
+    "rows": 81,
+    "rule_versions": [
+      "v2"
+    ],
+    "source_values": [
+      "panoramax"
+    ],
+    "tilt_columns": [
+      [
+        "none",
+        "0.0",
+        "",
+        ""
+      ]
+    ],
+    "unique": true
+  },
+  "marker": {
+    "city": "bayonne-fr",
+    "crop_rule_version": "v2",
+    "provenance_manifest_known_gaps": 0,
+    "provenance_manifest_no_known_gap": true
+  },
+  "platform": {
+    "implementation": "CPython",
+    "os": "Windows-11",
+    "python": "3.12.10",
+    "streetlevel_imports": false
+  },
+  "pov_residuals": {
+    "1": {
+      "fit_residual_abs_deg": {
+        "max": 4.541656441113492,
+        "median": 0.65648168364676,
+        "min": 0.042362418900378285
+      },
+      "gain_deg_per_canvas": 110.55755114609532,
+      "n": 58,
+      "raw_abs_deg": {
+        "max": 37.36513392857148,
+        "median": 9.326836064867393,
+        "min": 0.3526785714285552
+      }
+    },
+    "2": {
+      "fit_residual_abs_deg": {
+        "max": 0.4650537575710021,
+        "median": 0.02310580929783157,
+        "min": 0.0033099075319795723
+      },
+      "gain_deg_per_canvas": 57.912182448244906,
+      "n": 10,
+      "raw_abs_deg": {
+        "max": 14.503520991490376,
+        "median": 2.9149062610188707,
+        "min": 0.214955769310734
+      }
+    },
+    "3": {
+      "fit_residual_abs_deg": {
+        "max": 0.5202200332988989,
+        "median": 0.03635464436397218,
+        "min": 0.011440305687679064
+      },
+      "gain_deg_per_canvas": 29.52597421302971,
+      "n": 13,
+      "raw_abs_deg": {
+        "max": 6.234375,
+        "median": 2.4251331681424517,
+        "min": 0.06696428571422075
+      }
+    }
+  },
+  "run1_manifest_unchanged_by_run2": true,
+  "runs": {
+    "crop-marked.stdout.txt": {
+      "counts": {
+        "black_content": 0,
+        "dims_mismatch": 0,
+        "errors": 0,
+        "missing_pano": 0,
+        "no_pose": 0,
+        "out_of_frame": 0,
+        "skipped_existing": 0,
+        "success": 81,
+        "total": 81
+      },
+      "exit": 0
+    },
+    "crop-rerun.stdout.txt": {
+      "counts": {
+        "black_content": 0,
+        "dims_mismatch": 0,
+        "errors": 0,
+        "missing_pano": 0,
+        "no_pose": 0,
+        "out_of_frame": 0,
+        "skipped_existing": 81,
+        "success": 0,
+        "total": 81
+      },
+      "exit": 0
+    },
+    "crop-tilt.stdout.txt": {
+      "counts": {
+        "black_content": 0,
+        "dims_mismatch": 0,
+        "errors": 0,
+        "missing_pano": 0,
+        "no_pose": 81,
+        "out_of_frame": 0,
+        "skipped_existing": 0,
+        "success": 0,
+        "total": 81
+      },
+      "exit": 0
+    },
+    "crop.stdout.txt": {
+      "counts": {
+        "black_content": 0,
+        "dims_mismatch": 0,
+        "errors": 0,
+        "missing_pano": 0,
+        "no_pose": 0,
+        "out_of_frame": 0,
+        "skipped_existing": 0,
+        "success": 81,
+        "total": 81
+      },
+      "exit": 0
+    }
+  },
+  "snapshot_taken_at_utc": "2026-11-17T14:29:11+00:00",
+  "store": {
+    "frame_mismatch": [],
+    "labelled_not_downloaded": [],
+    "ledger_downloaded": 40,
+    "ledger_verdicts": {
+      "1": 40
+    },
+    "missing": [],
+    "outside_shard": [],
+    "walk_equals_ledger": true
+  },
+  "table_rows": [
+    "| panos served, all / labelled | 98 / 40 |",
+    "| labels served, on distinct panos | 81, on 40 |",
+    "| labelled panos with ledger verdict `downloaded=1` | 40 of 40 |",
+    "| labelled panos not downloaded | 0 |",
+    "| stored files outside a two-char shard | 0 |",
+    "| `walk_store_panos()` ids equal the ledger's `1` ids | yes |",
+    "| distinct shards over the labelled panos | 39 |",
+    "| labelled pano ids that are 36-char UUIDs | 40 of 40 |",
+    "| stored bytes, labelled panos | 63.8 MB |",
+    "| stored frame equals `/adminapi/panos` and cvMetadata | 40 of 40 |",
+    "| stored frame 5376x2688 | 13 panos |",
+    "| stored frame 5760x2880 | 27 panos |",
+    "| rows with usable dims | 81 of 81 |",
+    "| `success` | 81 of 81 |",
+    "| `skipped_existing` | 0 |",
+    "| `missing_pano` | 0 |",
+    "| `dims_mismatch` | 0 |",
+    "| `out_of_frame` | 0 |",
+    "| `black_content` | 0 |",
+    "| `no_pose` | 0 |",
+    "| `errors` | 0 |",
+    "| run 1 crop files on disk, manifest rows | 81, 81 |",
+    "| run 1 exit code | 0 |",
+    "| window fov min / median / max (deg) | 16.6 / 33.7 / 90.0 |",
+    "| windows at the 90 deg cap on 5376-wide panos | 5 |",
+    "| windows at the 90 deg cap on 5760-wide panos | 5 |",
+    "| windows crossing the seam | 6 |",
+    "| windows shifted vertically | 0 |",
+    "| windows downscaled for storage | 0 |",
+    "| widest window (px) | 1440 |",
+    "| crop file size equals the window's stored size | 81 of 81 |",
+    "| standalone transcription gives the same window | 81 of 81 |",
+    "| manifest rows, `(city, label_id)` unique | 81, yes |",
+    "| `city` is `bayonne-fr` on every row | yes |",
+    "| source and both attribution fields non-empty and equal to the served row | 81 of 81 |",
+    "| distinct attribution pairs | 1 |",
+    "| source values | `panoramax` |",
+    "| `crop_rule_version` | v2 |",
+    "| tilt columns | none / 0.0 / blank / blank |",
+    "| marker city, rule | bayonne-fr, v2 |",
+    "| marker no-known-gap flag, known gaps | true, 0 |",
+    "| run 2 `skipped_existing` | 81 of 81 |",
+    "| run 2 exit code | 0 |",
+    "| manifest bytes unchanged by run 2 | yes |",
+    "| labels in run 1's manifest not in the snapshot / the reverse | 0 / 0 |",
+    "| tilt run `no_pose` | 81 of 81 |",
+    "| tilt run crops written, manifest rows | 0, 0 |",
+    "| tilt run `crop.log` lines naming the reason | 40 |",
+    "| tilt run exit code | 0 |",
+    "| marked run `success` | 81 of 81 |",
+    "| labelled panos with a white band in the lower half | 40 of 40 |",
+    "| band top as a share of the frame height, min / max | 0.791 / 0.792 |",
+    "| white pixels from the band top to the last row, min / max | 0.930 / 0.932 |",
+    "| crops with white rows | 11 of 81 |",
+    "| of those, windows at the 90 deg cap | 10 |",
+    "| most white rows in one crop | 210 of 960 (`bayonne-fr:56`) |",
+    "| zoom 1 | 58 | 110.6 | 37.4 | 4.54 |",
+    "| zoom 2 | 10 | 57.9 | 14.5 | 0.47 |",
+    "| zoom 3 | 13 | 29.5 | 6.2 | 0.52 |",
+    "| `on-mark` | 47 |",
+    "| `in-crop-off-mark` | 1 |",
+    "| `not-visible` | 0 |",
+    "| `unclear` | 33 |",
+    "| posed | 3 | 1 | 0 | 18 |",
+    "| zero | 16 | 0 | 0 | 8 |",
+    "| none | 28 | 0 | 0 | 7 |",
+    "| off-mark directions | up 1, down 0, left 0, right 0 |",
+    "| judgeable crops | 48 |",
+    "| outcome | **PASS** |"
+  ],
+  "tilt": {
+    "crops_written": 0,
+    "manifest_rows": 0,
+    "reason_lines": 40
+  },
+  "visual": {
+    "by_pose_class": {
+      "none": {
+        "in-crop-off-mark": 0,
+        "not-visible": 0,
+        "on-mark": 28,
+        "unclear": 7
+      },
+      "posed": {
+        "in-crop-off-mark": 1,
+        "not-visible": 0,
+        "on-mark": 3,
+        "unclear": 18
+      },
+      "zero": {
+        "in-crop-off-mark": 0,
+        "not-visible": 0,
+        "on-mark": 16,
+        "unclear": 8
+      }
+    },
+    "judgeable": 48,
+    "off_mark_directions": {
+      "down": 0,
+      "left": 0,
+      "right": 0,
+      "up": 1
+    },
+    "outcome": "PASS",
+    "reasons": [],
+    "tallies": {
+      "in-crop-off-mark": 1,
+      "not-visible": 0,
+      "on-mark": 47,
+      "unclear": 33
+    }
+  }
+}

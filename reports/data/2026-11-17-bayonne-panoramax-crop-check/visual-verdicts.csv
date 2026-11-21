@@ -1,0 +1,82 @@
+label_uid,label_type,pose_class,verdict,direction,note
+bayonne-fr:1,SurfaceProblem,none,on-mark,,dot where gravel and planting spill onto the paved path
+bayonne-fr:4,NoCurbRamp,none,on-mark,,dot at the corner curb with no ramp
+bayonne-fr:5,NoCurbRamp,none,on-mark,,dot at the corner curb with no ramp
+bayonne-fr:6,NoCurbRamp,none,on-mark,,"dot at the end of the raised sidewalk, at the curb"
+bayonne-fr:7,NoCurbRamp,none,on-mark,,dot at the corner curb with no ramp
+bayonne-fr:8,Obstacle,zero,on-mark,,dot on the pole standing in the sidewalk
+bayonne-fr:9,Obstacle,zero,on-mark,,dot on the post at the sidewalk edge
+bayonne-fr:10,SurfaceProblem,zero,on-mark,,dot on the utility cover in the sidewalk
+bayonne-fr:11,SurfaceProblem,zero,on-mark,,dot on the manhole cover in the sidewalk
+bayonne-fr:12,SurfaceProblem,zero,on-mark,,dot on broken surface and debris beside the gate
+bayonne-fr:13,Obstacle,zero,on-mark,,dot at the base of the pole on the sidewalk
+bayonne-fr:14,SurfaceProblem,zero,on-mark,,"dot on the cracked, patched sidewalk"
+bayonne-fr:15,SurfaceProblem,none,unclear,,dot on the sidewalk by the wall; no defect visible at this size
+bayonne-fr:16,SurfaceProblem,posed,on-mark,,dot on the patched asphalt
+bayonne-fr:17,SurfaceProblem,posed,on-mark,,dot on the patched asphalt
+bayonne-fr:18,SurfaceProblem,posed,unclear,,uniform asphalt by a lane line; no located defect
+bayonne-fr:19,SurfaceProblem,none,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:20,CurbRamp,none,on-mark,,dot at the foot of the curb cut at the crossing
+bayonne-fr:21,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:22,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:23,CurbRamp,none,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:24,CurbRamp,none,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:25,Obstacle,none,on-mark,,dot at the foot of the post at the crossing
+bayonne-fr:26,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:27,CurbRamp,none,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:28,Obstacle,none,on-mark,,dot at the foot of the post at the crossing
+bayonne-fr:29,CurbRamp,none,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:30,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:31,CurbRamp,none,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:32,SurfaceProblem,none,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:33,SurfaceProblem,none,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:34,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:35,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:36,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:37,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:38,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:39,SurfaceProblem,posed,unclear,,"dot at the foot of the riverside railing, on the paving edge; no located defect"
+bayonne-fr:40,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:41,SurfaceProblem,posed,on-mark,,dot on the asphalt patch replacing the cobbles
+bayonne-fr:42,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:43,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:44,SurfaceProblem,posed,in-crop-off-mark,up,"dot on the riverside railing over the water, about 20 px of a 266 px crop above the paving at its foot; no ground feature under the dot"
+bayonne-fr:45,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:46,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:47,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:48,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:49,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:50,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:51,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:52,SurfaceProblem,posed,unclear,,"uniform paving fills the crop and the dot is on it; no located defect, so an offset could not show"
+bayonne-fr:53,CurbRamp,zero,on-mark,,dot at the curb ramp beside the tactile strip
+bayonne-fr:54,Obstacle,zero,on-mark,,dot at the foot of the barrier
+bayonne-fr:55,Obstacle,zero,on-mark,,dot on the barrier
+bayonne-fr:56,Crosswalk,zero,on-mark,,dot on the zebra stripes
+bayonne-fr:57,CurbRamp,zero,on-mark,,dot at the curb ramp at the crossing
+bayonne-fr:58,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:59,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:60,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:61,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:62,SurfaceProblem,zero,unclear,,"dot on the sidewalk; a manhole cover and broken surface nearby, none under the dot"
+bayonne-fr:63,SurfaceProblem,zero,on-mark,,dot on the small cover plate in the sidewalk
+bayonne-fr:64,Obstacle,zero,on-mark,,dot at the foot of the barrier posts in the passage
+bayonne-fr:65,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:66,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:67,Occlusion,zero,unclear,,dot on the parked car that hides the sidewalk; Occlusion has no located referent
+bayonne-fr:78,NoSidewalk,none,unclear,,dot on the grass verge beside the road; NoSidewalk has no located referent
+bayonne-fr:79,NoSidewalk,none,unclear,,dot on the grass verge beside the road; NoSidewalk has no located referent
+bayonne-fr:80,NoSidewalk,none,unclear,,dot on the grass verge beside the road; NoSidewalk has no located referent
+bayonne-fr:81,Crosswalk,none,on-mark,,dot on a zebra stripe
+bayonne-fr:82,CurbRamp,none,on-mark,,dot on the curb ramp
+bayonne-fr:83,CurbRamp,none,on-mark,,dot on the curb ramp at the corner
+bayonne-fr:84,Crosswalk,none,on-mark,,dot in the crosswalk between two stripes
+bayonne-fr:85,CurbRamp,none,on-mark,,dot on the curb ramp at the corner
+bayonne-fr:86,CurbRamp,none,on-mark,,dot on the curb ramp at the corner
+bayonne-fr:87,CurbRamp,none,on-mark,,dot on the curb ramp at the corner
+bayonne-fr:94,CurbRamp,none,on-mark,,dot at the curb at the end of the crossing
+bayonne-fr:95,CurbRamp,none,on-mark,,dot on the strip at the curb ramp
+bayonne-fr:96,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:97,Crosswalk,none,on-mark,,dot on the zebra stripes
+bayonne-fr:100,CurbRamp,zero,on-mark,,dot on the tactile paving at the curb ramp
+bayonne-fr:101,Obstacle,zero,on-mark,,dot on the block at the foot of the hedge

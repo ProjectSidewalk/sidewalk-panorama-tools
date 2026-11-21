@@ -1,0 +1,125 @@
+Starting run with pano list fetched from sidewalk-bayonne.cs.washington.edu and destination path <store>
+Fetching pano-ids
+Panos: 98 supported, 40 eligible for image download, 0 GSV panos eligible for depth
+Fetching Panoramas
+IMAGEDOWNLOAD: Processing pano 897ca3fa-c08e-4c00-b3c0-17c07976c625 
+IMAGEDOWNLOAD: Completed 1 of 40 (1 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.219581365585327 seconds ---
+IMAGEDOWNLOAD: Processing pano 80995a74-a8a0-4b22-9e73-0866e81f39ab 
+IMAGEDOWNLOAD: Completed 2 of 40 (2 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.5340523719787598 seconds ---
+IMAGEDOWNLOAD: Processing pano 11f4f7f1-2de6-4147-a9c8-1f433074b60f 
+IMAGEDOWNLOAD: Completed 3 of 40 (3 success, 0 fallback success, 0 failed, 0 skipped)
+--- 6.621375799179077 seconds ---
+IMAGEDOWNLOAD: Processing pano 24a4e316-dce2-4457-b8e8-c8941c84f6b7 
+IMAGEDOWNLOAD: Completed 4 of 40 (4 success, 0 fallback success, 0 failed, 0 skipped)
+--- 4.056262731552124 seconds ---
+IMAGEDOWNLOAD: Processing pano c522d244-3ae4-43aa-abd9-8eea7b1d3645 
+IMAGEDOWNLOAD: Completed 5 of 40 (5 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.50297212600708 seconds ---
+IMAGEDOWNLOAD: Processing pano 955d07df-a684-4d4d-a3b4-24448e6d1ef7 
+IMAGEDOWNLOAD: Completed 6 of 40 (6 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.458617925643921 seconds ---
+IMAGEDOWNLOAD: Processing pano e2e79e8b-8603-439e-a570-5cddd0083d87 
+IMAGEDOWNLOAD: Completed 7 of 40 (7 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.51564621925354 seconds ---
+IMAGEDOWNLOAD: Processing pano f517c893-ebb9-4a5f-820d-d11c0fd51073 
+IMAGEDOWNLOAD: Completed 8 of 40 (8 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.4572272300720215 seconds ---
+IMAGEDOWNLOAD: Processing pano b46ba873-705a-4a2d-8863-44ad51bf9415 
+IMAGEDOWNLOAD: Completed 9 of 40 (9 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.375952959060669 seconds ---
+IMAGEDOWNLOAD: Processing pano 2c580c94-485c-451a-9446-6a70e3a4fa8c 
+IMAGEDOWNLOAD: Completed 10 of 40 (10 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.482792615890503 seconds ---
+IMAGEDOWNLOAD: Processing pano ec13843d-0476-496e-8833-0da7d5a50aaa 
+IMAGEDOWNLOAD: Completed 11 of 40 (11 success, 0 fallback success, 0 failed, 0 skipped)
+--- 6.648727893829346 seconds ---
+IMAGEDOWNLOAD: Processing pano da8a9a04-d48c-4cf9-acdb-cec5ffbe8075 
+IMAGEDOWNLOAD: Completed 12 of 40 (12 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.2765259742736816 seconds ---
+IMAGEDOWNLOAD: Processing pano 3d41fefe-4ce5-4d9e-893d-ff47cc29ce93 
+IMAGEDOWNLOAD: Completed 13 of 40 (13 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.772381544113159 seconds ---
+IMAGEDOWNLOAD: Processing pano 4a286871-cb55-4400-bcd9-f0f8349dc1de 
+IMAGEDOWNLOAD: Completed 14 of 40 (14 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.5456960201263428 seconds ---
+IMAGEDOWNLOAD: Processing pano a3efdccf-2e11-435a-8705-760492e11e3f 
+IMAGEDOWNLOAD: Completed 15 of 40 (15 success, 0 fallback success, 0 failed, 0 skipped)
+--- 4.651673316955566 seconds ---
+IMAGEDOWNLOAD: Processing pano 0c6d4bde-0a6d-4c7a-8fb8-3795e99e031c 
+IMAGEDOWNLOAD: Completed 16 of 40 (16 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.330303430557251 seconds ---
+IMAGEDOWNLOAD: Processing pano 7c4c4c2f-8d96-432f-ad89-00fbdbb769f0 
+IMAGEDOWNLOAD: Completed 17 of 40 (17 success, 0 fallback success, 0 failed, 0 skipped)
+--- 11.409553527832031 seconds ---
+IMAGEDOWNLOAD: Processing pano 5e7e6b2f-9e25-4573-9da6-ae4551563f31 
+IMAGEDOWNLOAD: Completed 18 of 40 (18 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.618314504623413 seconds ---
+IMAGEDOWNLOAD: Processing pano d4255493-1833-405c-a345-71c32c195ffd 
+IMAGEDOWNLOAD: Completed 19 of 40 (19 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.494842290878296 seconds ---
+IMAGEDOWNLOAD: Processing pano 8f282d44-7f13-42c3-8f1a-e189cab84196 
+IMAGEDOWNLOAD: Completed 20 of 40 (20 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.0650434494018555 seconds ---
+IMAGEDOWNLOAD: Processing pano 4ba29856-6d33-46a2-a17d-6f9fba59aa46 
+IMAGEDOWNLOAD: Completed 21 of 40 (21 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.798343896865845 seconds ---
+IMAGEDOWNLOAD: Processing pano 8ae6f346-020d-4867-9b22-aec0c718d83a 
+IMAGEDOWNLOAD: Completed 22 of 40 (22 success, 0 fallback success, 0 failed, 0 skipped)
+--- 15.11781358718872 seconds ---
+IMAGEDOWNLOAD: Processing pano 30163e12-bc51-4a2d-9a59-f56a36432fa6 
+IMAGEDOWNLOAD: Completed 23 of 40 (23 success, 0 fallback success, 0 failed, 0 skipped)
+--- 6.848795413970947 seconds ---
+IMAGEDOWNLOAD: Processing pano 26b65ab0-dbf4-40d6-8975-f732a6badf16 
+IMAGEDOWNLOAD: Completed 24 of 40 (24 success, 0 fallback success, 0 failed, 0 skipped)
+--- 8.365715742111206 seconds ---
+IMAGEDOWNLOAD: Processing pano ba9c29dc-976e-4da6-b061-f83caabceeef 
+IMAGEDOWNLOAD: Completed 25 of 40 (25 success, 0 fallback success, 0 failed, 0 skipped)
+--- 10.061726808547974 seconds ---
+IMAGEDOWNLOAD: Processing pano fc3f4df1-e95c-42a0-81a6-481b82a40579 
+IMAGEDOWNLOAD: Completed 26 of 40 (26 success, 0 fallback success, 0 failed, 0 skipped)
+--- 7.410449028015137 seconds ---
+IMAGEDOWNLOAD: Processing pano ea0b31db-47b7-441a-bfad-ab833b5a019a 
+IMAGEDOWNLOAD: Completed 27 of 40 (27 success, 0 fallback success, 0 failed, 0 skipped)
+--- 9.03263545036316 seconds ---
+IMAGEDOWNLOAD: Processing pano 10353e0a-f0c6-461c-92a3-11fb4abd4306 
+IMAGEDOWNLOAD: Completed 28 of 40 (28 success, 0 fallback success, 0 failed, 0 skipped)
+--- 14.767022132873535 seconds ---
+IMAGEDOWNLOAD: Processing pano cdafa20a-e837-486f-b15c-352b6c8c8035 
+IMAGEDOWNLOAD: Completed 29 of 40 (29 success, 0 fallback success, 0 failed, 0 skipped)
+--- 9.366965770721436 seconds ---
+IMAGEDOWNLOAD: Processing pano 54b725fe-5d63-4f94-a86e-166e1233f683 
+IMAGEDOWNLOAD: Completed 30 of 40 (30 success, 0 fallback success, 0 failed, 0 skipped)
+--- 29.836320638656616 seconds ---
+IMAGEDOWNLOAD: Processing pano a22bc7a0-867a-4c54-aa7f-62ca5f43e1e0 
+IMAGEDOWNLOAD: Completed 31 of 40 (31 success, 0 fallback success, 0 failed, 0 skipped)
+--- 18.379414081573486 seconds ---
+IMAGEDOWNLOAD: Processing pano f614ae22-6ab9-4edc-8bdb-81fcd429fddd 
+IMAGEDOWNLOAD: Completed 32 of 40 (32 success, 0 fallback success, 0 failed, 0 skipped)
+--- 15.5485360622406 seconds ---
+IMAGEDOWNLOAD: Processing pano 5d29b10c-a9de-4df2-a4db-d4a5fbb8f40d 
+IMAGEDOWNLOAD: Completed 33 of 40 (33 success, 0 fallback success, 0 failed, 0 skipped)
+--- 25.64736270904541 seconds ---
+IMAGEDOWNLOAD: Processing pano ba0212d8-3133-408f-80fd-b87c8fca1823 
+IMAGEDOWNLOAD: Completed 34 of 40 (34 success, 0 fallback success, 0 failed, 0 skipped)
+--- 14.10238790512085 seconds ---
+IMAGEDOWNLOAD: Processing pano 6b3e60dd-d23e-44ad-90c6-60056c936c32 
+IMAGEDOWNLOAD: Completed 35 of 40 (35 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.38343620300293 seconds ---
+IMAGEDOWNLOAD: Processing pano d5100ee6-6fe0-4b4f-ab8a-1daaee7c31ef 
+IMAGEDOWNLOAD: Completed 36 of 40 (36 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.025213241577148 seconds ---
+IMAGEDOWNLOAD: Processing pano b0bd5431-9e16-484f-9484-11df687200df 
+IMAGEDOWNLOAD: Completed 37 of 40 (37 success, 0 fallback success, 0 failed, 0 skipped)
+--- 4.486403942108154 seconds ---
+IMAGEDOWNLOAD: Processing pano 2e1e69aa-b141-4753-854a-97f38b85c32e 
+IMAGEDOWNLOAD: Completed 38 of 40 (38 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.245307683944702 seconds ---
+IMAGEDOWNLOAD: Processing pano b9648bda-47b3-45eb-af76-8015cd2e8008 
+IMAGEDOWNLOAD: Completed 39 of 40 (39 success, 0 fallback success, 0 failed, 0 skipped)
+--- 5.598032712936401 seconds ---
+IMAGEDOWNLOAD: Processing pano c15eb627-f3ab-46ff-a1b7-d019e6c48e64 
+IMAGEDOWNLOAD: Completed 40 of 40 (40 success, 0 fallback success, 0 failed, 0 skipped)
+--- 3.4035227298736572 seconds ---
+exit=0
