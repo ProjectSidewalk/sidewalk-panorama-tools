@@ -445,6 +445,89 @@ class TestTheSmallReaders:
         assert result['1']['fit_residual_abs_deg']['max'] == pytest.approx(0.0, abs=1e-6)
 
 
+def _summary_line(**counts):
+    """CropRunner's summary line, as the captures carry it, with the given counts (the rest 0)."""
+    c = dict.fromkeys(bcc.SUMMARY_KEYS, 0)
+    c.update(counts)
+    return ('%(success)d crops extracted, %(skipped_existing)d already existed, %(missing_pano)d skipped because the '
+            'panorama image was missing, %(dims_mismatch)d skipped on a metadata/image dimension mismatch, '
+            '%(out_of_frame)d skipped for a label position outside the image, %(black_content)d withheld for a '
+            'mostly black window, %(no_pose)d skipped for no pano pose, %(errors)d errors, of %(total)d labels '
+            'total.' % c)
+
+
+def _measure_setup(tmp_path, monkeypatch):
+    """A whole synthetic run for `measure --write`: the snapshot, the store, run 1's crop store, the five
+    captures and run 1's manifest copy, all under tmp_path. Returns (argv, snapshot dir, summary path, labels)."""
+    store, crops, panos, labels = _build(tmp_path)
+    snap = tmp_path / 'snap'
+    snap.mkdir()
+    bodies = {'panos.json': json.dumps(panos).encode('utf-8'),
+              'cvmetadata.json': json.dumps(labels).encode('utf-8')}
+    for name, body in bodies.items():
+        (snap / (name + '.gz')).write_bytes(gzip.compress(body, mtime=0))
+    (snap / 'snapshot.json').write_text(json.dumps({
+        'taken_at_utc': '2026-11-17T00:00:00+00:00', 'host': 'example.invalid', 'city': bcc.CITY, 'counts': {},
+        'platform': {}, 'sha256': {k: hashlib.sha256(v).hexdigest() for k, v in bodies.items()}}), encoding='utf-8')
+    with open(os.path.join(store, 'log.csv'), 'w', encoding='utf-8') as f:
+        f.write('synthetic' + chr(10))
+    runs = tmp_path / 'out'
+    runs.mkdir()
+    n = len(labels)
+    for name, counts in (('download.stdout.txt', None), ('crop.stdout.txt', {'success': n}),
+                         ('crop-rerun.stdout.txt', {'skipped_existing': n}), ('crop-tilt.stdout.txt', {'no_pose': n}),
+                         ('crop-marked.stdout.txt', {'success': n})):
+        body = 'Finished.' if counts is None else _summary_line(total=n, **counts)
+        (runs / name).write_text(body + chr(10) + 'exit=0' + chr(10), encoding='utf-8')
+    with open(os.path.join(crops, CropRunner.PROVENANCE_MANIFEST), 'rb') as f:
+        (runs / bcc.RUN1_MANIFEST_COPY).write_bytes(f.read())
+    summary_path = str(tmp_path / 'summary.json')
+    monkeypatch.setattr(bcc, 'SUMMARY_PATH', summary_path)
+    argv = ['measure', '--snapshot', str(snap), '--store', store, '--crops', crops,
+            '--tilt-crops', str(tmp_path / 'crops-tilt' / bcc.CITY), '--marked-crops', crops, '--runs', str(runs),
+            '--scratch', str(tmp_path), '--write']
+    return argv, snap, summary_path, labels
+
+
+class TestMeasureEndToEnd:
+    """`measure --write` over a synthetic run: the table rows the report carries come out of the stores and the
+    captures, so a mutant anywhere between a detector and `table_rows` changes a row here."""
+
+    def test_the_table_rows_come_from_the_stores_and_the_captures(self, tmp_path, monkeypatch):
+        argv, snap, summary_path, labels = _measure_setup(tmp_path, monkeypatch)
+        assert bcc.main(argv) == 0
+        with open(summary_path, encoding='utf-8') as f:
+            rows = json.load(f)['table_rows']
+        n = len(labels)
+        for row in ('| windows crossing the seam | 3 |', '| `success` | %d of %d |' % (n, n),
+                    '| run 2 `skipped_existing` | %d of %d |' % (n, n), '| tilt run `no_pose` | %d of %d |' % (n, n),
+                    '| marked run `success` | %d of %d |' % (n, n), '| manifest bytes unchanged by run 2 | yes |',
+                    "| labels in run 1's manifest not in the snapshot / the reverse | 0 / 0 |",
+                    '| labelled panos not downloaded | 0 |', '| labelled pano ids that are 36-char UUIDs | 3 of 3 |'):
+            assert row in rows, row
+
+    def test_the_run_1_manifest_hash_is_recorded_beside_the_stores(self, tmp_path, monkeypatch):
+        """`manifest bytes unchanged by run 2` was a yes/no only the scratch root could check; snapshot.json now
+        carries the sha256 of run 1's copy beside the store manifest's, so the committed files can."""
+        argv, snap, _, _ = _measure_setup(tmp_path, monkeypatch)
+        bcc.main(argv)
+        sha = json.loads((snap / 'snapshot.json').read_text(encoding='utf-8'))['sha256']
+        assert sha[bcc.RUN1_MANIFEST_COPY] == sha[CropRunner.PROVENANCE_MANIFEST]
+
+    def test_a_manifest_that_moved_after_run_1_reads_as_moved(self, tmp_path, monkeypatch):
+        argv, snap, summary_path, _ = _measure_setup(tmp_path, monkeypatch)
+        copy = os.path.join(argv[argv.index('--runs') + 1], bcc.RUN1_MANIFEST_COPY)
+        with open(copy, 'rb') as f:
+            body = f.read()
+        with open(copy, 'wb') as f:
+            f.write(body[:-1])
+        bcc.main(argv)
+        with open(summary_path, encoding='utf-8') as f:
+            assert '| manifest bytes unchanged by run 2 | no |' in json.load(f)['table_rows']
+        sha = json.loads((snap / 'snapshot.json').read_text(encoding='utf-8'))['sha256']
+        assert sha[bcc.RUN1_MANIFEST_COPY] != sha[CropRunner.PROVENANCE_MANIFEST]
+
+
 # ------------------------------------------------------------------------------------- the committed run
 
 def _read(name):
@@ -617,6 +700,140 @@ class TestTheProseNumbers:
                 in index)
         for text in (_prose(), index):
             assert 'all six seam crossings' not in text and 'all ten' not in text
+
+
+def _panos_rows():
+    with open(os.path.join(DATA, 'panos.csv'), newline='', encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+def _id_list(label_ids):
+    """`bayonne-fr:7`, `13`, `14`: the report's way of listing several labels of the one city."""
+    return ', '.join(['`%s:%d`' % (bcc.CITY, label_ids[0])] + ['`%d`' % i for i in label_ids[1:]])
+
+
+def _missing_from_report(expected):
+    report = _report()
+    return [row for row in expected if row not in report]
+
+
+class TestTheReportTablesFromTheirRawFiles:
+    """Rows that reached the report only through the summary JSON's `table_rows` (review of PR 251, finding 3),
+    each re-derived here from a committed raw file, never from the summary."""
+
+    def test_the_window_counts_from_crops_csv(self):
+        rows = _crops_rows()
+        for r in rows:      # the seam flag against the window's own columns
+            left, width, pano_w = int(r['left']), int(r['width']), int(r['pano_w'])
+            assert (r['crosses_seam'] == 'True') == ((left + width - 1) % pano_w < left), r['label_uid']
+        seam = sum(r['crosses_seam'] == 'True' for r in rows)
+        at_cap = Counter(r['pano_w'] for r in rows if float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG)
+        expected = ['| windows crossing the seam | %d |' % seam,
+                    '| windows shifted vertically | %d |' % sum(r['shifted'] == 'True' for r in rows),
+                    '| windows downscaled for storage | %d |' % sum(r['downscaled'] == 'True' for r in rows),
+                    '| widest window (px) | %d |' % max(int(r['width']) for r in rows)]
+        expected += ['| windows at the 90 deg cap on %s-wide panos | %d |' % kv for kv in sorted(at_cap.items())]
+        assert not _missing_from_report(expected)
+        assert (seam, sum(at_cap.values())) == (6, 10)
+
+    def test_the_pov_table_from_cvmetadata(self):
+        pov = bcc.pov_residuals(_cvmetadata())
+        assert sum(z['n'] for z in pov.values()) == len(_cvmetadata())
+        expected = ['| zoom %s | %d | %s | %s | %s |' % (
+            zoom, z['n'], bcc.fmt(z['gain_deg_per_canvas'], '.1f'), bcc.fmt(z['raw_abs_deg']['max'], '.1f'),
+            bcc.fmt(z['fit_residual_abs_deg']['max'], '.2f')) for zoom, z in pov.items()]
+        assert len(expected) == 3 and not _missing_from_report(expected)
+
+    def test_the_other_three_runs_from_their_captures(self):
+        rerun, tilt, marked = (_read('run-crop-%s.stdout.txt' % name) for name in ('rerun', 'tilt', 'marked'))
+        c2, ct, cm = (bcc.parse_crop_summary(t) for t in (rerun, tilt, marked))
+        assert ct['success'] == 0
+        reasons = _read('run-crop-tilt.log.txt').count(bcc.NO_POSE_REASON)
+        expected = ['| run 2 `skipped_existing` | %d of %d |' % (c2['skipped_existing'], c2['total']),
+                    '| run 2 exit code | %d |' % bcc.parse_exit(rerun),
+                    '| tilt run `no_pose` | %d of %d |' % (ct['no_pose'], ct['total']),
+                    '| tilt run crops written, manifest rows | %d, %d |' % (ct['success'], ct['success']),
+                    '| tilt run `crop.log` lines naming the reason | %d |' % reasons,
+                    '| tilt run exit code | %d |' % bcc.parse_exit(tilt),
+                    '| marked run `success` | %d of %d |' % (cm['success'], cm['total'])]
+        assert not _missing_from_report(expected)
+        assert reasons == len({r['pano_id'] for r in _cvmetadata()}), 'one reason line per pano'
+
+    def test_run_2_left_the_manifest_bytes_as_run_1_wrote_them(self):
+        sha = json.loads(_read('snapshot.json'))['sha256']
+        committed = hashlib.sha256(_gz_bytes('crop_provenance.csv.gz')).hexdigest()
+        assert sha[bcc.RUN1_MANIFEST_COPY] == sha[CropRunner.PROVENANCE_MANIFEST] == committed
+        assert not _missing_from_report(['| manifest bytes unchanged by run 2 | yes |'])
+
+    def test_the_manifest_and_marker_rows_from_their_files(self):
+        manifest, served = _manifest(), _cvmetadata()
+        result = bcc.manifest_check(manifest, served, bcc.CITY)
+        keys = [(r['city'], r['label_id']) for r in manifest]
+        marker = json.loads(_read(CropRunner.CROP_RULE_MARKER))
+        expected = [
+            '| manifest rows, `(city, label_id)` unique | %d, %s |' % (
+                len(manifest), 'yes' if len(set(keys)) == len(keys) else 'no'),
+            '| `city` is `%s` on every row | %s |' % (bcc.CITY, 'yes' if {k[0] for k in keys} == {bcc.CITY} else 'no'),
+            '| distinct attribution pairs | %d |' % len({tuple(r[f] for f in ATTRIBUTION_FIELDS) for r in manifest}),
+            '| source values | %s |' % ', '.join('`%s`' % v for v in sorted({r[SOURCE_FIELD] for r in manifest})),
+            '| `crop_rule_version` | %s |' % ', '.join(sorted({r['crop_rule_version'] for r in manifest})),
+            '| marker city, rule | %s, %s |' % (marker['city'], marker['crop_rule_version']),
+            '| marker no-known-gap flag, known gaps | %s, %s |' % (
+                json.dumps(marker[CropRunner.MANIFEST_NO_KNOWN_GAP]), marker[CropRunner.MANIFEST_KNOWN_GAPS]),
+            "| labels in run 1's manifest not in the snapshot / the reverse | %d / %d |" % (
+                len({(bcc.CITY, int(k[1])) for k in keys} - {(bcc.CITY, int(r['label_id'])) for r in served}),
+                len({(bcc.CITY, int(r['label_id'])) for r in served} - {(bcc.CITY, int(k[1])) for k in keys})),
+            '| source and both attribution fields non-empty and equal to the served row | %d of %d |' % (
+                result['attribution_equal'], len(manifest))]
+        assert not _missing_from_report(expected)
+
+    def test_the_store_rows_from_the_ledger_and_panos_csv(self):
+        ledger = {}
+        with open(os.path.join(DATA, 'pano_id_log.csv'), newline='', encoding='utf-8') as f:
+            for row in list(csv.reader(f))[1:]:
+                ledger[row[0]] = row[1]
+        labelled = {r['pano_id'] for r in _cvmetadata()}
+        downloaded = sum(ledger.get(p) == '1' for p in labelled)
+        rows = _panos_rows()
+        assert {r['pano_id'] for r in rows} == labelled
+        uuid_shape = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+        frames = Counter('%sx%s' % (r['stored_w'], r['stored_h']) for r in rows)
+        same = sum((r['stored_w'], r['stored_h']) == (r['app_w'], r['app_h']) == (r['label_w'], r['label_h'])
+                   for r in rows)
+        expected = ['| labelled panos with ledger verdict `downloaded=1` | %d of %d |' % (downloaded, len(labelled)),
+                    '| labelled panos not downloaded | %d |' % (len(labelled) - downloaded),
+                    '| distinct shards over the labelled panos | %d |' % len({r['pano_id'][:2] for r in rows}),
+                    '| labelled pano ids that are 36-char UUIDs | %d of %d |' % (
+                        sum(bool(uuid_shape.fullmatch(r['pano_id'])) for r in rows), len(rows)),
+                    '| stored bytes, labelled panos | %.1f MB |' % (sum(int(r['bytes']) for r in rows) / 1e6),
+                    '| stored frame equals `/adminapi/panos` and cvMetadata | %d of %d |' % (same, len(rows))]
+        expected += ['| stored frame %s | %d panos |' % kv for kv in sorted(frames.items())]
+        assert not _missing_from_report(expected)
+
+    def test_the_verdict_tables_from_the_verdict_file(self):
+        rows = _verdict_rows()
+        tally = Counter(r['verdict'] for r in rows)
+        expected = ['| `%s` | %d |' % (v, tally[v]) for v in bcc.VERDICTS]
+        expected += ['| %s | %s |' % (pc, ' | '.join(str(sum(r['pose_class'] == pc and r['verdict'] == v
+                                                             for r in rows)) for v in bcc.VERDICTS))
+                     for pc in bcc.POSE_CLASSES]
+        expected += ['| judgeable crops | %d |' % (len(rows) - tally['unclear'])]
+        assert not _missing_from_report(expected)
+
+    def test_the_spot_check_lists(self):
+        rows = _crops_rows()
+        seam = [int(r['label_id']) for r in rows if r['crosses_seam'] == 'True']
+        cap = {w: [int(r['label_id']) for r in rows if r['pano_w'] == w
+                   and float(r['fov_deg']) >= CropRunner.CROP_MAX_FOV_DEG] for w in ('5376', '5760')}
+        prose = _prose()
+        assert 'the %s seam crossings: %s;' % (_WORDS[len(seam)], _id_list(seam)) in prose
+        assert 'the %s at the 90 deg cap: %s (5376 wide) and %s (5760 wide);' % (
+            _WORDS[sum(len(v) for v in cap.values())], _id_list(cap['5376']), _id_list(cap['5760'])) in prose
+        per_type = prose.split('one per type: ', 1)[1].split('## ', 1)[0]
+        listed = re.findall(r'(\w+) `%s:(\d+)`' % bcc.CITY, per_type)
+        types = {r['label_uid']: r['label_type'] for r in _verdict_rows()}
+        assert {t for t, _ in listed} == set(types.values())
+        assert all(types['%s:%s' % (bcc.CITY, i)] == t for t, i in listed)
 
 
 class TestTheReportMatchesTheArtifact:

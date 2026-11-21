@@ -15,6 +15,7 @@
   },
   "sha256": {
     "crop_provenance.csv": "a54fb2fc9e77fcdb0fea0ca8bd11b2fe191c508018b87ca4ca85be03847f73ce",
+    "crop_provenance.run1.csv": "a54fb2fc9e77fcdb0fea0ca8bd11b2fe191c508018b87ca4ca85be03847f73ce",
     "cvmetadata.json": "41bbd8ecbfe418781b1f9bb6e0865822afb1d4d3445b1d014dc6c927567f22fb",
     "panos.json": "7b6161ac605158a9dfeda753c86827343071ce9e854e61a4bd087d2608d4446f"
   },

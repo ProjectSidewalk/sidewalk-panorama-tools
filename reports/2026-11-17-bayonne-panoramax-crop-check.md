@@ -242,12 +242,14 @@ the first real-label evidence of the tilt that the plan hoped this cross-tab mig
 `reports/data/2026-11-17-bayonne-panoramax-crop-check/`:
 
 * `panos.json.gz`, `cvmetadata.json.gz`: the two responses, verbatim, gzipped; `snapshot.json`: time, counts,
-  platform, and the sha256 of each uncompressed file (the manifest's too).
+  platform, and the sha256 of each uncompressed file (the manifest's too, and that of the copy of it taken after
+  run 1, which is not committed).
 * `pano_id_log.csv`, `download-log-row.csv`: the download ledger and its `log.csv` row, as written.
 * `panos.csv`: per labelled pano: shard, bytes, sha256, stored and app frames, ledger verdict.
 * `crops.csv`: per label (`label_uid`): the window, both derivations' sizes, and the crop file's size, bytes and
   sha256.
-* `crop_provenance.csv.gz` (run 1's manifest, verbatim, gzipped) and `crop_rule.json` (the store's marker).
+* `crop_provenance.csv.gz` (the store's manifest, read after run 2, verbatim, gzipped; byte for byte the copy
+  taken after run 1, by the two hashes in `snapshot.json`) and `crop_rule.json` (the store's marker).
 * `visual-verdicts.csv`: the per-crop verdicts.
 * `run-*.stdout.txt` (the five captures), `run-crop.log.txt`, `run-crop-tilt.log.txt`, `run-scrape.log.txt`.
 
@@ -266,6 +268,10 @@ Method instead.
 * the verdict rule on synthetic tallies on both sides of each threshold;
 * the headline counts re-derived from the raw files (the run-1 capture, the gzipped manifest and snapshot,
   `visual-verdicts.csv`, `crops.csv`), not from the summary JSON;
+* every other table row, the prose counts and the spot-check lists re-derived the same way (the window counts
+  from `crops.csv`, the POV table from the gzipped cvMetadata, runs 2-4 from their captures, the store rows from
+  the ledger and `panos.csv`);
+* `measure --write` end to end on a synthetic run, so a table row cannot outlive the detector behind it;
 * every table row the script emitted appears in this report;
 * no local path in any committed file.
 

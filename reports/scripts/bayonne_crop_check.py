@@ -711,7 +711,13 @@ def write_artifacts(c, args, out_dir, summary_path):
     with open(os.path.join(out_dir, 'crop_provenance.csv.gz'), 'wb') as f:
         f.write(gzip_bytes(manifest_bytes))
     snap = dict(c['snapshot'])
-    snap['sha256'] = dict(snap['sha256'], **{'crop_provenance.csv': sha256_bytes(manifest_bytes)})
+    # The store's manifest is read after run 2; run 1's copy is not committed, so its hash goes beside it, and
+    # "manifest bytes unchanged by run 2" can be checked from the committed files.
+    hashes = {CropRunner.PROVENANCE_MANIFEST: sha256_bytes(manifest_bytes)}
+    run1_copy = os.path.join(args.runs, RUN1_MANIFEST_COPY)
+    if os.path.exists(run1_copy):
+        hashes[RUN1_MANIFEST_COPY] = sha256_file(run1_copy)
+    snap['sha256'] = dict(snap['sha256'], **hashes)
     _write_json(os.path.join(out_dir, 'snapshot.json'), snap)
     for name, rows in (('crops.csv', c['windows']), ('panos.csv', c['store']['rows'])):
         with open(os.path.join(out_dir, name), 'w', newline='', encoding='utf-8') as f:
