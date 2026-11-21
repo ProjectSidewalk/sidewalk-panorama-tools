@@ -472,6 +472,8 @@ class TestComputeDepthRaster:
         planes_wire = [{'n': [0.0, 0.0, 0.0], 'd': 0.0}, {'n': [0.4, -1.1, 0.6], 'd': 3.7},
                        {'n': [0.0, 0.2, 1.0], 'd': 2.4}]
         indices = [2, 1, 2, 2, 1, 0, 1, 2]
+        assert indices[0] != 0, ('a first index of 0 is the class 0.12.x could already read, so this parity '
+                                 'check would no longer tell the releases apart')
         payload = encode_depth_payload(planes_wire, indices, width=4, height=2)
 
         ours = gsv._compute_depth_raster(gsv._decode_depth_planes(payload))
