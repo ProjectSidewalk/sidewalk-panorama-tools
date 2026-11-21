@@ -225,6 +225,14 @@ def white_band(image):
     return top, float((luma[top:] > WHITE_LUMA).mean())
 
 
+UUID_SHAPE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+
+def is_uuid(pano_id):
+    """Is this a 36-char UUID in the 8-4-4-4-12 shape, lower case, as Panoramax ids are."""
+    return bool(UUID_SHAPE.fullmatch(pano_id))
+
+
 def _all_jpegs(store):
     for folder, _, files in os.walk(store):
         for name in files:
@@ -628,7 +636,7 @@ def collect(args):
             'frames': {'%dx%d' % k: v for k, v in frames.items() if k[0] is not None},
             'store_bytes': sum(r['bytes'] or 0 for r in store['rows']),
             'shards': len({r['shard'] for r in store['rows']}),
-            'uuid_ids': sum(1 for r in store['rows'] if re.fullmatch(r'[0-9a-f-]{36}', r['pano_id'])),
+            'uuid_ids': sum(1 for r in store['rows'] if is_uuid(r['pano_id'])),
             'fov_min': fovs[0] if fovs else None, 'fov_median': percentile(fovs, 0.5) if fovs else None,
             'fov_max': fovs[-1] if fovs else None,
             'at_cap_by_width': dict(Counter(str(r['pano_w']) for r in windows if r['fov_deg'] >= cap)),

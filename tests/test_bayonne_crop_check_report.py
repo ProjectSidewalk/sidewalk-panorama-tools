@@ -470,6 +470,17 @@ class TestTheSmallReaders:
                                ('C:/Users/x/scratch/b/store/bayonne-fr', '<store>')])
         assert out == '<store>' + chr(92) + 'ab' + chr(92) + 'x.jpg and <scratch>/crops/y'
 
+    @pytest.mark.parametrize('pano_id, expected', [
+        (_pano_id(1), True), ('7c4c4c2f-8d96-432f-ad89-00fbdbb769f0', True),
+        ('-' * 36, False), ('0' * 36, False), ('7c4c4c2f8d96432fad8900fbdbb769f0', False),
+        ('7c4c4c2f-8d96-432f-ad89-00fbdbb769f', False), ('7c4c4c2f-8d96-432f-ad89-00fbdbb769f0a', False),
+        ('7c4c4c2f-8d96-432f-ad8900-fbdbb769f0', False), ('7C4C4C2F-8D96-432F-AD89-00FBDBB769F0', False),
+        ('ARy-clYtgyvpxmBabOJQ0g', False)])
+    def test_a_uuid_is_the_8_4_4_4_12_shape(self, pano_id, expected):
+        """Review of PR 251, nit 5: `[0-9a-f-]{36}` also matched 36 hyphens. Lower case only, as Panoramax and the
+        store write them."""
+        assert bcc.is_uuid(pano_id) is expected
+
     def test_pose_classes_follow_the_levelling_report(self):
         panos = [{'pano_id': 'a', 'camera_pitch': 3.1, 'camera_roll': -1.0},
                  {'pano_id': 'b', 'camera_pitch': 0, 'camera_roll': 0},
