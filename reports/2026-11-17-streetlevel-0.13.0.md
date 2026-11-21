@@ -8,7 +8,8 @@ minor version; the box and CI run Linux. Everything cited is in
 
 - `planning_win_*`: the planning measurements;
 - `review_*`: the plan review's own probe;
-- `impl_*`: the implementation's test evidence, with `impl_evidence.sh` recording how it ran.
+- `impl_*`: the implementation's test evidence, with `impl_evidence.sh` recording how it ran;
+- `fix1_*`: the PR review's first fix round (see the last section).
 
 The text files were committed as written, except for one scripted substitution of local path prefixes
 (`impl_scrub.py`). The measurement folder became `<MEAS>`, any other scratch path `<SCRATCH>`, the temp folder
@@ -128,3 +129,15 @@ Whether to keep a cap is left to the PR's reviewer.
 - The first scrub script wrote the local account name into itself and rewrote one of its own patterns. The
   committed `impl_scrub.py` reads the name at run time. Rerun on the raw outputs, it reproduces the files as staged,
   byte for byte, before git normalised their Windows line endings to LF on commit.
+
+## Review round 1 (2026-11-21)
+
+The PR review changed two numbers in this report and its test still passed: the release the weekly job installed,
+and the `Metadata-Version` move. The test now re-derives both from the files, along with the date #45 merged, the
+date 0.13.0 shipped, the weekly run's date and its gap to the upload, and it checks that every data file the report
+cites is committed. `fix1_report_mutants.py` makes 11 edits and 3 deletions, one at a time, and each one fails the
+test (`fix1_report_mutants.out.txt`). A wider sweep, `fix1_report_number_sweep.py`, bumps every number in the prose
+outside backticks and links, one at a time: 78 of 112 still pass (`fix1_report_number_sweep.out.txt`, which lists
+each one). Most survivors are names and history: issue and PR numbers, the Part and mutant labels, release numbers
+in running text, the wire format's byte offsets, and dates from the box or from Part 1. A few are recorded in this
+folder but not re-derived by the test, such as the interpreter and pip versions.

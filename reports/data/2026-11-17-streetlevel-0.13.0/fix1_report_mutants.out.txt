@@ -1,0 +1,16 @@
+baseline (0, '11 passed in 1.07s')
+KILLED   report: installed 0.12.12 (review mutant 1) :: 1 failed, 10 passed in 1.42s
+KILLED   report: Metadata 2.4 -> 2.6 (review mutant 2) :: 1 failed, 10 passed in 1.33s
+KILLED   report: Metadata 2.3 -> 2.5 :: 1 failed, 10 passed in 1.41s
+KILLED   report: Collecting <0.14 :: 1 failed, 10 passed in 1.47s
+KILLED   report: run date 11-17 :: 1 failed, 10 passed in 1.53s
+KILLED   report: five days after :: 1 failed, 10 passed in 1.41s
+KILLED   report: #45 merged 11-05 :: 1 failed, 10 passed in 2.46s
+KILLED   report: shipped 11-13 :: 1 failed, 10 passed in 1.35s
+KILLED   report: cite a file that does not exist :: 1 failed, 10 passed in 1.60s
+KILLED   data: tripwire FAILED in weekly log :: 1 failed, 10 passed in 1.30s
+KILLED   data: weekly installed 0.13.0 :: 1 failed, 10 passed in 1.49s
+KILLED   delete review_r_wheels.out.txt :: 2 failed, 9 passed in 1.59s
+KILLED   delete impl_weekly_run_43980786100.out.txt :: 2 failed, 9 passed in 1.36s
+KILLED   delete impl_scrub.py :: 1 failed, 10 passed in 1.54s
+after (0, '11 passed in 1.09s')
