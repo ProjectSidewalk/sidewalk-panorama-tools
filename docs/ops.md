@@ -1557,9 +1557,10 @@ bad night is attributable.
 **A venv built before a pin moved is brought up to it, not rebuilt.** After the pull that brings the new pin,
 re-run the two install lines in it: step 1's lines for a `.venv-237` not yet swapped in, the
 [Deploying](#deploying) block's for `.venv`. They replace only the package whose pin moved. Then run the matching
-freeze diff, which must print nothing; that diff is the check that counts. A venv step 1 built has Ubuntu's pip
-22.0.2, which has no `--dry-run` (it arrived in pip 22.2), so do not try one in `.venv-237`, nor in `.venv` once it
-links there. Moving `streetlevel` from 0.12.11 to 0.13.0 was rehearsed this way
+freeze diff, which must print nothing (an old `.venv` not yet swapped still prints its 41 `<` lines, and only
+those); that diff is the check that counts. A venv step 1 builds comes with Ubuntu's pip 22.0.2, which has no
+`--dry-run` (it arrived in pip 22.2), so do not try one in `.venv-237`, nor in `.venv` once it links there, unless
+that venv's `pip --version` says 22.2 or later. Moving `streetlevel` from 0.12.11 to 0.13.0 was rehearsed this way
 ([the report](../reports/2026-11-17-streetlevel-0.13.0.md)).
 
 ```bash
