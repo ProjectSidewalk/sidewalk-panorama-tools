@@ -220,9 +220,11 @@ class TestStreetlevelIsInstalledWithoutItsDependencies:
         assert [canonicalize_name(Requirement(line).name) for line in _content_lines(NODEPS)] == ['streetlevel']
 
     # Every release that misreads the depth header's offset byte as a uint16 (fixed by sk-zk/streetlevel#45,
-    # first released in 0.13.0): the 0.12.x line from 0.12.10, the oldest release the 2026-11-17 measurement
-    # listed, to 0.12.13, the last before the fix (reports/2026-11-17-streetlevel-0.13.0.md).
-    RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX = ('0.12.10', '0.12.11', '0.12.12', '0.12.13')
+    # first released in 0.13.0): the 0.12.x line from 0.12.9, the oldest tag the 2026-11-17 measurement lists
+    # (planning_win_p2_upstream_github.out.txt), to 0.12.13, the last before the fix
+    # (reports/2026-11-17-streetlevel-0.13.0.md). Not every 0.12.x version string: `>=0.12.14` passes, and no
+    # such release exists.
+    RELEASES_WITHOUT_THE_DEPTH_HEADER_FIX = ('0.12.9', '0.12.10', '0.12.11', '0.12.12', '0.12.13')
 
     def test_its_floor_excludes_every_release_without_the_depth_header_fix(self):
         """The comments in downloaders/gsv.py, tests/conftest.py, test_streetlevel_api.py and docs/depth.md say
