@@ -556,6 +556,57 @@ class TestTheRulesWhereTheyAreApplied:
             for key in cs.BOOT_METRICS:
                 assert vec[key][b] == pytest.approx(point[key], rel=1e-9, abs=1e-12), (b, key)
 
+    def test_power_both_ways_draws_each_truth_at_the_modelled_tilt_and_labels_it(self, monkeypatch):
+        """PR #254 review 2, B: on a strongly tilted synthetic gold with little scatter, the truth-at-g.y row must
+        read g.y better and the truth-at-r.y row r.y better, at multiplier 1. Kept cheap: 4 simulations of 60
+        replicates instead of 200 of 500."""
+        calls = []
+        real = cs.power_simulation
+
+        def small(*a, **k):
+            calls.append(k)
+            return real(*a, **dict(k, n_sims=4, n_boot=60))
+        monkeypatch.setattr(cs, 'power_simulation', small)
+        monkeypatch.setattr(cs, 'POWER_SIMS', 4)
+        monkeypatch.setattr(cs, 'committed_sigma', lambda name: {'sao_paulo': 0.02, 'paterson': 0.02})
+        out = cs.power_both_ways_block(_gsv_ramps(max_tilt=8.0, depressions=(4, 20)))
+        for rule in ('v2', 'v3'):
+            assert out[rule]['truth_g_y'] == {'g.y better': 1.0, 'r.y better': 0.0, 'not distinguishable': 0.0}, rule
+            assert out[rule]['truth_r_y'] == {'g.y better': 0.0, 'r.y better': 1.0, 'not distinguishable': 0.0}, rule
+        assert {k['multipliers'] for k in calls} == {(1.0,)} and {k['truth'] for k in calls} == {'g', 'r'}
+
+    def test_e14_on_the_gold_panos_measures_both_axes_and_wraps_roll(self, tmp_path):
+        """PR #254 review 2, B: pitch exact and roll off by 1 deg everywhere (one roll served as 359.5) gives a mean
+        absolute two-axis error of exactly 1 deg; an error on pitch only reads 0, an unwrapped roll reads ~36."""
+        rows = []
+        for i, (p, r) in enumerate([(-2.0, 0.5), (1.0, -1.5), (3.0, 359.5), (0.5, 2.0), (-1.0, 1.0)]):
+            measured_roll = float(pano_pose.wrap_deg(r)) + 1.0
+            rows.append({'pano_id': 'p%d' % i, 'status': 'ok', 'google_pitch_deg': p, 'pitch_deg': p,
+                         'google_roll_deg': r, 'roll_deg': measured_roll})
+        rows.append({'pano_id': 'q', 'status': 'declined', 'google_pitch_deg': None, 'pitch_deg': None,
+                     'google_roll_deg': None, 'roll_deg': None})
+        (tmp_path / cs.TILT_ROWS).write_text(json.dumps({'rows': rows}), encoding='utf-8')
+        out = cs.e14_gold_block(str(tmp_path))
+        assert out['mae_deg'] == pytest.approx(1.0, abs=1e-9)
+        assert out['slope_pitch'] == pytest.approx(1.0) and out['slope_roll'] == pytest.approx(1.0)
+        assert out['n_rows'] == 6 and out['n_fitted'] == 5 and out['status'] == {'declined': 1, 'ok': 5}
+
+    def test_d6_reads_per_city_support_off_the_band_centre_block(self):
+        """PR #254 review 2, B: aprons proportional to the v3 window, so the band-centre widths split the four
+        cities and the v2-matched widths do not; per_city_supported must come from the band-centre block."""
+        rng = random.Random(21)
+        ramps = []
+        for city, factor, provider in (('richmond', 1.4, 'mapillary'), ('annapolis', 2.2, 'mapillary'),
+                                       ('sao_paulo', 1.0, 'gsv'), ('paterson', 1.0, 'gsv')):
+            for i in range(10):
+                r = dict(ramp(depression=rng.uniform(3, 18), city=city, pano_id='%s%d' % (city, i % 5),
+                              key='det:%d' % i), provider=provider)
+                r['box_w'] = factor * 0.36 * cs.cut_box(r, ('v3', 5.8)).width * math.exp(rng.gauss(0, 0.005))
+                ramps.append(r)
+        out = cs.d6_block(ramps, cs.pano_bootstrap_weights(ramps, 20, 4))
+        assert cs.per_city_supported(out['band']) and not cs.per_city_supported(out['match_v2'])
+        assert out['per_city_supported'] is True
+
 
 def _sha(path):
     with open(path, 'rb') as f:
@@ -767,6 +818,7 @@ def test_the_extracts_reproduce_from_rampnet(provenance):
 
 # ---------------------------------------------------------------------------------------------------------
 # The committed artifact, regenerated from the committed inputs. The full run measured 33 s on a Windows dev box
+# at cdca833 and about 45 s after review 1's post-hoc checks (622cc3c)
 # (2026-11-22), under the plan's 60 s line, so CI regenerates every block, intervals included.
 
 @pytest.fixture(scope='module')
@@ -1113,6 +1165,25 @@ class TestReportMatchesTheArtifact:
                     if e['verdict'] != 'none':
                         assert len({v > 0 for v in e['cities'].values()}) == 1
         assert 'criterion 2\'s three-of-four clause changed no verdict either' in report
+
+    def test_review_2_v3_sees_a_pose_sized_change_and_the_two_power_runs_agree(self, summary, report):
+        """PR #254 review 2, A and D: the S-neg - S-rig row under v3, and the two estimates of one power."""
+        e = summary['tilt']['rules']['v3']['neg_minus_rig']
+        assert e['fill_log_sd']['interval'][0] > 0 and e['r2']['interval'][1] < 0
+        assert all(v > 0 for v in e['fill_log_sd']['cities'].values()) and all(v < 0 for v in e['r2']['cities'].values())
+        assert ('S-neg − S-rig excludes 0 on both metrics (fill log-sd %s [%s, %s], R² %s [%s, %s], both cities agreeing)'
+                % tuple(_neg(x) for x in ('%+.4f' % e['fill_log_sd']['pooled'], '%+.4f' % e['fill_log_sd']['interval'][0],
+                                          '%+.4f' % e['fill_log_sd']['interval'][1], '%+.4f' % e['r2']['pooled'],
+                                          '%+.4f' % e['r2']['interval'][0], '%+.4f' % e['r2']['interval'][1]))) in report
+        first = {r: summary['power'][r]['rows'][0] for r in ('v2', 'v3')}
+        both = {r: summary['power_both_ways'][r]['truth_g_y']['g.y better'] for r in ('v2', 'v3')}
+        assert first['v3']['multiplier'] == summary['power_both_ways']['multiplier'] == 1.0
+        assert ('it reads g.y better in %.1f%% for v2, as the power-first run did, and in %.1f%% for v3 against the '
+                'power-first %.1f%%' % (100 * both['v2'], 100 * both['v3'], 100 * first['v3']['power'])) in report
+        assert first['v2']['power'] == both['v2']
+        se = math.sqrt(first['v3']['power'] * (1 - first['v3']['power']) / first['v3']['n_sims'])
+        assert 'a binomial standard error of about %.1f points on each' % (100 * se) in report
+        assert abs(both['v3'] - first['v3']['power']) < 3 * math.sqrt(2) * se, 'within noise of each other'
 
     def test_d6_is_worded_as_these_cities(self, summary, report):
         """Finding 5: the design cannot separate provider from city, and the report says so."""

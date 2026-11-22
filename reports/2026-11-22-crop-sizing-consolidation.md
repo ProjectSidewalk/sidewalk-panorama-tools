@@ -120,7 +120,8 @@ configurations: S-rig (centre r, sized at r.y), S-grav (centre r, sized at g.y),
 S-neg (sized at the negated-pose point) and S-grav-noise (g.y plus 0.53° of click noise). Beta 1.0 and 0.88
 are sensitivity rows.
 
-The whole study runs in about 33 s from the committed extract, so CI regenerates every block, intervals
+The whole study runs in about 45 s from the committed extract (about 33 s before review 1's post-hoc checks
+were added), so CI regenerates every block, intervals
 included, and compares it with the artifact.
 
 ## 5. Results
@@ -273,7 +274,10 @@ So at the modelled tilt the test had about even odds of seeing a real g.y advant
 1.5 times it. The power step looked one way only. Run both ways after the result (`power_both_ways`, at review),
 at the modelled tilt: with the truth at g.y the test read **r.y better** in 0.0% of 200 simulations for v2 and
 0.0% for v3, and with the truth at r.y it read r.y better in 54.5% (v2) and 69.5% (v3). So a wrong-sign reading
-is not a likely product of noise in this simulation. Its scatter is independent per ramp, while the real
+is not a likely product of noise in this simulation. The first of those runs repeats the power-first run's
+question (the same test, model and multiplier, 200 simulations each, with seeds 1864 and 1860): it reads g.y
+better in 55.0% for v2, as the power-first run did, and in 68.5% for v3 against the power-first 61.0%. With a
+binomial standard error of about 3.4 points on each, that gap is simulation noise, not a second quantity. Its scatter is independent per ramp, while the real
 residuals cluster by pano; the simulation does not model that. The configurations:
 
 | rule | configuration | fill p50 | fill log-sd | fill p90/p10 | R² | clearing | containment | window p50 |
@@ -336,6 +340,11 @@ written after the result.
 - Under **v3** it is not: S-neg is worse than S-grav (fill log-sd +0.0192 against +0.0117, R² −0.0474 against
   −0.0211), and 77.2% and 89.6% of random shifts are at least as harmful as S-grav. The modelled direction does
   a little better than a random one: a small hint towards the plan's prior, inside its interval.
+- Under v3 the gold is **not** blind to a pose-sized change of the sizing y: S-neg − S-rig excludes 0 on both
+  metrics (fill log-sd +0.0192 [+0.0039, +0.0369], R² −0.0474 [−0.0800, −0.0217], both cities agreeing). What
+  is not distinguishable is g.y from r.y, and g.y from g-.y. "Cannot see tilt at all" above is the criteria
+  file's label for that pair of verdicts, kept as the pre-stated reading; it does not mean v3's windows are
+  insensitive to the sizing y.
 - The isotonic ceiling (descriptive, not a criterion) explains R² 0.833 of the GSV aprons' log width at r.y and
   0.807 at g.y. For v2 the main result holds at beta 0.88 and 1.0 and with click noise; for v3 every one of
   those rows has the same sign and none is distinguishable.
@@ -471,7 +480,7 @@ scored on the GSV gold, so that the rule is chosen once.
   absolute local path, which committed files here must not, so that one path is replaced by `<RampNet>`. The
   provenance records both hashes and the substitution, and a gated test rebuilds the snapshot from the source.
 - **The run was first 69 s**, over the plan's 60 s line for regenerating intervals in CI. Caching window
-  widths (they depend only on rule, constant, sizing y and pano size) brought it to about 33 s with every
+  widths (they depend only on rule, constant, sizing y and pano size) brought it to about 33 s (about 45 s once review 1's post-hoc checks were added) with every
   number unchanged, so CI regenerates every block.
 - **The first draft of a reproduction test compared depressions after a round trip through pixels**, which
   differs in the last bit; the test now reads the depression off y as the v3 study does.
@@ -492,7 +501,7 @@ scored on the GSV gold, so that the rule is chosen once.
 ## 10. Reproduce, and the tests that pin it
 
 ```bash
-# From the committed extract only (about 33 s):
+# From the committed extract only (about 45 s):
 python reports/scripts/crop_sizing_consolidation.py study \
     --write reports/data/2026-11-22-crop-sizing-consolidation.json \
     --per-ramp reports/data/2026-11-22-crop-sizing-consolidation/per_ramp.csv.gz
