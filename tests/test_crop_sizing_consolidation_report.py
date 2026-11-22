@@ -528,3 +528,20 @@ class TestItReproducesTheEarlierReports:
             assert mine[key] == pytest.approx(row[key], rel=1e-9), key
             checked += 1
         assert checked == 2 * len(cs.RAMPNET_SUMMARY_KEYS) + len(cs.RAMPNET_SWEEP_KEYS)
+
+
+@pytest.mark.skipif(not (os.environ.get('RAMPNET_ROOT') and os.environ.get('AUTO_LABELER_ROOT')),
+                    reason='set RAMPNET_ROOT and AUTO_LABELER_ROOT to checkouts to regenerate the extract')
+def test_the_extracts_reproduce_from_rampnet(provenance):
+    """`extract` against a RampNet checkout at provenance's commit (and an auto-labeler checkout holding the
+    snapshot's commit) rebuilds every committed extract file byte for byte. Reads committed blobs only."""
+    import subprocess
+    root = os.environ['RAMPNET_ROOT']
+    head = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    if head != provenance['rampnet_commit']:
+        pytest.skip('RAMPNET_ROOT is at %s, not the committed %s' % (head[:7], provenance['rampnet_commit'][:7]))
+    files = cs.build_extract(root, os.environ['AUTO_LABELER_ROOT'])
+    assert set(files) == set(provenance['extracts']) | {cs.PROVENANCE_JSON}
+    for name, data in files.items():
+        with open(os.path.join(DATA_DIR, name), 'rb') as f:
+            assert f.read() == data, name

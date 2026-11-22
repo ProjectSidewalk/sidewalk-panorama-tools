@@ -1,0 +1,108 @@
+{
+ "criteria_commit": "1ee6229b3f9243e056252d9c00b58df73d0d4335",
+ "generated_by": "python reports/scripts/crop_sizing_consolidation.py power --write reports/data/2026-11-22-crop-sizing-consolidation/power_first.json",
+ "power": {
+  "v2": {
+   "beta": 0.95,
+   "fill0": 0.371,
+   "mde_multiplier": 1.5,
+   "n_boot": 500,
+   "n_panos": 70,
+   "n_ramps": 228,
+   "rows": [
+    {
+     "multiplier": 1.0,
+     "n_sims": 200,
+     "power": 0.55
+    },
+    {
+     "multiplier": 1.5,
+     "n_sims": 200,
+     "power": 0.855
+    },
+    {
+     "multiplier": 2.0,
+     "n_sims": 200,
+     "power": 0.965
+    },
+    {
+     "multiplier": 3.0,
+     "n_sims": 200,
+     "power": 0.995
+    },
+    {
+     "multiplier": 4.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 6.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 8.0,
+     "n_sims": 200,
+     "power": 1.0
+    }
+   ],
+   "seed": 1860,
+   "sigma_by_city": {
+    "paterson": 0.32663402143952563,
+    "sao_paulo": 0.33483767987130963
+   },
+   "target_power": 0.8
+  },
+  "v3": {
+   "beta": 0.95,
+   "fill0": 0.371,
+   "mde_multiplier": 1.5,
+   "n_boot": 500,
+   "n_panos": 70,
+   "n_ramps": 228,
+   "rows": [
+    {
+     "multiplier": 1.0,
+     "n_sims": 200,
+     "power": 0.61
+    },
+    {
+     "multiplier": 1.5,
+     "n_sims": 200,
+     "power": 0.925
+    },
+    {
+     "multiplier": 2.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 3.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 4.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 6.0,
+     "n_sims": 200,
+     "power": 1.0
+    },
+    {
+     "multiplier": 8.0,
+     "n_sims": 200,
+     "power": 1.0
+    }
+   ],
+   "seed": 1860,
+   "sigma_by_city": {
+    "paterson": 0.29590509552371175,
+    "sao_paulo": 0.31242661104699315
+   },
+   "target_power": 0.8
+  }
+ }
+}
