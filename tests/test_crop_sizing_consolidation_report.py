@@ -1048,6 +1048,83 @@ class TestReportMatchesTheArtifact:
         assert summary['meta']['criteria_file'] in report.replace('](plans/', '](reports/plans/') or \
             os.path.basename(summary['meta']['criteria_file']) in report
 
+    def test_the_pre_stated_tilt_reading_is_applied_to_v3(self, summary, report):
+        """PR #254 review 1, finding 2: v3's outcome is exactly the case criterion 6 pre-stated a reading for,
+        so the report must say it, in the criteria file's words, in the outcome and in section 5.7."""
+        v3 = summary['tilt']['rules']['v3']
+        assert v3['verdict'] == v3['control_verdict'] == 'not distinguishable'
+        with open(os.path.join(REPO_ROOT, cs.CRITERIA_FILE), encoding='utf-8') as f:
+            criteria = ' '.join(f.read().split())
+        assert 'the gold cannot tell, and the recommendation on #197\'s prerequisite is to keep sizing at the stored y' in criteria
+        assert 'the report says the gold cannot see tilt at all' in criteria
+        assert report.count('cannot see tilt at all') >= 3
+        assert ('*the gold cannot tell, and the recommendation on #197\'s prerequisite is to keep sizing at the stored y '
+                'on physical grounds; since g.y against g-.y is also not distinguishable, the gold cannot see tilt at '
+                'all* (under v3)') in report
+        assert '**After the result, and not pre-stated.**' in report
+
+    def test_the_review_1_figures(self, summary, report):
+        t = summary['tilt']['rules']
+        for rule, label in (('v2', 'v2'), ('v3', 'v3')):
+            rs = t[rule]['random_shift_control']
+            assert rs['post_hoc'].startswith('added after the criteria')
+        g2, g3 = t['v2']['random_shift_control'], t['v3']['random_shift_control']
+        assert ('%.1f%% of those draws raise fill log-sd at least as much as S-grav and %.1f%% lower R² at least as much'
+                % (100 * g2['share_at_least_as_harmful_as_grav']['fill_log_sd'],
+                   100 * g2['share_at_least_as_harmful_as_grav']['r2'])) in report
+        assert ('%.1f%% and %.1f%% of random shifts are at least as harmful as S-grav'
+                % (100 * g3['share_at_least_as_harmful_as_grav']['fill_log_sd'],
+                   100 * g3['share_at_least_as_harmful_as_grav']['r2'])) in report
+        d = lambda rule, key, m: t[rule][key][m]['pooled']  # noqa: E731
+        ratios = (d('v3', 'neg_minus_rig', 'fill_log_sd') / d('v3', 'grav_minus_rig', 'fill_log_sd'),
+                  d('v3', 'neg_minus_rig', 'r2') / d('v3', 'grav_minus_rig', 'r2'))
+        assert 'the negated pose is %.1f to %.1f times as bad' % (min(ratios), max(ratios)) in report
+        both = summary['power_both_ways']
+        assert ('read **r.y better** in %.1f%% of 200 simulations for v2 and %.1f%% for v3, and with the truth at r.y it '
+                'read r.y better in %.1f%% (v2) and %.1f%% (v3)' % (
+                    100 * both['v2']['truth_g_y']['r.y better'], 100 * both['v3']['truth_g_y']['r.y better'],
+                    100 * both['v2']['truth_r_y']['r.y better'], 100 * both['v3']['truth_r_y']['r.y better'])) in report
+        assert both['n_sims'] == 200
+        e = summary['e14_gold_panos']
+        assert ('%d accepted and %d declined by RampNet\'s estimator, all %d fitted here' % (
+            e['status']['ok'], e['status']['declined'], e['n_fitted'])) in report
+        assert ('slope %.3f (pitch) and %.3f (roll), r %.3f and %.3f, and the mean absolute two-axis difference is %.3f°'
+                % (e['slope_pitch'], e['slope_roll'], e['r_pitch'], e['r_roll'], e['mae_deg'])) in report
+        assert 0.4 < e['mae_deg'] / summary['tilt']['shift']['sao_paulo']['abs_dy_deg_p50'] < 0.6, 'about half'
+
+    def test_the_fold_gap_and_the_city_clause(self, summary, report):
+        """Finding 4: the largest fold-to-in-sample gap, and that every one-sided row has all cities agreeing."""
+        gaps = {(n, m): e['out_of_sample']['max_gap_to_in_sample'] for n, p in summary['paired'].items()
+                for m, e in p['metrics'].items() if 'out_of_sample' in e}
+        worst = max(gaps, key=gaps.get)
+        assert worst == ('v3_minus_A', 'fill_p90_over_p10')
+        assert 'over all 36 cells, is %.4f (v3 − option A on p90/p10); on R² for v3 − option A it is %.4f' % (
+            gaps[worst], gaps[('v3_minus_A', 'r2')]) in report
+        assert len(gaps) * len(CITIES) == 36
+        assert 'differs from the same city\'s in-sample difference by at most %.4f' % gaps[worst] in report
+        for p in summary['paired'].values():
+            for e in p['metrics'].values():
+                if e.get('verdict') in ('first', 'second'):
+                    signs = {v > 0 for v in e['cities'].values()}
+                    assert len(signs) == 1 and 0 not in e['cities'].values()
+        for rule in summary['tilt']['rules'].values():
+            for key in ('grav_minus_rig', 'grav_minus_neg', 'neg_minus_rig', 'noise_minus_rig'):
+                for e in rule[key].values():
+                    if e['verdict'] != 'none':
+                        assert len({v > 0 for v in e['cities'].values()}) == 1
+        assert 'criterion 2\'s three-of-four clause changed no verdict either' in report
+
+    def test_d6_is_worded_as_these_cities(self, summary, report):
+        """Finding 5: the design cannot separate provider from city, and the report says so."""
+        band = summary['d6']['band']
+        assert band['annapolis_minus_richmond']['point'] > band['mapillary_minus_gsv']['point']
+        assert ('gap inside Mapillary (Annapolis − Richmond, +%.1f m) is larger than the gap between providers (+%.1f m)'
+                % (band['annapolis_minus_richmond']['point'], band['mapillary_minus_gsv']['point'])) in report
+        assert ('Richmond, the narrower of the two, %.1f m [%.1f, %.1f] against GSV\'s %.1f m [%.1f, %.1f]' % (
+            band['widths']['richmond'], *band['width_intervals']['richmond'], band['widths']['gsv'],
+            *band['width_intervals']['gsv'])) in report
+        assert 'a per-provider width is supported' not in report
+
     def test_the_report_is_indexed_with_its_outcome(self):
         with open(os.path.join(REPO_ROOT, 'reports', 'README.md'), encoding='utf-8') as f:
             assert '(2026-11-22-crop-sizing-consolidation.md)' in f.read()

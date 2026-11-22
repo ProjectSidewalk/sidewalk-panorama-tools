@@ -16,20 +16,31 @@ stays, the flag keeps its name.
 ## Outcome
 
 - **v3 and option A both beat v2** on all three discriminating metrics under criterion 2 (interval excludes 0,
-  three of four cities agree), and the sign holds in all four leave-one-city-out folds.
+  three of four cities agree), and the sign holds in all four leave-one-city-out folds. Two of those bars add
+  less than they sound: every row that criterion 2 calls for one side has all four cities agreeing, so the
+  three-of-four clause decided no verdict here; and on these scale-invariant metrics a held-out fold differs
+  from the same city's in-sample difference by at most 0.0118, so "holds out of sample" is close to "all four
+  cities agree" (section 5.3).
 - **v3 against option A (D7):** v3 tracks the apron better on R² (all four cities, interval excludes 0);
   fill dispersion and p90/p10 are not distinguishable. The published "A is less dispersed" was a point
-  estimate inside its own interval.
+  estimate inside its own interval. R² here is a squared correlation, blind to the slope that fill log-sd
+  sees, so "v3, narrowly" is the reading; the "high" criterion 7 gives it is by the letter of that criterion
+  (section 7).
 - **D2 (5.8 m against 6.0 m) is a choice of criterion**, as pre-stated: the two criteria's bootstrap
   ranges overlap and neither width is rejected by the other's.
-- **D6:** a per-provider width is supported (Mapillary needs a wider v3 context than GSV to reach the band
-  centre, and Annapolis than Richmond), but **no held-out city misses the 45% floor** by the pre-stated rule,
-  Annapolis included.
-- **Tilt (#197's prerequisite), the unexpected result:** sizing at the rig-frame y tracks the hand-drawn
-  apron **better** than sizing at the modelled gravity-frame y, for v2 under criterion 2 (**r.y better**),
-  and in the same direction but not distinguishable for v3. The negated-pose control is not distinguishable
-  from S-grav, which is what r.y being the right coordinate predicts. This contradicts the plan's physical
-  prior (the gravity depression is what the cotangent wants). Section 7 discusses it.
+- **D6:** both Mapillary cities (Richmond and Annapolis) need a wider v3 context than both GSV cities (São Paulo
+  and Paterson) to reach the band centre, and Annapolis than Richmond. The bootstrap resamples panos inside
+  these four fixed cities, so it carries no between-city variance and cannot say whether that is a provider,
+  an imagery or a city effect: it is these two cities against those two. And **no held-out city misses the 45%
+  floor** by the pre-stated rule, Annapolis included.
+- **Tilt (#197's prerequisite):** for **v2**, criterion 6 reads **r.y better**: sizing at the rig-frame y
+  tracks the hand-drawn apron better than sizing at the modelled gravity-frame y, against the plan's physical
+  prior. For **v3** it reads **not distinguishable**, and the negated-pose control is also not distinguishable,
+  so the pre-stated reading applies as written: *the gold cannot tell, the recommendation on #197's
+  prerequisite is to keep sizing at the stored y on physical grounds, and under v3 the gold cannot see tilt at
+  all.* Reading the undistinguishable control as support for r.y, and v3's same-signed differences as "the same
+  direction", are arguments made after the result, not pre-stated; section 5.7 gives them labelled, with one
+  post-hoc check that points the other way for v3.
 
 ## 1. The question
 
@@ -77,7 +88,10 @@ Status: **R** re-derivable offline from this repo today, **Q** quotable only, **
 E14 is what makes the tilt arm's model well posed: the zenith measured in the JPEG follows the record pose with
 slopes 0.9708 (pitch) and 0.9782 (roll), MAE 0.2305°, on 434 accepted panos; Paterson 0.9724 / 0.9677 and São
 Paulo 0.9932 / 1.005. So the gold's GSV JPEGs are rig-frame stitches the record poses describe, in
-`pano_pose`'s sign.
+`pano_pose`'s sign. On the 70 gold panos themselves (added after the result, at review: 63 accepted and 7
+declined by RampNet's estimator, all 70 fitted here), a least-squares line of image-measured on record pose has
+slope 1.097 (pitch) and 0.991 (roll), r 0.944 and 0.972, and the mean absolute two-axis difference is 0.413°,
+about half the modelled shift's p50 in São Paulo.
 
 ## 4. Method
 
@@ -169,8 +183,12 @@ By stratum, for the three 3:2 candidates at matched fill (v2 ×2.5 / v3 5.8 m / 
 | v3 − v2 | R² | +0.0414 [+0.0246, +0.0585] | +0.027 / +0.048 / +0.051 / +0.028 | v3 better | yes |
 
 The held-out folds re-select v3's width and option A's scale on the other three cities (criterion (a)) and read
-the held-out city's difference; because the discriminating metrics are scale-invariant apart from the clamps,
-this is close to "all four cities agree", which is what it should be.
+the held-out city's difference. Because the discriminating metrics are scale-invariant apart from the clamps,
+the largest gap between a fold's difference and the same city's in-sample difference, over all 36 cells, is
+0.0118 (v3 − option A on p90/p10); on R² for v3 − option A it is 0.0008. So "holds out of sample" adds almost
+nothing to "all four cities agree" here, and criterion 7's "high" (which needs it) follows from the letter of
+that criterion rather than from an independent test. Every row above that reads one side better has all four
+cities agreeing, so criterion 2's three-of-four clause changed no verdict either.
 
 ### 5.4 Out of sample (question 4)
 
@@ -231,7 +249,12 @@ distribution, so the v3 study's 4.0-8.0 m grid did not truncate it.
 | Annapolis − Richmond | +2.1 m [+1.2, +3.7] | −0.4 m [−0.7, +0.1] |
 
 Under the pre-stated D6 criterion (the band-centre width), the Mapillary width differs from the GSV width, and
-Annapolis from Richmond, so a per-city width is supported, with one city per cell on each side. The v2-matched
+Annapolis from Richmond, so criterion 5's "per city" clause is met, with one city per cell on each side. What
+that shows is narrower than "per provider": the replicates resample panos inside four fixed cities, so the
+intervals carry no between-city variance, and the gap inside Mapillary (Annapolis − Richmond, +2.1 m) is larger
+than the gap between providers (+1.5 m). Both Mapillary cities need a wider context than both GSV cities
+(Richmond, the narrower of the two, 6.4 m [5.8, 6.7] against GSV's 5.3 m [5.1, 5.6]); whether that is the
+provider, the imagery or the cities, this gold cannot say. The v2-matched
 widths do not differ: v3's shape relative to v2's is the same across providers, and it is the ramps' angular
 size, not the rule's shape, that separates them (Annapolis's apron aspect is also the widest, below). The
 Annapolis band-centre width's interval runs to 10.0 m: v3 needs a far wider context there to reach fill 0.36.
@@ -247,7 +270,11 @@ the share of 200 simulations in which criterion 6 reads **g.y better** when g.y 
 | v3 | 0.610 | 0.925 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | ×1.5 |
 
 So at the modelled tilt the test had about even odds of seeing a real g.y advantage, and better than 80% at
-1.5 times it. The configurations:
+1.5 times it. The power step looked one way only. Run both ways after the result (`power_both_ways`, at review),
+at the modelled tilt: with the truth at g.y the test read **r.y better** in 0.0% of 200 simulations for v2 and
+0.0% for v3, and with the truth at r.y it read r.y better in 54.5% (v2) and 69.5% (v3). So a wrong-sign reading
+is not a likely product of noise in this simulation. Its scatter is independent per ramp, while the real
+residuals cluster by pano; the simulation does not model that. The configurations:
 
 | rule | configuration | fill p50 | fill log-sd | fill p90/p10 | R² | clearing | containment | window p50 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -289,13 +316,29 @@ So at the modelled tilt the test had about even odds of seeing a real g.y advant
 | v3 | S-grav − S-rig at beta 1.00 | fill log-sd | +0.0132 [−0.0003, +0.0256] | +0.009 | +0.016 | not distinguishable |
 | v3 | S-grav − S-rig at beta 1.00 | R² | −0.0242 [−0.0482, +0.0024] | −0.018 | −0.030 | not distinguishable |
 
-Criterion 6 reads **r.y better** for v2 and **not distinguishable** for v3; the negated-pose control (S-grav
-against S-neg) is **not distinguishable** for both. The pattern is consistent across every row: g.y and g-.y,
-which sit symmetrically on either side of r.y, are each worse than r.y by about the same amount, so the
-depression that best predicts the apron's angular width on this gold is the rig-frame one. The isotonic
-ceiling says the same without any rule: the best monotone function of depression explains R² 0.833 of the
-GSV aprons' log width at r.y and 0.807 at g.y. For v2 the result holds at beta 0.88 and 1.0 and with click
-noise; for v3 every one of those rows has the same sign and none is distinguishable.
+**As pre-stated.** Criterion 6 reads **r.y better** for v2 and **not distinguishable** for v3; the
+negated-pose control (S-grav against S-neg) is **not distinguishable** for both. For v3 the criteria file's
+reading applies as written: *the gold cannot tell, and the recommendation on #197's prerequisite is to keep
+sizing at the stored y on physical grounds; since g.y against g-.y is also not distinguishable, the gold cannot
+see tilt at all* (under v3). For v2 the criteria pre-stated no reading of "r.y better"; the one in section 7 is
+written after the result.
+
+**After the result, and not pre-stated.** The rest of this subsection was read after the numbers above existed.
+
+- S-neg − S-rig is not a comparison the criteria file defines (it names S-grav against S-rig, and S-grav against
+  S-neg). It was computed by the committed code and is read here as description.
+- Under **v2**, g.y and g-.y, which sit on either side of r.y, are each worse than r.y by similar amounts (fill
+  log-sd +0.0132 and +0.0087, R² −0.0272 and −0.0264). A random-shift check added at review sizes at r.y plus
+  each city's own g.y − r.y shifts reassigned at random with a random sign (500 draws): 30.8% of those draws
+  raise fill log-sd at least as much as S-grav and 43.2% lower R² at least as much. So under v2 S-grav is an
+  ordinary pose-sized perturbation of the sizing y: any such perturbation hurts, the modelled direction no less
+  than a random one. That is consistent with r.y being the right coordinate on this gold.
+- Under **v3** it is not: S-neg is worse than S-grav (fill log-sd +0.0192 against +0.0117, R² −0.0474 against
+  −0.0211), and 77.2% and 89.6% of random shifts are at least as harmful as S-grav. The modelled direction does
+  a little better than a random one: a small hint towards the plan's prior, inside its interval.
+- The isotonic ceiling (descriptive, not a criterion) explains R² 0.833 of the GSV aprons' log width at r.y and
+  0.807 at g.y. For v2 the main result holds at beta 0.88 and 1.0 and with click noise; for v3 every one of
+  those rows has the same sign and none is distinguishable.
 
 Smaller things this arm settles:
 
@@ -379,18 +422,23 @@ four heights cannot be reconciled by fitting; they are four different quantities
 | D1, flip to v3 | Do not flip yet | v3 beats v2 on all three discriminating metrics, out of sample in sign | v3-depth is unscored on the GSV gold (the candidate set is incomplete), option A beats v2 just as clearly, no model metric (PR-B), human metrics in sample | low (criterion 7 caps it) |
 | D2, 5.8 m or 6.0 m | Keep 5.8 m unless the band centre is preferred as a criterion | Criterion-only: each width is inside the other's replicate range | None from data | not a data question |
 | D3, the flag name | No change | The code as it stands (`--sizing-rule {v2,v3,v3-depth}`, `--tilt-correction`) | No experiment bears on it | not a data question |
-| D6, per-city width | Supported for a provider split; do not ship until the floor question is settled | Mapillary − GSV and Annapolis − Richmond band-centre widths differ | No held-out city misses the floor; n = 1 city per cell | moderate |
-| D7, v3 or option A | v3, narrowly | v3 tracks the apron better (R², all four cities, holds out of sample) | Dispersion not distinguishable; option A clears more (77.4% against 75.2% pooled) | high on R² alone; the rest not distinguishable |
-| #197, size at stored or corrected y | Sizing at the corrected (rig) y is what this gold prefers for v2 | Criterion 6: r.y better for v2, same sign for v3; the control and the isotonic ceiling agree | The gold points are pixel-true detections, not PS clicks; the click is modelled; the reason is unexplained | moderate; Jon's call |
+| D6, per-city width | Both Mapillary cities here need a wider context than both GSV cities, and Annapolis more than Richmond; do not ship a per-city or per-provider width on this | Mapillary − GSV and Annapolis − Richmond band-centre widths differ | Four fixed cities, one per cell, so provider, imagery and city are not separable; no held-out city misses the floor | moderate |
+| D7, v3 or option A | v3, narrowly | v3 tracks the apron better (R², all four cities, holds out of sample) | Dispersion not distinguishable; option A clears more (77.4% against 75.2% pooled); R² is a squared correlation, blind to slope; the out-of-sample clause adds little on scale-invariant metrics | high on R² by the letter of criterion 7, moderate in substance; the rest not distinguishable |
+| #197, size at stored or corrected y | v2: the gold prefers the corrected (rig) y. v3: as pre-stated, the gold cannot tell, and cannot see tilt at all; keep sizing at the stored y on physical grounds | v2: criterion 6 reads r.y better | v3 reads not distinguishable, with its control; the gold points are pixel-true detections, not PS clicks; the click is modelled; the v2 reason is unexplained, and the v3 random-shift check leans the other way | moderate for v2; Jon's call |
 
-**The #197 sizing note.** The plan pre-stated a reading only for "not distinguishable" (keep sizing at the stored
-y on physical grounds). The outcome is the opposite of the physical prior: on this gold the rig-frame depression
-predicts the apron better than the modelled gravity-frame depression. One untested explanation is that the
-road, the sidewalk and the car tilt together (a street's grade and cross-slope tilt the rig, and the ground
-under a nearby ramp shares that slope), so distance follows the rig frame more closely than gravity. If that
-is right, `--tilt-correction` should size at the corrected y as well as centre on it. It is not adopted here:
-production keeps sizing at the stored y (J7) until Jon decides, and a test on real PS clicks (the tilt study's
-S4 had 14 pairs where its design needed 30) would settle it.
+**The #197 sizing note.** The criteria pre-stated a reading only for "not distinguishable": keep sizing at the
+stored y on physical grounds, and if the negated-pose control is also not distinguishable, say the gold cannot
+see tilt at all. That is v3's outcome, and it is v3's answer: on this gold, under v3, sizing at the corrected y
+cannot be told from sizing at the stored y, and the stored y stays. v2's outcome is the one the criteria did
+not anticipate: the rig-frame depression predicts the apron better than the modelled gravity-frame depression,
+against the physical prior. The reading of it that follows is written after the result. Untested explanations
+for why r.y might win: the road, the sidewalk and the car tilt together (a street's grade and cross-slope tilt
+the rig, and the ground under a nearby ramp shares that slope), so distance follows the rig frame more closely
+than gravity; and the apron and the window are both measured in equirectangular pixels, whose horizontal
+stretch, 1/cos(elevation) in the rig frame, follows r.y by construction (a smaller term, not quantified here).
+If the first is right, `--tilt-correction` under v2 should size at the corrected y as well as centre on it. It
+is not adopted here: production keeps sizing at the stored y (J7) until Jon decides, and a test on real PS
+clicks (the tilt study's S4 had 14 pairs where its design needed 30) would settle it.
 
 **Sequencing for #84.** Nothing here asks for a re-cut. If D1, D7, D6 or the #197 sizing change is taken, it
 should ride #84's single pass with the tilt correction and the metadata re-export, after v3-depth has been
@@ -398,8 +446,23 @@ scored on the GSV gold, so that the rule is chosen once.
 
 ## 8. Deviations and wrong turns
 
-- **The plan's physical prior for the tilt arm was wrong on this gold.** The criteria did not pre-state what
-  "r.y better" would mean for #197; the reading above is written after the result and is labelled so.
+- **The plan's physical prior for the tilt arm was wrong on this gold for v2.** The criteria did not pre-state
+  what "r.y better" would mean for #197; the reading above is written after the result and is labelled so.
+- **Review 1 of PR #254 corrected four readings in the first version of this report (head `cdca833`).** (1) It
+  did not apply criterion 6's pre-stated reading to v3, whose outcome is exactly the pre-stated case ("not
+  distinguishable", control also not distinguishable); it read v3 as "the same direction" and used the
+  undistinguishable control as support for r.y without saying that this re-purposes the control after the
+  result. The criteria file is unchanged; the report now applies the reading as written and labels the rest.
+  (2) It said g.y and g-.y were "each worse than r.y by about the same amount" across every row; that holds for
+  v2 and not for v3, where the negated pose is 1.6 to 2.2 times as bad, and it leaned on S-neg − S-rig, which the
+  criteria do not define. (3) It rated D7 "high" without saying the out-of-sample clause adds almost nothing on
+  scale-invariant metrics. (4) It called the D6 result "per provider", a unit four fixed cities cannot resolve.
+  The random-shift check, the both-ways power check, the E14 fit on the gold panos and the fold-gap figure were
+  added at review, after the result.
+- **The snapshot redaction committed the path it removed.** The first version wrote the removed absolute path into
+  `provenance.json` and the script, and the leak test could not see it (JSON doubles a backslash). Both now hold
+  a pattern and the removed string's sha256; the test reads decoded JSON too. The path stays in the history of
+  this branch; it was not rewritten.
 - **The planner's pilot and this report quote the tilt shift differently.** The pilot used interpolated
   percentiles (`np.percentile`); this study uses nearest rank, so São Paulo's |dy| p90 reads 2.582° in the
   artifact against the pilot's 2.64°, and the share of windows moving by more than 10% is pooled over both
