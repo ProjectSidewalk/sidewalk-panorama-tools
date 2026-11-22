@@ -1,0 +1,2 @@
+sao_paulo 119 |dy| deg p50/p90/max [0.79 2.64 4.03] v2 window ratio (gravity-y / rig-y) p10/p90 [0.907 1.121] v3 [0.896 1.138] share moved >10% v2 0.21 v3 0.277
+paterson 109 |dy| deg p50/p90/max [1.24 2.59 4.09] v2 window ratio (gravity-y / rig-y) p10/p90 [0.915 1.116] v3 [0.886 1.131] share moved >10% v2 0.22 v3 0.303

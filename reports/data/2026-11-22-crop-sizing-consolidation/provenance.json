@@ -1,0 +1,139 @@
+{
+ "extracts": {
+  "PLAN-crop-clarity.working-notes-2c46e7f.md": {
+   "bytes": 40807,
+   "sha256": "fa6d858da275913c936a22899cff19be440ba17657c04ed33c9de38d9dd6cd5b"
+  },
+  "crop_window_eval_annapolis.json": {
+   "bytes": 46097,
+   "sha256": "e27e458357b709a54d764b0ec15cb933ac5932452d192c57ec5babc7acfa73d4"
+  },
+  "crop_window_eval_paterson.json": {
+   "bytes": 45884,
+   "sha256": "b2b9c8898cd7b243386a19da99054d365854b8d62f9632e7ae6c218ead9423c6"
+  },
+  "crop_window_eval_richmond.json": {
+   "bytes": 46517,
+   "sha256": "9b4693b04670f7b084ded1c847641dc4ba0e7556be535a15f3585153cb5b6a16"
+  },
+  "crop_window_eval_sao_paulo.json": {
+   "bytes": 42485,
+   "sha256": "609bd0d7327cbec28cd4b7537778bd7103cad8a76583684e349a267d221df9da"
+  },
+  "gold.csv": {
+   "bytes": 91064,
+   "sha256": "b52a5a76abf8787ce4a63e809271a80c432116afde99b0069da8d8c876939a7d"
+  },
+  "pano_tilt_validation_gsv_gold_panos.json": {
+   "bytes": 53504,
+   "sha256": "72637d70447676c13523d860d0e8de6928b2cd77a5eaa993d023cee4f5f6b394"
+  },
+  "pano_tilt_validation_summary.json": {
+   "bytes": 20671,
+   "sha256": "0372ded2fe70538262730202c21d7ed981f1c762f21c748fd157992c71a965b6"
+  }
+ },
+ "generated_by": "python reports/scripts/crop_sizing_consolidation.py extract --rampnet <RampNet> --labeler <sidewalk-auto-labeler> --out reports/data/2026-11-22-crop-sizing-consolidation",
+ "gold_rows": 705,
+ "labeler_commit": "2c46e7f510f017811c8fccd82d0fd17dbc8c774f",
+ "not_copied": "the pano records' attribution fields, which stay in RampNet",
+ "rampnet_commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+ "snapshot_redactions": [
+  {
+   "from": "D:\\Git\\RampNet\\benchmark",
+   "to": "<RampNet>\\benchmark"
+  }
+ ],
+ "sources": [
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/richmond/boxes.json",
+   "repo": "RampNet",
+   "sha256": "f6b7f73ca5024dff5a82b1be92a4dea391f35efdf24ec3f96e3454d2dcc6293b"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/sao_paulo/boxes.json",
+   "repo": "RampNet",
+   "sha256": "236fffa0f1e691ec2bd76ad4526e7fc17a5463b1eaecfce486a3239d9c474efd"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/paterson/boxes.json",
+   "repo": "RampNet",
+   "sha256": "0a3f166dd782161930f549a43d3f9331c24006a8480f7ddbe9f926f16a16fff1"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/annapolis/boxes.json",
+   "repo": "RampNet",
+   "sha256": "a5ff1a75b6bbe87cfdc586155e1b280ffa84ccff48fb0edf3da8cc08acb3456f"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/richmond/records.jsonl",
+   "repo": "RampNet",
+   "sha256": "8b0669d694bd51b0e8b44ed88e4477626eb1a559f6869625c6d2d56ef950ebe9"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/sao_paulo/records.jsonl",
+   "repo": "RampNet",
+   "sha256": "c483538442d84a6e29b765d9e897253e833839f240d36af84dc82c69ed1c6b90"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/paterson/records.jsonl",
+   "repo": "RampNet",
+   "sha256": "363dba08d49d60ce9d9322115c89b27f450b35cd74598f127b261ab321979096"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "benchmark/annapolis/records.jsonl",
+   "repo": "RampNet",
+   "sha256": "4ba644a42d0baebf5a9f446650832b38bb0a7dfbbd864b1724dbf24191019cb7"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/crop_window_eval_richmond.json",
+   "repo": "RampNet",
+   "sha256": "9b4693b04670f7b084ded1c847641dc4ba0e7556be535a15f3585153cb5b6a16"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/crop_window_eval_sao_paulo.json",
+   "repo": "RampNet",
+   "sha256": "609bd0d7327cbec28cd4b7537778bd7103cad8a76583684e349a267d221df9da"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/crop_window_eval_paterson.json",
+   "repo": "RampNet",
+   "sha256": "b2b9c8898cd7b243386a19da99054d365854b8d62f9632e7ae6c218ead9423c6"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/crop_window_eval_annapolis.json",
+   "repo": "RampNet",
+   "sha256": "e27e458357b709a54d764b0ec15cb933ac5932452d192c57ec5babc7acfa73d4"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/pano_tilt/validation_summary.json",
+   "repo": "RampNet",
+   "sha256": "0372ded2fe70538262730202c21d7ed981f1c762f21c748fd157992c71a965b6"
+  },
+  {
+   "commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
+   "path": "analysis_out/pano_tilt/validation_gsv.json",
+   "repo": "RampNet",
+   "sha256": "91b2a7eb483bc392ba148db6d5757c5aebf05f90fa8c02b0cd6505b925167cbe"
+  },
+  {
+   "commit": "2c46e7f510f017811c8fccd82d0fd17dbc8c774f",
+   "path": "PLAN-crop-clarity.md",
+   "repo": "sidewalk-auto-labeler",
+   "sha256": "ea2c8c02dd09960d735de7b2ab8942a0506f259773f6776cc3724ff2ef0770b3"
+  }
+ ]
+}

@@ -11,3 +11,6 @@ reports/data/2026-08-09-photometa-census.json -text
 reports/data/2026-08-12-crop-corpus-gsv.csv.gz -text
 # Pinned by sha256 in tests/test_geometry.py: a byte-for-byte copy of RampNet's validation sample.
 tests/fixtures/rampnet_crop_cutter/* -text
+# The #186 consolidation's extract (#186): provenance.json pins every file by sha256, and the study and its
+# RAMPNET_ROOT-gated test compare them by bytes, so git must never normalise their line endings.
+reports/data/2026-11-22-crop-sizing-consolidation/** -text

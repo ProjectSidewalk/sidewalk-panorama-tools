@@ -1,0 +1,3 @@
+control rows 2182 committed 0.354457 sk-from-probs 0.352746 sk-from-logits 0.354457 rows with p in {0,1} on the wrong side 87 logit missing 0
+fov25 rows 2182 committed 0.349421 sk-from-probs 0.348075 sk-from-logits 0.349421 rows with p in {0,1} on the wrong side 59 logit missing 0
+fov90 rows 2182 committed 0.280352 sk-from-probs 0.27757 sk-from-logits 0.280352 rows with p in {0,1} on the wrong side 150 logit missing 0
