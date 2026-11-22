@@ -741,7 +741,7 @@ deployed has 18 fields. Field 20 was added by [#182](https://github.com/ProjectS
 | 17 | depth phase duration | |
 | 18 | total run duration | |
 | 19 | depth corpus size | the number of GSV panos the depth phase was given — the denominator for the backfill's progress, which nothing else in the row carries (field 16 says how many are resolved, not out of how many). Known before either phase runs, so it is present on a crashed run too; blank only on a row written before it was counted (the timestamp-only rows: a run that died in the pano-list fetch or between it and the phases, a `pano-schema-drift` stop, which fetched the list but ran neither phase, and a stop just before the count — see [Blank fields mark a crashed or stopped run](#blank-fields-mark-a-crashed-or-stopped-run)) and on every row older than the field. Written whether or not depth ran, so a `--skip-depth` or stood-down run reads `0,0,0,0,0,K` — five zeros and the work still waiting. A `0` here is not a corpus: it is what an empty or source-less pano-list answer writes, and the analyzer refuses it in favour of an earlier row rather than reporting the city as having no GSV panos |
-| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why the analyzer's rule waited for a 25-night fleet read before reading it. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#a-steady-set-of-raisers-and-what-field-20-was-needed-for) reads it: a steady set of at least 3 on each of 7 nights (the most of a night's passes) is a WARNING |
+| 20 | image attempts raised this run | unledgered, so retried next run — mostly transient, though some raise on every run (a [retired Mapillary image](#when-the-image-phase-stops-trusting-a-source)), which is why the analyzer's rule waited for a 25-night fleet read before reading it. The per-run number field 9 cannot give (field 9 is prior + tonight, permanent + transient). A GSV push-back counts; a frame disagreement does not (it is Google answering), nor does a [retired pano beside a kept original](#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records) (switched off), nor a skip — the same count `images-no-success` reads. Store mode writes its unpulled count (absent, truncated, unplaced, unsafe id), since it ledgers no permanent verdict. Blank when the image phase did not finish, and on every row older than the field ([#182](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/182)). The [log analyzer](log-analyzer.md#a-steady-set-of-raisers-and-what-field-20-was-needed-for) reads it: a steady set of at least 3 on each of 7 nights (the most of a night's passes) is a WARNING |
 
 `LOG_CSV_FIELD_COUNT` in `DownloadRunner.py` and `LOG_COLUMNS` in `log_analyzer/analyze.py` must move
 together; a test asserts they do.
@@ -927,9 +927,19 @@ regenerate the copy from; nothing does that automatically.
 An original that cannot be used (unreadable, not whole, not larger than the app's frame at its aspect) is left
 untouched with one `WARNING` on both channels, and the pano is refused as a frame disagreement naming the file.
 With the switch on, a pano Google no longer serves at all is never ledgered `0` while an original sits beside
-it: it raises `KeptOriginalError` naming the file, unledgered, every run, until someone decides (the orphan,
-below). Nothing re-checks a `.native` after it is written, and the whole-file check recovery runs (the same as
-for any found file, #239) cannot see damaged scan data under an intact header and end marker.
+it: it raises `KeptOriginalRetiredError` naming the file, unledgered, and **every run fails the night** through
+the same `served-larger-kept` condition until someone repairs the orphan (below). The pano's own `WARNING`s
+name the full path; the end-of-phase line is
+
+```
+IMAGEDOWNLOAD: WARNING - 1 retired GSV pano(s) beside a kept original no copy can be made from (served-larger-kept condition); not ledgered, retried next run. See docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records
+```
+
+and the condition's detail reads `1 retired pano(s) beside a kept original no copy can be made from; first:
+<pano_id>.native` (after the kept panos' half when there are both). Google answered, so it counts as an answer,
+like a frame disagreement: not in `log.csv` field 20, and never `images-no-success`. Nothing re-checks a `.native`
+after it is written, and the whole-file check recovery runs (the same as for any found file, #239) cannot see
+damaged scan data under an intact header and end marker.
 
 **The other tools.** `downscale_panos.py`, `scan_black_bands.py` and `verify_store.py` judge `<pano_id>.jpg`
 only, never the original. `verify_store.py --quarantine` moves the `.jpg` and its display copy and **leaves the
@@ -939,14 +949,27 @@ the pano nightly while Google serves it, and ledgers it `0` once Google retires 
 `refetch_panos.py` refuses a pano with an original at zero requests (`kept_original`). `--from-store` pulls
 `<pano_id>.jpg` by name, so a collaborator gets the copy only. The cropper reads `<pano_id>.jpg`.
 
-**The orphan, and its repair.** An original with no copy. Two kinds, told apart by `jpeg_dimensions` of the
-`.native` against the app's current frame:
+**The orphan, and its repair.** An original with no copy. First look the id up in the city's ledger
+(`grep '^<pano_id>,' pano_id_log.csv`): a run reaches only a pano with **no row**. A `0` row is what a switch-off
+period leaves once Google retires the pano (the table above), and while it stands no run looks at the pano again,
+switch or no switch. Delete that row outside the nightly window, as for any false `downloaded=0` row (a true one
+costs only a re-attempt). Then two kinds, told apart by `jpeg_dimensions` of the `.native` against the app's
+current frame:
 
 * **Larger than the app's frame** (the common one: a run died between the two writes, or a quarantine took the
   copy, and the app's record is still the small one). With the switch on, the next run rebuilds the copy at zero
   requests; so if the switch is off, turn it on for one more run, let it rebuild, then turn it off.
-* **Equal to the app's frame** (the record has since been corrected). Recovery will not use it; copy it to
-  `<pano_id>.jpg` by hand. Any other size: leave both files alone and ask.
+* **Equal to the app's frame** (the record has since been corrected). Recovery will not use it; copy it by hand,
+  outside the nightly window, to a temporary name and move it into place without replacing anything, so a run
+  never meets a half-written `<pano_id>.jpg` and a file that appeared meanwhile is kept:
+
+  ```bash
+  cp <pano_id>.native <pano_id>.hand-copy && mv -n <pano_id>.hand-copy <pano_id>.jpg
+  ls <pano_id>.hand-copy 2>/dev/null && echo 'not moved: a <pano_id>.jpg is already there; leave both and ask'
+  ```
+
+  The next run finds it with no row, checks it as a found file (#239) and ledgers it `1` with a blank stamp.
+  Any other size: leave both files alone and ask.
 
 **Before turning the switch off again.** The rebuild of a lost copy is gated by the switch too, so first list
 every original and confirm each has its copy, and run the same check again after any `verify_store.py
