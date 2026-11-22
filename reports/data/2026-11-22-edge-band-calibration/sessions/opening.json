@@ -1,0 +1,193 @@
+{
+ "abort_reason": null,
+ "baseline_per100_s": {},
+ "children": [
+  {
+   "active_s": 8.0,
+   "bytes": 149181813,
+   "city": "bayonne-fr",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 98
+   },
+   "rows": 98,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 98,
+    "current": 0,
+    "examined": 98,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 1.0,
+   "bytes": 86898262,
+   "city": "goiania-br",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 9
+   },
+   "rows": 9,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 9,
+    "current": 0,
+    "examined": 9,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 7.0,
+   "bytes": 430499327,
+   "city": "beringen-be",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 49
+   },
+   "rows": 49,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 49,
+    "current": 0,
+    "examined": 49,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 56.0,
+   "bytes": 2884927163,
+   "city": "newport-ky",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 257
+   },
+   "rows": 257,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 257,
+    "current": 0,
+    "examined": 257,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 125.1,
+   "bytes": 6407029423,
+   "city": "clifton-nj",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 588
+   },
+   "rows": 588,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 588,
+    "current": 0,
+    "examined": 588,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 122.1,
+   "bytes": 5900654597,
+   "city": "blackhawk-hills-il",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 609
+   },
+   "rows": 609,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 609,
+    "current": 0,
+    "examined": 609,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 121.1,
+   "bytes": 4669500505,
+   "city": "la-piedad-old",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 619
+   },
+   "rows": 619,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 619,
+    "current": 0,
+    "examined": 619,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 159.1,
+   "bytes": 7678370986,
+   "city": "fort-wayne-in",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 695
+   },
+   "rows": 695,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 695,
+    "current": 0,
+    "examined": 695,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 103.1,
+   "bytes": 4784898704,
+   "city": "hackensack-nj",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 491
+   },
+   "rows": 491,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 491,
+    "current": 0,
+    "examined": 491,
+    "failed": 0,
+    "unreached": 267
+   }
+  }
+ ],
+ "children_alive_after_term": [],
+ "end_utc": "2026-11-22T17:06:18Z",
+ "rate_cap_bytes_per_s": 60000000.0,
+ "readers": 1,
+ "session": "opening",
+ "start_utc": "2026-11-22T16:54:18Z",
+ "stop_reason": "deadline (a child reached its --max-runtime)"
+}
