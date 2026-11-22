@@ -109,6 +109,11 @@ POWER_BOOT = 500
 POWER_MULTIPLIERS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 POWER_TARGET = 0.80
 POWER_FILL0 = 0.371                           # v2's pooled fill p50 in the v3 artifact; cancels in the metrics
+# Added after the result, at review (PR #254 review 1): seeds of the two post-hoc checks of the tilt arm.
+SHIFT_CONTROL_SEED = 1863
+SHIFT_CONTROL_DRAWS = 500
+BOTH_WAYS_SEED = 1864
+POST_HOC = 'added after the criteria and after the result, at review (PR #254 review 1, finding %d); not pre-stated'
 WIDE_WIDTH_GRID = [round(3.0 + 0.1 * i, 1) for i in range(91)]
 SCALE_GRID = [round(1.0 + 0.05 * i, 2) for i in range(101)]
 
@@ -734,6 +739,27 @@ def ceiling_block(ramps, W):
     return point, intervals
 
 
+def holds_out_of_sample(pooled, folds):
+    """The criteria file's "holds out of sample": every held-out fold's difference has the pooled one's sign
+    (a fold at exactly 0, or undefined, does not hold)."""
+    return all(d is not None and d != 0 and (d > 0) == (pooled > 0) for d in folds.values())
+
+
+def misses_floor(clearing_interval):
+    """Criterion 5: the held-out city's 95% clearing interval lies wholly below the floor (its UPPER end)."""
+    return clearing_interval[1] is not None and clearing_interval[1] < CLEARING_FLOOR
+
+
+def in_band(fill_p50):
+    """The point estimate of fill p50 lies in the forced-choice band, both ends included."""
+    return BAND[0] <= fill_p50 <= BAND[1]
+
+
+def per_city_supported(band_block):
+    """Criterion 5: per city only if the provider difference holds AND Annapolis differs from Richmond."""
+    return bool(band_block['mapillary_minus_gsv']['differs'] and band_block['annapolis_minus_richmond']['differs'])
+
+
 def paired_block(point, replicates, loco_folds):
     out = {}
     for name, first, second in PAIRS:
@@ -750,8 +776,10 @@ def paired_block(point, replicates, loco_folds):
                 entry['verdict'] = paired_verdict(pooled, entry['interval'], list(cities.values()), better, 3)
                 folds = loco_folds[name][metric]
                 entry['out_of_sample'] = {
-                    'folds': folds,
-                    'holds': all(d is not None and d != 0 and (d > 0) == (pooled > 0) for d in folds.values())}
+                    'folds': folds, 'holds': holds_out_of_sample(pooled, folds),
+                    # How far each held-out fold sits from the same city's in-sample difference: on these
+                    # scale-invariant metrics the fold barely differs from it (review 1 of PR #254, finding 4).
+                    'max_gap_to_in_sample': num(max(abs(folds[c] - cities[c]) for c in CITIES))}
             else:
                 entry['ranks_nothing'] = True
             metrics[metric] = entry
@@ -781,9 +809,9 @@ def loco_block(ramps, W):
             clearing_iv = _interval(reps['frac_clearing_too_tight'])
             rows[label] = {'family': spec[0], 'constant': constant, 'cross_validated': cross_validated,
                            'clearing': pm['frac_clearing_too_tight'], 'clearing_interval': clearing_iv,
-                           'misses_floor': clearing_iv[1] is not None and clearing_iv[1] < CLEARING_FLOOR,
+                           'misses_floor': misses_floor(clearing_iv),
                            'fill_p50': pm['fill_p50'], 'fill_p50_interval': _interval(reps['fill_p50']),
-                           'in_band': BAND[0] <= pm['fill_p50'] <= BAND[1],
+                           'in_band': in_band(pm['fill_p50']),
                            'fill_log_sd': pm['fill_log_sd'], 'fill_p90_over_p10': pm['fill_p90_over_p10'],
                            'r2': pm['r2']}
             return pm
@@ -861,8 +889,7 @@ def d6_block(ramps, W):
             block[label] = {'point': num(round(point[a] - point[b], 1)), 'interval': iv,
                             'differs': iv[0] is not None and (iv[0] > 0 or iv[1] < 0)}
         out[criterion] = block
-    out['per_city_supported'] = bool(out['band']['mapillary_minus_gsv']['differs']
-                                     and out['band']['annapolis_minus_richmond']['differs'])
+    out['per_city_supported'] = per_city_supported(out['band'])
     return out
 
 
@@ -908,9 +935,12 @@ def compare_configs(ramps, W, first_boxes, second_boxes, metrics=TILT_METRICS, m
 
 
 def power_simulation(ramps, spec, sigma_by_city, multipliers=POWER_MULTIPLIERS, n_sims=POWER_SIMS,
-                     n_boot=POWER_BOOT, seed=POWER_SEED, beta=BETA_PRIMARY, fill0=POWER_FILL0):
+                     n_boot=POWER_BOOT, seed=POWER_SEED, beta=BETA_PRIMARY, fill0=POWER_FILL0, truth='g',
+                     count_verdicts=False):
     """Power of criterion 6's test (S-grav against S-rig), on the ramps' real points, poses and pano sizes with
-    synthetic aprons: window width at g_m.y times fill0 times exp(sigma_city z). Reads no apron field."""
+    synthetic aprons: window width at g_m.y (truth 'g') or at r.y (truth 'r') times fill0 times
+    exp(sigma_city z). Reads no apron field. `count_verdicts` adds each row's tally of the three verdicts (the
+    post-hoc both-ways check); the defaults are the committed power-first run, unchanged."""
     noise = random.Random(seed)
     W = pano_bootstrap_weights(ramps, n_boot, seed + 1).astype(float)
     cities = sorted({r['city'] for r in ramps})
@@ -923,9 +953,10 @@ def power_simulation(ramps, spec, sigma_by_city, multipliers=POWER_MULTIPLIERS, 
         sizes = config_size_ys(ramps, 'S-grav', beta, multiplier=m) if m != 0 else [r['y'] for r in ramps]
         grav_w = np.array([cut_box(r, spec, size_y=s).width for r, s in zip(ramps, sizes)], float)
         hits = 0
+        tally = {'g.y better': 0, 'r.y better': 0, 'not distinguishable': 0}
         for _ in range(n_sims):
             z = np.array([noise.gauss(0.0, 1.0) for _ in ramps])
-            apron = grav_w * fill0 * np.exp(sigma * z)
+            apron = (grav_w if truth == 'g' else rig_w) * fill0 * np.exp(sigma * z)
             log_apron = np.log(apron / pano_w * 360.0)
             verdicts = {}
             for metric in TILT_METRICS:
@@ -942,8 +973,12 @@ def power_simulation(ramps, spec, sigma_by_city, multipliers=POWER_MULTIPLIERS, 
                     city_d.append(float(stat(grav_w, mask)[0] - stat(rig_w, mask)[0]))
                 verdicts[metric] = paired_verdict(point, nearest_rank_interval(reps), city_d,
                                                   DISCRIMINATING[metric], len(cities))
-            hits += tilt_rule_verdict(verdicts) == 'g.y better'
+            verdict = tilt_rule_verdict(verdicts)
+            hits += verdict == 'g.y better'
+            tally[verdict] += 1
         rows.append({'multiplier': m, 'power': num(hits / n_sims), 'n_sims': n_sims})
+        if count_verdicts:
+            rows[-1]['verdicts'] = tally
     reached = [row['multiplier'] for row in rows if row['power'] >= POWER_TARGET]
     return {'rows': rows, 'mde_multiplier': min(reached) if reached else None, 'target_power': POWER_TARGET,
             'n_boot': n_boot, 'seed': seed, 'beta': beta, 'fill0': fill0,
@@ -962,6 +997,88 @@ def power_block(gsv_ramps):
     blind = [{k: v for k, v in r.items() if k not in ('box_w', 'box_h', 'box_cx', 'box_cy', 'norm')}
              for r in gsv_ramps]
     return {name: power_simulation(blind, spec, committed_sigma(name)) for name, spec in TILT_RULES.items()}
+
+
+def power_both_ways_block(gsv_ramps):
+    """Post hoc (finding 7): at the modelled tilt, how often criterion 6 reads each verdict when the truth is
+    the window at g.y, and when it is the window at r.y. The second row is the chance of a wrong-sign reading."""
+    blind = [{k: v for k, v in r.items() if k not in ('box_w', 'box_h', 'box_cx', 'box_cy', 'norm')}
+             for r in gsv_ramps]
+    out = {'post_hoc': POST_HOC % 7, 'multiplier': 1.0, 'n_sims': POWER_SIMS, 'n_boot': POWER_BOOT,
+           'seed': BOTH_WAYS_SEED, 'scatter': 'independent per ramp (the real residuals cluster by pano)'}
+    for name, spec in TILT_RULES.items():
+        out[name] = {}
+        for truth in ('g', 'r'):
+            run = power_simulation(blind, spec, committed_sigma(name), multipliers=(1.0,), seed=BOTH_WAYS_SEED,
+                                   truth=truth, count_verdicts=True)
+            tally = run['rows'][0]['verdicts']
+            out[name]['truth_%s_y' % truth] = {k: num(v / POWER_SIMS) for k, v in tally.items()}
+    return out
+
+
+def random_shift_control(gsv_ramps, spec, seed=SHIFT_CONTROL_SEED, n_draws=SHIFT_CONTROL_DRAWS, beta=BETA_PRIMARY):
+    """Post hoc (finding 3): size at r.y plus each city's own g.y - r.y shifts (in degrees), reassigned at random
+    among its ramps with a random sign, centre at r. How often is such a shift at least as harmful as S-grav's
+    (and as S-neg's) on fill log-sd and R²? Returns shares, so the modelled direction is read against random
+    directions of the same sizes."""
+    rng = random.Random(seed)
+    ones = np.ones((1, len(gsv_ramps)))
+
+    def stats(boxes):
+        a = ramp_arrays(gsv_ramps, boxes)
+        return float(_wsd(a['log_fill'], ones)[0]), float(_wr2(a['log_window'], a['log_apron'], ones)[0])
+
+    rig = stats(tilt_boxes(gsv_ramps, spec, 'S-rig', beta=beta))
+    grav = stats(tilt_boxes(gsv_ramps, spec, 'S-grav', beta=beta))
+    neg = stats(tilt_boxes(gsv_ramps, spec, 'S-neg', beta=beta))
+    gy = config_size_ys(gsv_ramps, 'S-grav', beta)
+    shift = [CropRunner.elevation_px_to_deg(g - r['y'], r['pano_h']) for r, g in zip(gsv_ramps, gy)]
+    by_city = {}
+    for j, r in enumerate(gsv_ramps):
+        by_city.setdefault(r['city'], []).append(j)
+    draws = []
+    for _ in range(n_draws):
+        new = list(shift)
+        for city in sorted(by_city):
+            idx = by_city[city]
+            vals = [shift[j] for j in idx]
+            rng.shuffle(vals)
+            for j, v in zip(idx, vals):
+                new[j] = v * rng.choice((-1.0, 1.0))
+        boxes = [cut_box(r, spec, size_y=r['y'] + CropRunner.elevation_deg_to_px(d, r['pano_h']))
+                 for r, d in zip(gsv_ramps, new)]
+        draws.append(stats(boxes))
+    d_sd = [d[0] - rig[0] for d in draws]
+    d_r2 = [d[1] - rig[1] for d in draws]
+    return {'n_draws': n_draws, 'seed': seed,
+            'random_minus_rig_fill_log_sd_mean': num(sum(d_sd) / n_draws),
+            'random_minus_rig_r2_mean': num(sum(d_r2) / n_draws),
+            'share_at_least_as_harmful_as_grav': {'fill_log_sd': num(sum(x >= grav[0] - rig[0] for x in d_sd) / n_draws),
+                                                  'r2': num(sum(x <= grav[1] - rig[1] for x in d_r2) / n_draws)},
+            'share_at_least_as_harmful_as_neg': {'fill_log_sd': num(sum(x >= neg[0] - rig[0] for x in d_sd) / n_draws),
+                                                 'r2': num(sum(x <= neg[1] - rig[1] for x in d_r2) / n_draws)},
+            'share_better_than_rig': {'fill_log_sd': num(sum(x < 0 for x in d_sd) / n_draws),
+                                      'r2': num(sum(x > 0 for x in d_r2) / n_draws)}}
+
+
+def e14_gold_block(data_dir=DATA_DIR):
+    """Post hoc (finding 7): E14 on the 70 GSV gold panos themselves, from the committed validation rows: a
+    least-squares line of image-measured on record pitch and roll, its correlation, and the mean absolute
+    error of the two-axis difference."""
+    with open(os.path.join(data_dir, TILT_ROWS), encoding='utf-8') as f:
+        rows = json.load(f)['rows']
+    status = {}
+    for r in rows:
+        status[r['status']] = status.get(r['status'], 0) + 1
+    use = [r for r in rows if r.get('pitch_deg') is not None and r.get('google_pitch_deg') is not None]
+    rec_p = np.array([r['google_pitch_deg'] for r in use], float)
+    rec_r = np.array([float(pano_pose.wrap_deg(r['google_roll_deg'])) for r in use])
+    mea_p = np.array([r['pitch_deg'] for r in use], float)
+    mea_r = np.array([float(pano_pose.wrap_deg(r['roll_deg'])) for r in use])
+    return {'post_hoc': POST_HOC % 7, 'n_rows': len(rows), 'status': dict(sorted(status.items())), 'n_fitted': len(use),
+            'slope_pitch': num(np.polyfit(rec_p, mea_p, 1)[0]), 'slope_roll': num(np.polyfit(rec_r, mea_r, 1)[0]),
+            'r_pitch': num(np.corrcoef(rec_p, mea_p)[0, 1]), 'r_roll': num(np.corrcoef(rec_r, mea_r)[0, 1]),
+            'mae_deg': num(float(np.mean(np.hypot(rec_p - mea_p, rec_r - mea_r))))}
 
 
 def tilt_block(gsv_ramps, W_gsv):
@@ -1009,6 +1126,9 @@ def tilt_block(gsv_ramps, W_gsv):
             'off_minus_grav_containment': dict(off['containment'], model_conditional=True),
             'beta_sensitivity_grav_minus_rig': beta_rows,
             'share_window_moves_over_10pct': num(sum(1 for q in ratio if abs(q - 1) > 0.10) / len(ratio)),
+            'neg_minus_rig_note': 'not a comparison the criteria file defines (it names S-grav against S-rig and '
+                                  'S-grav against S-neg); computed by the committed code, read after the result',
+            'random_shift_control': dict(random_shift_control(gsv_ramps, spec), post_hoc=POST_HOC % 3),
         }
     return out
 
@@ -1097,7 +1217,7 @@ def gzip_bytes(raw):
 
 GOLD_KEYS = ('gold', 'reproduction', 'rules', 'rule_intervals', 'ceiling', 'ceiling_intervals', 'paired',
              'loco', 'selection_bootstrap', 'd6', 'shape', 'selection_at_gy')
-GSV_KEYS = ('tilt', 'power')
+GSV_KEYS = ('tilt', 'power', 'power_both_ways', 'e14_gold_panos')
 NO_POSE_KEYS = ('no_pose',)
 CENSUS_KEYS = ('label_types',)
 NO_POPULATION_KEYS = ('constants', 'camera_heights')
@@ -1131,7 +1251,7 @@ def _canonical(path):
     return os.path.relpath(absolute, REPO_ROOT).replace(os.sep, '/') if inside else '<outside the repo>'
 
 
-def build_summary(ramps, rows, n_boot=N_BOOT, power=None):
+def build_summary(ramps, rows, n_boot=N_BOOT, power=None, data_dir=DATA_DIR):
     pooled_v2 = v2_fill_p50(ramps)
     W = pano_bootstrap_weights(ramps, n_boot, BOOT_SEED)
     boxes_by_rule = {name: [cut_box(r, spec) for r in ramps] for name, spec in RULES.items()}
@@ -1175,6 +1295,8 @@ def build_summary(ramps, rows, n_boot=N_BOOT, power=None):
         'selection_at_gy': selection_at_gy_block(ramps),
         'power': power if power is not None else power_block(gsv_ramps),
         'tilt': tilt_block(gsv_ramps, W[:, gsv_mask]),
+        'power_both_ways': power_both_ways_block(gsv_ramps),
+        'e14_gold_panos': e14_gold_block(data_dir),
         'no_pose': {'n': int((~gsv_mask).sum()), 'cities': sorted({r['city'] for r in ramps if r['provider'] != 'gsv'}),
                     'why': 'Mapillary records carry no pose; production files such a label as no_pose under '
                            '--tilt-correction'},
@@ -1557,7 +1679,7 @@ def main(argv=None):
             print('wrote %s' % _canonical(args.write))
         return 0
 
-    summary, boxes_by_rule, gsv_ramps = build_summary(ramps, rows, n_boot=args.boot)
+    summary, boxes_by_rule, gsv_ramps = build_summary(ramps, rows, n_boot=args.boot, data_dir=args.data)
     summary['meta'] = {'criteria_file': CRITERIA_FILE, 'criteria_commit': CRITERIA_COMMIT,
                        'inputs_sha256': input_hashes(args.data),
                        'generated_by': 'python reports/scripts/crop_sizing_consolidation.py study%s%s%s' % (

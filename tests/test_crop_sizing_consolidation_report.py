@@ -388,6 +388,175 @@ class TestStudyLogic:
         assert out['mde_multiplier'] == 4.0
 
 
+def _gsv_ramps(n_per_city=24, panos_per_city=8, seed=4, max_tilt=3.0, depressions=(2, 22)):
+    rng = random.Random(seed)
+    out = []
+    for city in ('sao_paulo', 'paterson'):
+        for i in range(n_per_city):
+            out.append(ramp(depression=rng.uniform(*depressions), bearing=rng.uniform(-180, 180),
+                            pitch=rng.uniform(-max_tilt, max_tilt), roll=rng.uniform(-max_tilt, max_tilt), city=city,
+                            pano_id='%s%d' % (city, i % panos_per_city), key='det:%d' % i,
+                            box_w=rng.uniform(80, 600)))
+    return out
+
+
+def _fake_point(values):
+    """point[rule]['strata'][stratum][metric] for paired_block, from {rule: {stratum: value}} (every metric the
+    same value)."""
+    return {rule: {'strata': {s: {m: v for m in list(cs.DISCRIMINATING) + list(cs.CHECKS)} for s, v in strata.items()}}
+            for rule, strata in values.items()}
+
+
+class TestTheRulesWhereTheyAreApplied:
+    """PR #254 review 1, finding 6: each rule tested where the study applies it, not only on its own, so a
+    mutant at the call site dies to a synthetic test rather than only to the committed artifact."""
+
+    def test_power_mde_is_the_smallest_multiplier_reaching_the_target(self):
+        out = cs.power_simulation(_gsv_ramps(), ('v3', 5.8), {'sao_paulo': 0.05, 'paterson': 0.05},
+                                  multipliers=(0.0, 4.0, 8.0), n_sims=4, n_boot=60, seed=1)
+        assert [r['power'] for r in out['rows']] == [0.0, 1.0, 1.0]
+        assert out['mde_multiplier'] == 4.0
+
+    def test_the_power_truth_can_be_either_coordinate(self):
+        ramps = _gsv_ramps()
+        sig = {'sao_paulo': 0.05, 'paterson': 0.05}
+        g = cs.power_simulation(ramps, ('v3', 5.8), sig, multipliers=(4.0,), n_sims=4, n_boot=60, seed=1,
+                                count_verdicts=True)
+        r = cs.power_simulation(ramps, ('v3', 5.8), sig, multipliers=(4.0,), n_sims=4, n_boot=60, seed=1,
+                                truth='r', count_verdicts=True)
+        assert g['rows'][0]['verdicts'] == {'g.y better': 4, 'r.y better': 0, 'not distinguishable': 0}
+        assert r['rows'][0]['verdicts'] == {'g.y better': 0, 'r.y better': 4, 'not distinguishable': 0}
+        assert 'verdicts' not in cs.power_simulation(ramps, ('v3', 5.8), sig, multipliers=(4.0,), n_sims=1,
+                                                     n_boot=20, seed=1)['rows'][0]
+
+    def test_the_tilt_arm_and_the_power_step_need_both_gsv_cities(self, monkeypatch):
+        seen = []
+        real = cs.paired_verdict
+        monkeypatch.setattr(cs, 'paired_verdict', lambda *a: (seen.append(a[4]), real(*a))[1])
+        ramps = _gsv_ramps(n_per_city=6, panos_per_city=3)
+        W = cs.pano_bootstrap_weights(ramps, 30, 2)
+        cs.compare_configs(ramps, W, cs.tilt_boxes(ramps, ('v2', 2.5), 'S-grav'), cs.tilt_boxes(ramps, ('v2', 2.5), 'S-rig'))
+        assert seen and set(seen) == {2}
+        seen.clear()
+        cs.power_simulation(ramps, ('v2', 2.5), {'sao_paulo': 0.3, 'paterson': 0.3}, multipliers=(1.0,), n_sims=2,
+                            n_boot=20, seed=0)
+        assert seen and set(seen) == {2}
+
+    def test_paired_block_applies_three_of_four_cities_and_the_fold_rule(self):
+        """v3 - v2: interval excludes 0, three cities agree: v3 better. option A - v2: the same interval, two
+        cities agree: not distinguishable. A folds rule that took any fold would call A's mixed folds held."""
+        c = cs.CITIES
+        point = _fake_point({'v2_x2.5': dict(pooled=0.5, **{k: 0.5 for k in c}),
+                             'v3_5.8m': dict(pooled=0.48, **dict(zip(c, (0.49, 0.49, 0.49, 0.51)))),
+                             'A_x2.2': dict(pooled=0.48, **dict(zip(c, (0.49, 0.49, 0.51, 0.51))))})
+        base = np.random.default_rng(0).normal(0.5, 0.001, 200)
+        reps = {'v2_x2.5': {'pooled': {m: base for m in list(cs.DISCRIMINATING) + list(cs.CHECKS)}},
+                'v3_5.8m': {'pooled': {m: base - 0.02 for m in list(cs.DISCRIMINATING) + list(cs.CHECKS)}},
+                'A_x2.2': {'pooled': {m: base - 0.02 for m in list(cs.DISCRIMINATING) + list(cs.CHECKS)}}}
+        folds = {'v3_minus_v2': {m: dict(zip(c, (-0.01, -0.01, -0.01, -0.03))) for m in cs.DISCRIMINATING},
+                 'A_minus_v2': {m: dict(zip(c, (-0.01, -0.01, -0.01, 0.02))) for m in cs.DISCRIMINATING},
+                 'v3_minus_A': {m: dict(zip(c, (0.0, 0.0, 0.0, 0.0))) for m in cs.DISCRIMINATING}}
+        out = cs.paired_block(point, reps, folds)
+        v3 = out['v3_minus_v2']['metrics']['fill_log_sd']
+        assert v3['verdict'] == 'first' and v3['out_of_sample']['holds'] is True
+        a = out['A_minus_v2']['metrics']['fill_log_sd']
+        assert a['verdict'] == 'none' and a['out_of_sample']['holds'] is False
+        assert v3['out_of_sample']['max_gap_to_in_sample'] == pytest.approx(0.04)  # Annapolis: -0.03 against +0.01
+        assert out['v3_minus_A']['metrics']['fill_log_sd']['out_of_sample']['holds'] is False
+
+    def test_the_small_rules_at_their_boundaries(self):
+        assert cs.holds_out_of_sample(-0.1, {'a': -1, 'b': -2}) and not cs.holds_out_of_sample(-0.1, {'a': -1, 'b': 2})
+        assert not cs.holds_out_of_sample(0.1, {'a': 1, 'b': 0}) and not cs.holds_out_of_sample(0.1, {'a': 1, 'b': None})
+        assert cs.misses_floor((0.30, 0.449)) and not cs.misses_floor((0.30, 0.45))
+        assert not cs.misses_floor((0.40, 0.55)), 'the floor is read on the upper end, not the lower'
+        assert not cs.misses_floor((None, None))
+        assert cs.in_band(0.28) and cs.in_band(0.44) and not cs.in_band(0.441) and not cs.in_band(0.279)
+        both = {'mapillary_minus_gsv': {'differs': True}, 'annapolis_minus_richmond': {'differs': True}}
+        assert cs.per_city_supported(both)
+        for one in ('mapillary_minus_gsv', 'annapolis_minus_richmond'):
+            assert not cs.per_city_supported(dict(both, **{one: {'differs': False}}))
+
+    def test_leave_one_city_out_reads_its_rows_and_folds_through_those_rules(self):
+        """The folds behind "holds out of sample" are read at the constants chosen under criterion (a), not (b).
+        Ramps near the 90-degree cap make the two constants' windows differ beyond rounding."""
+        rng = random.Random(6)
+        ramps = []
+        for k, city in enumerate(cs.CITIES):
+            for i in range(10):
+                d = rng.choice([rng.uniform(2, 15), rng.uniform(28, 50)])
+                ramps.append(ramp(depression=d, box_w=(1 + 0.3 * k) * (120 + 12 * d) * rng.uniform(0.7, 1.4),
+                                  city=city, pano_id='%s%d' % (city, i % 5), key='det:%d' % i))
+        W = cs.pano_bootstrap_weights(ramps, 30, 5)
+        out, folds = cs.loco_block(ramps, W)
+        for held in cs.CITIES:
+            rows = out[held]['rows']
+            for row in rows.values():
+                assert row['misses_floor'] == cs.misses_floor(row['clearing_interval'])
+                assert row['in_band'] == cs.in_band(row['fill_p50'])
+            for m in cs.DISCRIMINATING:
+                assert folds['v3_minus_v2'][m][held] == pytest.approx(rows['v3_match_v2'][m] - rows['v2_x2.5_fixed'][m])
+                assert folds['A_minus_v2'][m][held] == pytest.approx(rows['A_match_v2'][m] - rows['v2_x2.5_fixed'][m])
+        assert any(out[h]['rows']['v3_band']['constant'] != out[h]['rows']['v3_match_v2']['constant'] for h in cs.CITIES)
+
+    def test_s_neg_is_the_negated_pose(self):
+        ramps = _gsv_ramps(n_per_city=5, panos_per_city=5)
+        neg = cs.config_size_ys(ramps, 'S-neg')
+        grav = cs.config_size_ys(ramps, 'S-grav')
+        for r, n, g in zip(ramps, neg, grav):
+            assert n == cs.modelled_stored_point(r, sign=-1.0)[1]
+            if abs(g - r['y']) > 1e-6:
+                assert (n - r['y']) * (g - r['y']) < 0
+
+    def test_criterion_6_reads_g_y_better_when_the_aprons_follow_g_y(self):
+        """Aprons drawn as the v2 window at g.y: tilt_block must read g.y better for v2 (S-grav minus S-rig, in
+        that order), and S-neg must lose to S-rig."""
+        rng = random.Random(12)
+        ramps = _gsv_ramps(n_per_city=20, panos_per_city=10, seed=7, depressions=(4, 20))
+        gy = cs.config_size_ys(ramps, 'S-grav')
+        for r, y in zip(ramps, gy):
+            r['box_w'] = cs.cut_box(r, ('v2', 2.5), size_y=y).width * 0.37 * math.exp(rng.gauss(0, 0.01))
+        out = cs.tilt_block(ramps, cs.pano_bootstrap_weights(ramps, 200, 3))
+        assert out['rules']['v2']['verdict'] == 'g.y better'
+        assert out['rules']['v2']['grav_minus_rig']['r2']['pooled'] > 0
+        # S-grav improves on S-rig here, so (nearly) every random shift is at least as harmful as it.
+        assert out['rules']['v2']['random_shift_control']['share_at_least_as_harmful_as_grav']['r2'] > 0.95
+
+    def test_the_replicate_target_is_each_replicates_own_v2_p50(self):
+        """Replicates that are one city, the other, and both: each must select the width matched to ITS OWN v2
+        fill p50, not the pooled one."""
+        rng = random.Random(9)
+        ramps = []
+        for k, city in enumerate(('a', 'b')):
+            for i in range(12):
+                d = rng.uniform(3, 12) if k == 0 else rng.uniform(15, 25)
+                ramps.append(ramp(depression=d, box_w=(1 + k) * (100 + 10 * d), city=city, pano_id='%s%d' % (city, i)))
+        a = np.array([r['city'] == 'a' for r in ramps], float)
+        W = np.stack([a, 1 - a, np.ones(len(ramps))])
+        out = cs.selection_bootstrap_block(ramps, W)
+        for grid_name, grid in (('v3_study_grid', csv3.GRID_M), ('wide_grid', cs.WIDE_WIDTH_GRID)):
+            sel = sorted(cs.select_constant(sub, 'v3', grid, cs.v2_fill_p50(sub))
+                         for sub in ([r for r in ramps if r['city'] == 'a'], [r for r in ramps if r['city'] == 'b'], ramps))
+            block = out[grid_name]['match_v2']
+            assert (block['p2_5'], block['p50'], block['p97_5']) == tuple(sel), grid_name
+
+    def test_weighted_metrics_with_counts_are_the_point_metrics_of_the_expanded_list(self):
+        """Integer weights, so a weight is a copy: every metric of a replicate equals the point metric of the
+        list with each ramp repeated that many times (the unit-weight test cannot see a weight dropped)."""
+        rng = random.Random(13)
+        ramps = [ramp(depression=rng.uniform(0.5, 35), box_w=rng.uniform(50, 900), box_h=rng.uniform(20, 300),
+                      bearing=rng.uniform(-180, 180), pano_id='p%d' % i) for i in range(25)]
+        boxes = cs.tilt_boxes(ramps, ('v3', 5.8), 'S-rig')
+        W = np.random.default_rng(1).integers(0, 4, size=(6, len(ramps)))
+        W[:, 0] = 1
+        vec = cs.weighted_metrics(cs.ramp_arrays(ramps, boxes), W)
+        for b in range(len(W)):
+            er = [r for r, k in zip(ramps, W[b]) for _ in range(k)]
+            eb = [x for x, k in zip(boxes, W[b]) for _ in range(k)]
+            point = cs.point_metrics(er, eb)
+            for key in cs.BOOT_METRICS:
+                assert vec[key][b] == pytest.approx(point[key], rel=1e-9, abs=1e-12), (b, key)
+
+
 def _sha(path):
     with open(path, 'rb') as f:
         return hashlib.sha256(f.read()).hexdigest()

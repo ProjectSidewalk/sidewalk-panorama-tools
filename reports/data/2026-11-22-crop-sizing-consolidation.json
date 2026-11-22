@@ -287,6 +287,20 @@
   },
   "per_city_supported": true
  },
+ "e14_gold_panos": {
+  "mae_deg": 0.4129685345960614,
+  "n_fitted": 70,
+  "n_rows": 70,
+  "post_hoc": "added after the criteria and after the result, at review (PR #254 review 1, finding 7); not pre-stated",
+  "r_pitch": 0.9440937560798486,
+  "r_roll": 0.9724710411470281,
+  "slope_pitch": 1.0965302448447403,
+  "slope_roll": 0.9906773176860021,
+  "status": {
+   "declined": 7,
+   "ok": 63
+  }
+ },
  "gold": {
   "by_city": {
    "annapolis": 131,
@@ -1299,7 +1313,8 @@
        "richmond": -0.02070222440223335,
        "sao_paulo": -0.03893638804510907
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.0008371354137199916
      },
      "pooled": -0.025922888088891705,
      "verdict": "first"
@@ -1323,7 +1338,8 @@
        "richmond": -0.22025439106202294,
        "sao_paulo": -0.09687212487416708
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.005949361478928328
      },
      "pooled": -0.24268738883407348,
      "verdict": "first"
@@ -1361,7 +1377,8 @@
        "richmond": 0.018393783662650542,
        "sao_paulo": 0.03849589617600124
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.0010108879756446365
      },
      "pooled": 0.03346991628558749,
      "verdict": "first"
@@ -1405,7 +1422,8 @@
        "richmond": 0.0012978621312652594,
        "sao_paulo": 0.01856722855245596
       },
-      "holds": false
+      "holds": false,
+      "max_gap_to_in_sample": 0.0012047739179433803
      },
      "pooled": 0.0034036127777243297,
      "verdict": "none"
@@ -1429,7 +1447,8 @@
        "richmond": -0.0062054203986128265,
        "sao_paulo": 0.025226370007116916
       },
-      "holds": false
+      "holds": false,
+      "max_gap_to_in_sample": 0.011806541696868678
      },
      "pooled": 0.04544566162669694,
      "verdict": "none"
@@ -1467,7 +1486,8 @@
        "richmond": 0.00903261288562518,
        "sao_paulo": 0.00859208777700049
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.0008178234563946951
      },
      "pooled": 0.007973756376457808,
      "verdict": "first"
@@ -1511,7 +1531,8 @@
        "richmond": -0.01940436227096809,
        "sao_paulo": -0.02036915949265311
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.002041909331663372
      },
      "pooled": -0.022519275311167375,
      "verdict": "first"
@@ -1535,7 +1556,8 @@
        "richmond": -0.22645981146063576,
        "sao_paulo": -0.07164575486705016
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.00585718021794035
      },
      "pooled": -0.19724172720737654,
      "verdict": "first"
@@ -1573,7 +1595,8 @@
        "richmond": 0.027426396548275722,
        "sao_paulo": 0.04708798395300173
       },
-      "holds": true
+      "holds": true,
+      "max_gap_to_in_sample": 0.000635858150400237
      },
      "pooled": 0.041443672662045294,
      "verdict": "first"
@@ -1614,7 +1637,9 @@
   "gold_gsv": {
    "covers": [
     "tilt",
-    "power"
+    "power",
+    "power_both_ways",
+    "e14_gold_panos"
    ],
    "n": 228,
    "name": "the GSV part of the gold (Sao Paulo and Paterson), the only ramps with a pose",
@@ -1734,6 +1759,38 @@
     "sao_paulo": 0.31242661104699315
    },
    "target_power": 0.8
+  }
+ },
+ "power_both_ways": {
+  "multiplier": 1.0,
+  "n_boot": 500,
+  "n_sims": 200,
+  "post_hoc": "added after the criteria and after the result, at review (PR #254 review 1, finding 7); not pre-stated",
+  "scatter": "independent per ramp (the real residuals cluster by pano)",
+  "seed": 1864,
+  "v2": {
+   "truth_g_y": {
+    "g.y better": 0.55,
+    "not distinguishable": 0.45,
+    "r.y better": 0.0
+   },
+   "truth_r_y": {
+    "g.y better": 0.0,
+    "not distinguishable": 0.455,
+    "r.y better": 0.545
+   }
+  },
+  "v3": {
+   "truth_g_y": {
+    "g.y better": 0.685,
+    "not distinguishable": 0.315,
+    "r.y better": 0.0
+   },
+   "truth_r_y": {
+    "g.y better": 0.0,
+    "not distinguishable": 0.305,
+    "r.y better": 0.695
+   }
   }
  },
  "reproduction": {
@@ -7658,6 +7715,7 @@
       "verdict": "second"
      }
     },
+    "neg_minus_rig_note": "not a comparison the criteria file defines (it names S-grav against S-rig and S-grav against S-neg); computed by the committed code, read after the result",
     "noise_minus_rig": {
      "fill_log_sd": {
       "better": "lower",
@@ -7699,6 +7757,25 @@
      "model_conditional": true,
      "pooled": -0.004385964912280715,
      "verdict": "none"
+    },
+    "random_shift_control": {
+     "n_draws": 500,
+     "post_hoc": "added after the criteria and after the result, at review (PR #254 review 1, finding 3); not pre-stated",
+     "random_minus_rig_fill_log_sd_mean": 0.010345312461685652,
+     "random_minus_rig_r2_mean": -0.02490041510741236,
+     "seed": 1863,
+     "share_at_least_as_harmful_as_grav": {
+      "fill_log_sd": 0.308,
+      "r2": 0.432
+     },
+     "share_at_least_as_harmful_as_neg": {
+      "fill_log_sd": 0.628,
+      "r2": 0.468
+     },
+     "share_better_than_rig": {
+      "fill_log_sd": 0.046,
+      "r2": 0.018
+     }
     },
     "share_window_moves_over_10pct": 0.2149122807017544,
     "spec": [
@@ -7903,6 +7980,7 @@
       "verdict": "second"
      }
     },
+    "neg_minus_rig_note": "not a comparison the criteria file defines (it names S-grav against S-rig and S-grav against S-neg); computed by the committed code, read after the result",
     "noise_minus_rig": {
      "fill_log_sd": {
       "better": "lower",
@@ -7944,6 +8022,25 @@
      "model_conditional": true,
      "pooled": 0.0,
      "verdict": "none"
+    },
+    "random_shift_control": {
+     "n_draws": 500,
+     "post_hoc": "added after the criteria and after the result, at review (PR #254 review 1, finding 3); not pre-stated",
+     "random_minus_rig_fill_log_sd_mean": 0.01630632491745405,
+     "random_minus_rig_r2_mean": -0.03696791979383619,
+     "seed": 1863,
+     "share_at_least_as_harmful_as_grav": {
+      "fill_log_sd": 0.772,
+      "r2": 0.896
+     },
+     "share_at_least_as_harmful_as_neg": {
+      "fill_log_sd": 0.34,
+      "r2": 0.202
+     },
+     "share_better_than_rig": {
+      "fill_log_sd": 0.006,
+      "r2": 0.0
+     }
     },
     "share_window_moves_over_10pct": 0.2894736842105263,
     "spec": [
