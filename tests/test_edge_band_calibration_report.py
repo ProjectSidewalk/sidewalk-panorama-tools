@@ -792,6 +792,29 @@ class TestTheExtrasInstrument:
         assert fresh['cases'] == committed['cases'] and fresh['tolerance_px'] == committed['tolerance_px']
 
 
+class TestAnalyzeEndToEnd:
+
+    def test_a_synthetic_run_classifies_decides_and_tabulates(self, tmp_path):
+        store = make_store(tmp_path)
+        farm, out = tmp_path / 'farm', tmp_path / 'out'
+        doc = ebc.frame(str(store), str(farm), str(out), roster=['alpha', 'beta'], device_of=devices(store))
+        ebc.run(str(farm), str(out), str(store), ebc.run_order(doc), deadline=3600, ops=SyncToolOps(),
+                device_of=devices(store))
+        n = ebc.extras(str(farm), str(out), str(store), ebc.run_order(doc), 8.0, 4e9, device_of=devices(store))
+        assert n == 3, 'd4, thin_bottom_10 and the nadir cap carry a band; clean and dark do not'
+        shutil.copy(os.path.join(DATA, 'tile-tolerance.json'), str(out / 'tile-tolerance.json'))
+        result, unresolved = ebc.analyze(str(out))
+        assert result['classes']['gsv22'] == {'F-frame': 1, 'U': 1, 'clean': 2}
+        assert result['classes']['numeric'] == {'P': 1}
+        assert [u[1] for u in unresolved] == ['thPanoAAAAAAAAAAAAAAAA']
+        # alpha is a census stratum of 4 with one U band of 0.0938 over both candidates: neither passes
+        assert result['decision']['outcome'] == 'neither-passes' and result['decision']['limit'] == 0.05
+        assert result['decision']['primary']['0.05']['estimate'] == pytest.approx(0.25)
+        assert '| alpha | fleet | census | 4 | 4 |' in result['tables']['reach']
+        assert any(r.startswith('| gsv22 | yes |') for r in result['tables']['witness'])
+        json.dumps(result, allow_nan=False)
+
+
 class TestTheNoWritesCheck:
 
     def test_a_tool_name_fails_and_a_nightly_writer_is_listed(self, tmp_path):
