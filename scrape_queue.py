@@ -147,6 +147,9 @@ CONDITION_LABELS = OrderedDict([
     ('images-no-success', 'every image attempt raised; none succeeded'),
     ('frame-disagreement', 'GSV panos refused for a frame disagreement; not ledgered'),
     ('edge-band', 'GSV stitches saved with a deep exact-black edge band; check the work-list'),
+    ('served-larger-kept',
+     "GSV panos kept at Google's larger frame beside an app-frame copy; the app's record is wrong, or a retired "
+     "pano's kept original needs a decision"),
     ('image-ledger-unusable', 'image ledger unreadable or unparseable; image phase skipped'),
     ('incomplete-on-disk', 'files on disk that are not whole JPEGs; not ledgered, left in place'),
     ('mapillary-token-missing', 'Mapillary panos skipped: MAPILLARY_ACCESS_TOKEN not set'),

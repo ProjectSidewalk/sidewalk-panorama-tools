@@ -141,6 +141,27 @@ class TestAtomicOutputPath:
         assert not os.path.exists(final)
         assert not os.path.exists(final + '.part')
 
+    def test_no_overwrite_refuses_an_existing_target(self, tmp_path):
+        """#185: archive imagery written after a long fetch must never replace a file that appeared meanwhile.
+        The target is created INSIDE the `with` body - the fan-out's minutes - so the check must run at the
+        rename, not at entry. The default still replaces, as every existing caller expects."""
+        final = str(tmp_path / 'pano.native')
+
+        with pytest.raises(FileExistsError):
+            with atomic_output_path(final, overwrite=False) as tmp:
+                with open(tmp, 'wb') as f:
+                    f.write(b'new bytes')
+                with open(final, 'wb') as f:
+                    f.write(b'someone else')
+
+        assert open(final, 'rb').read() == b'someone else'
+        assert not os.path.exists(final + '.part')
+
+        with atomic_output_path(final) as tmp:
+            with open(tmp, 'wb') as f:
+                f.write(b'replaced')
+        assert open(final, 'rb').read() == b'replaced'
+
     @posix_only
     def test_the_renamed_file_is_group_writable(self, tmp_path):
         final = str(tmp_path / 'pano.jpg')

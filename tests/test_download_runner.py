@@ -3895,8 +3895,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
                 DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
                 DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER,
-                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 14
+                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK,
+                DownloadRunner.CONDITION_SERVED_LARGER_KEPT} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 15
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:
@@ -4005,6 +4006,259 @@ class TestFrameRefusalsAreCountedAndFailTheNight:
             'raisePano': RuntimeError('frame disagreement mentioned in an unrelated error')})
 
         assert summary_codes(tmp_path) == []
+
+
+class TestAKeptLargerPanoIsReportedOnce:
+    """#185 Part 2, with gsv.KEEP_SERVED_LARGER_ORIGINALS on: a pano Google serves larger than the app's frame no
+    longer raises a frame disagreement, so without its own condition the wrong app record would reach nobody.
+    The real image loop over the real gsv path (photometa and tiles stubbed, tests/test_gsv_served_larger.py's
+    fixture), mixed with scripted panos where the order or a breaker matters."""
+
+    LINE = "kept at Google's larger frame beside an app-frame copy (served-larger-kept condition)"
+
+    @pytest.fixture(autouse=True)
+    def served_larger(self, monkeypatch):
+        from test_gsv_served_larger import served_larger
+        served_larger(monkeypatch)
+
+    def run_phase(self, monkeypatch, tmp_path, pano_ids, scripted=None, keep=True, dims=None, image_stats=None):
+        """The image phase over `pano_ids` in that order: scripted ids answer as scripted, the rest go through the
+        real downloaders.download_pano at the fixture's app frame, or at `dims[pano_id]` when given. Returns
+        (counts, summary, tripped); `image_stats` is passed through (log.csv field 20's `raised`)."""
+        from downloaders import gsv
+        from test_gsv_served_larger import APP
+        if keep:
+            monkeypatch.setattr(gsv, 'KEEP_SERVED_LARGER_ORIGINALS', True)
+        scripted = scripted or {}
+        dims = dims or {}
+        script = scripted_download_pano(scripted)
+        real = downloaders.download_pano
+        monkeypatch.setattr(DownloadRunner, 'download_pano',
+                            lambda storage, info: (script if info['pano_id'] in scripted else real)(storage, info))
+        monkeypatch.setattr(DownloadRunner.random, 'shuffle', lambda seq: None)
+        summary = {'image_stop': None, 'depth_stop': None}
+        tripped = set()
+        infos = [{'pano_id': p, 'source': 'gsv', 'width': dims.get(p, APP)[0], 'height': dims.get(p, APP)[1]}
+                 for p in pano_ids]
+        counts = DownloadRunner.download_panorama_images(str(tmp_path), infos, stop_reasons=summary,
+                                                         tripped_sources=tripped, image_stats=image_stats)
+        return counts, summary, tripped
+
+    # #243 review N1: with the switch on, a pano Google answers "no imagery" for while an original it cannot copy
+    # from sits beside it raises KeptOriginalRetiredError every run. Before the fix that raise was silent (no
+    # condition, so the night exited 0) and, ten or more of them, mislabelled as `images-no-success`.
+    RETIRED_LINE = 'retired GSV pano(s) beside a kept original no copy can be made from (served-larger-kept condition)'
+
+    def retire(self, monkeypatch, live=()):
+        """Google answers "no imagery" for every pano (photometa unavailable, every probe tile black), except the
+        ids in `live`, for which photometa reports the fixture's SERVED levels."""
+        from downloaders import gsv
+        from test_gsv_served_larger import SERVED
+        from test_gsv_stitcher import stub_probe
+        stub_probe(monkeypatch, -1)
+        unavailable = gsv._fetch_image_levels       # stub_probe's own "photometa unavailable" stand-in
+        monkeypatch.setattr(gsv, '_fetch_image_levels', lambda pano_id, session: (
+            gsv.ImageLevels([tuple(s) for s in SERVED], (512, 512)) if pano_id in live
+            else unavailable(pano_id, session)))
+
+    def place_original(self, tmp_path, pano_id):
+        """A `<pano_id>.native` at the fixture's NATIVE frame, with no copy; returns its path."""
+        from test_gsv_served_larger import stitched_native
+        shard_dir = tmp_path / pano_id[:2]
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        path = shard_dir / (pano_id + '.native')
+        stitched_native().save(str(path), 'jpeg')
+        return str(path)
+
+    def test_a_retired_pano_beside_an_unusable_original_is_heard_every_run(self, monkeypatch, tmp_path, capsys,
+                                                                           caplog):
+        """The reviewer's probe: one such pano (the app's record corrected to the original's frame, so no copy
+        can be made, and Google has retired the pano), three runs. Each run fails the night through
+        `served-larger-kept`, naming the file; it is an answer, not a raise, so field 20 does not count it;
+        field 9 does (not ledgered); and nothing is ledgered, so the next run says it again."""
+        from test_gsv_served_larger import NATIVE, PANO
+        caplog.set_level(logging.WARNING)
+        original = self.place_original(tmp_path, PANO)
+        self.retire(monkeypatch)
+
+        for night in range(3):
+            image_stats = {}
+            counts, summary, _ = self.run_phase(monkeypatch, tmp_path, [PANO], dims={PANO: NATIVE},
+                                                image_stats=image_stats)
+
+            assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT], night
+            detail = summary['conditions'][0]['detail']
+            assert detail == ('1 retired pano(s) beside a kept original no copy can be made from; first: %s.native'
+                              % PANO)
+            assert image_stats['raised'] == 0, 'log.csv field 20: Google answered, so not a raise'
+            assert counts[2] == 1, 'log.csv field 9: not ledgered, so a failure of this run'
+            assert 'served_larger_kept' not in summary, 'that count is of kept panos, and none was kept'
+            assert not (tmp_path / 'pano_id_log.csv').exists() or PANO not in self.ledger_rows(tmp_path)
+            out = capsys.readouterr().out
+            assert out.count(self.RETIRED_LINE) == 1
+            assert original in out, "the pano's own lines carry the full path"
+        assert len([r for r in caplog.records if self.RETIRED_LINE in r.getMessage()]) == 3
+        assert not [r for r in caplog.records if 'frame disagreement' in r.getMessage()]
+
+    def test_retired_panos_beside_originals_are_answers_not_images_no_success(self, monkeypatch, tmp_path):
+        """Twelve of them and nothing else: before the fix, `images-no-success` ('12 attempts raised, 0
+        answered'), whose text points at the network, the store or a bug."""
+        from test_gsv_served_larger import NATIVE
+        ids = ['retiredPano%02dAAAAAAAAA' % i for i in range(12)]
+        for pano_id in ids:
+            self.place_original(tmp_path, pano_id)
+        self.retire(monkeypatch)
+        image_stats = {}
+
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, ids, dims={p: NATIVE for p in ids},
+                                       image_stats=image_stats)
+
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT]
+        assert summary['conditions'][0]['detail'].startswith('12 retired pano(s)')
+        assert image_stats['raised'] == 0
+
+    def test_one_retired_answer_clears_images_no_success_like_a_frame_refusal(self, monkeypatch, tmp_path):
+        """Counted as an ANSWER, not set aside: the error exists only when Google answered tonight (200s with no
+        imagery), so ten network raises beside it are not 'nothing was answered'."""
+        from test_gsv_served_larger import NATIVE, PANO
+        self.place_original(tmp_path, PANO)
+        self.retire(monkeypatch)
+        raising = {'raise%02d' % i: RuntimeError('connection reset') for i in range(10)}
+
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, list(raising) + [PANO], scripted=raising,
+                                       dims={PANO: NATIVE})
+
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT]
+
+    def test_a_kept_pano_and_a_retired_one_share_the_condition_and_both_are_named(self, monkeypatch, tmp_path):
+        """One code, recorded once per run with the first detail winning (common.note_condition), so the two
+        facts go into ONE detail: noting them separately would drop whichever came second."""
+        from test_gsv_served_larger import NATIVE, PANO
+        retired = 'retiredPanoBBBBBBBBBBB'
+        self.place_original(tmp_path, retired)
+        self.retire(monkeypatch, live={PANO})
+
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, [PANO, retired], dims={retired: NATIVE})
+
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT]
+        detail = summary['conditions'][0]['detail']
+        assert detail.startswith('1 pano(s) kept') and PANO in detail
+        assert detail.endswith('; 1 retired pano(s) beside a kept original no copy can be made from; first: '
+                               '%s.native' % retired), 'whole, under CONDITION_DETAIL_MAX'
+        assert summary['served_larger_kept'] == 1
+
+    def test_an_original_that_reads_back_wrong_is_still_a_raise(self, monkeypatch, tmp_path):
+        """The OTHER KeptOriginalError - the original just written reads back at another size - is the mount or a
+        bug, not Google answering, so it stays an ordinary raise: counted in field 20, no condition of its own."""
+        from downloaders import gsv
+        image_stats = {}
+
+        _, summary, _ = self.run_phase(
+            monkeypatch, tmp_path, ['readBack'],
+            {'readBack': gsv.KeptOriginalError('pano readBack: x.native reads back at 1x1, not the 2x1 just written')},
+            image_stats=image_stats)
+
+        assert image_stats['raised'] == 1
+        assert summary.get('conditions', []) == []
+
+    def ledger_rows(self, tmp_path):
+        with open(str(tmp_path / 'pano_id_log.csv'), newline='') as f:
+            return {row[0]: row[1:] for row in csv.reader(f) if row and row[0] != 'pano_id'}
+
+    def test_one_kept_pano_is_a_success_a_ledger_row_and_a_condition(self, monkeypatch, tmp_path, capsys, caplog):
+        from test_gsv_served_larger import PANO
+        caplog.set_level(logging.WARNING)
+
+        counts, summary, _ = self.run_phase(monkeypatch, tmp_path, [PANO, 'okPano'],
+                                            {'okPano': downloaders.DownloadResult.success})
+
+        rows = self.ledger_rows(tmp_path)
+        assert rows[PANO][0] == '1' and rows[PANO][1], 'a fan-out happened tonight: stamped'
+        assert rows['okPano'][0] == '1'
+        assert counts[0] == 2, 'log.csv field 7: both are successes'
+        assert summary['served_larger_kept'] == 1
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT]
+        assert PANO in summary['conditions'][0]['detail']
+        assert summary['conditions'][0]['detail'].startswith('1 pano(s) kept')
+        assert 'frame_refusals' not in summary
+        assert capsys.readouterr().out.count(self.LINE) == 1
+        assert len([r for r in caplog.records if self.LINE in r.getMessage()]) == 1
+        assert not [r for r in caplog.records if 'frame disagreement' in r.getMessage()]
+
+    def test_a_rebuilt_copy_is_a_skip_with_a_blank_stamp_and_moves_no_breaker(self, monkeypatch, tmp_path):
+        """Seeded with a GSV permanent verdict before it and one after, at a limit of two: a skip neither counts
+        nor resets #113's streak, so the second verdict trips the breaker - a success would have reset it."""
+        from test_gsv_served_larger import PANO, place_native
+        monkeypatch.setitem(DownloadRunner.MAX_CONSECUTIVE_PERMANENT_FAILURES, 'gsv', 2)
+        place_native(tmp_path)
+        failure = downloaders.DownloadResult.failure
+
+        counts, summary, tripped = self.run_phase(
+            monkeypatch, tmp_path, ['goneA', PANO, 'goneB', 'lastOk'],
+            {'goneA': failure, 'goneB': failure, 'lastOk': downloaders.DownloadResult.success})
+
+        rows = self.ledger_rows(tmp_path)
+        assert rows[PANO] == ['1', ''], 'a skip: ledgered 1 with a BLANK fetched_at (no fetch happened)'
+        assert counts[0] == 0 and counts[3] == 1, 'field 10 counts it, field 7 does not'
+        assert 'gsv' in tripped, "the skip did not reset #113's streak"
+        assert 'goneB' not in rows and 'lastOk' not in rows
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_SERVED_LARGER_KEPT]
+        assert summary['served_larger_kept'] == 1
+
+    def test_a_rebuilt_copy_does_not_reset_the_pushback_count(self, monkeypatch, tmp_path):
+        """#162's breaker, the same way: two refusals around a rebuild make three in a row and trip it."""
+        from test_gsv_served_larger import PANO, place_native
+        place_native(tmp_path)
+        refused = lambda i: downloaders.gsv.TilePushbackError(429, 0, i)    # noqa: E731
+
+        _, summary, tripped = self.run_phase(
+            monkeypatch, tmp_path, ['pushA', PANO, 'pushB', 'pushC', 'lastOk'],
+            {'pushA': refused(0), 'pushB': refused(1), 'pushC': refused(2),
+             'lastOk': downloaders.DownloadResult.success})
+
+        assert DownloadRunner.GSV_MAX_CONSECUTIVE_PUSHBACK == 3
+        assert 'gsv' in tripped and summary['image_stop'] == DownloadRunner.STOP_BLOCKED
+        assert 'lastOk' not in self.ledger_rows(tmp_path)
+
+    def test_no_kept_pano_means_no_line_no_key_no_condition(self, monkeypatch, tmp_path, capsys):
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, ['okPano'],
+                                       {'okPano': downloaders.DownloadResult.success})
+
+        assert 'served_larger_kept' not in summary
+        assert summary.get('conditions', []) == []
+        assert self.LINE not in capsys.readouterr().out
+
+    def test_the_count_is_this_phases_own(self, monkeypatch, tmp_path):
+        from downloaders import gsv
+        from test_gsv_served_larger import PANO
+        gsv._served_larger_run.kept = 3
+        gsv._served_larger_run.details.extend(['pano earlierA', 'pano earlierB', 'pano earlierC'])
+
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, [PANO])
+
+        assert summary['served_larger_kept'] == 1
+        detail = summary['conditions'][0]['detail']
+        assert detail.startswith('1 pano(s) kept') and PANO in detail and 'earlier' not in detail
+
+    def test_run_resets_the_memory(self, monkeypatch):
+        from downloaders import gsv
+        gsv._served_larger_run.kept = 7
+        gsv._served_larger_run.details.append('pano x')
+        monkeypatch.setattr(DownloadRunner, '_run_phases', lambda *a, **k: None)
+
+        DownloadRunner.run('sidewalk-test.invalid', '/nowhere', skip_depth=True)
+
+        assert gsv._served_larger_run.kept == 0 and gsv._served_larger_run.details == []
+
+    def test_switch_off_the_same_pano_is_a_frame_refusal_as_before(self, monkeypatch, tmp_path):
+        from test_gsv_served_larger import PANO
+
+        _, summary, _ = self.run_phase(monkeypatch, tmp_path, [PANO], keep=False)
+
+        assert summary['frame_refusals'] == 1
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_FRAME_DISAGREEMENT]
+        assert 'served_larger_kept' not in summary
+        assert not (tmp_path / 'pano_id_log.csv').exists() or PANO not in self.ledger_rows(tmp_path)
 
 
 # --- log.csv field 19: the depth corpus size (#43) ---------------------------------------------------------

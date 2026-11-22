@@ -329,6 +329,53 @@ class TestDecideWithoutFetching:
 
         assert rp.refetch_store(str(tmp_path), [{'pano_id': PANO}])['not_affected'] == 1
 
+    @staticmethod
+    def keep_original_beside(path):
+        """A #185 Part 2 `<pano_id>.native` beside the stored pano (its bytes do not matter here)."""
+        native = common.native_original_path(path)
+        with open(native, 'wb') as f:
+            f.write(b'a kept original')
+        return native
+
+    def test_a_pano_with_a_kept_original_is_never_fetched(self, tmp_path):
+        """#185 Part 2: the stored `.jpg` is a resampled copy of the `.native` beside it. A swap of the copy alone
+        would leave the pair disagreeing, so a pano with an original is refused at zero requests - at both exits
+        that would otherwise fetch, including --allow-dims-change with a work-list frame."""
+        self.keep_original_beside(store_with_pano(tmp_path))
+
+        assert self.decide(tmp_path) == ('kept_original', None)
+        record = {'pano_id': PANO, 'width': 16384, 'height': 8192}
+        assert self.decide(tmp_path, record, allow_dims_change=True) == ('kept_original', None)
+
+    @pytest.mark.parametrize('case', ['absent', 'unreadable', 'not_affected', 'already_clean', 'dims_changed'])
+    def test_the_cheaper_answers_still_come_first(self, tmp_path, case):
+        """The check is one stat, spent only on a pano that would otherwise spend requests, so every earlier
+        zero-request answer is unchanged by an original beside the pano."""
+        shard = tmp_path / PANO[:2]
+        shard.mkdir()
+        path = str(shard / (PANO + '.jpg'))
+        record = None
+        if case == 'unreadable':
+            (shard / (PANO + '.jpg')).write_bytes(b'not a jpeg at all')
+        elif case == 'not_affected':
+            store_with_pano(tmp_path, dims=(3328, 1664))
+        elif case == 'already_clean':
+            store_with_pano(tmp_path, mtime='2026-08-08')
+        elif case == 'dims_changed':
+            store_with_pano(tmp_path)
+            record = {'pano_id': PANO, 'width': 16384, 'height': 8192}
+        self.keep_original_beside(path)
+
+        assert self.decide(tmp_path, record) == (case, None)
+
+    def test_kept_original_is_an_outcome_that_is_never_ledgered(self, tmp_path):
+        assert 'kept_original' in rp.OUTCOMES
+        assert 'kept_original' not in rp.LEDGERED_OUTCOMES
+        assert 'kept_original' not in rp.FAN_OUT_OUTCOMES
+        path = tmp_path / rp.LEDGER_FILENAME
+        path.write_text('pano_id,status\nabc,kept_original\n')
+        assert rp.load_ledger(str(path)) == set()
+
 
 # --- the acceptance gates -------------------------------------------------------------------------------
 
@@ -574,6 +621,19 @@ def _jpeg(color, size):
 # --- the run loop ---------------------------------------------------------------------------------------
 
 class TestRefetchStore:
+    def test_a_kept_original_and_its_copy_survive_a_pass_byte_for_byte(self, tmp_path, monkeypatch):
+        """#185 Part 2: the battery's rule, for the new zero-request outcome."""
+        path = store_with_pano(tmp_path)
+        native = TestDecideWithoutFetching.keep_original_beside(path)
+        before = (open(path, 'rb').read(), open(native, 'rb').read())
+        no_seams(monkeypatch)
+
+        counts = rp.refetch_store(str(tmp_path), [{'pano_id': PANO}])
+
+        assert counts['kept_original'] == 1
+        assert (open(path, 'rb').read(), open(native, 'rb').read()) == before
+        assert rp.load_ledger(str(tmp_path / rp.LEDGER_FILENAME)) == set()
+
     def test_request_spending_outcomes_are_ledgered_and_transient_ones_are_not(self, tmp_path, monkeypatch):
         store_with_pano(tmp_path, 'aaAAAAAAAAAAAAAAAAAA')
         store_with_pano(tmp_path, 'bbBBBBBBBBBBBBBBBBBB')
