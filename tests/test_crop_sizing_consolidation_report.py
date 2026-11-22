@@ -267,6 +267,22 @@ class TestStudyLogic:
         assert len(set(W.sum(1).tolist())) > 1
         assert (W == cs.pano_bootstrap_weights(ramps, 400, seed=1)).all()
 
+    def test_the_weighted_isotonic_ceiling_is_the_v3_studys_at_unit_weights_and_counts_copies(self):
+        """The ceiling's replicates use weighted_isotonic_r2; at unit weights it must be crop_sizing_v3's
+        depression_only_ceiling, and a weight of 2 must equal the ramp listed twice."""
+        rng = random.Random(8)
+        ramps = [ramp(depression=rng.choice([2.0, 5.0, 5.0, 9.0, 14.0, 20.0, 31.0]) + rng.uniform(0, 1),
+                      box_w=rng.uniform(60, 900), pano_id='p%d' % i) for i in range(40)]
+        deps = np.array([csv3.depression(r) for r in ramps])
+        logs = np.log([csv3.apron_deg(r) for r in ramps])
+        assert cs.weighted_isotonic_r2(deps, logs, np.ones(40)) == pytest.approx(
+            csv3.depression_only_ceiling(ramps)['isotonic_r2'], rel=1e-12)
+        w = np.ones(40)
+        w[3] = 2
+        doubled = ramps + [ramps[3]]
+        assert cs.weighted_isotonic_r2(deps, logs, w) == pytest.approx(
+            csv3.depression_only_ceiling(doubled)['isotonic_r2'], rel=1e-12)
+
     def test_the_interval_is_the_nearest_rank_2_5_and_97_5_percentiles(self):
         values = list(range(201))
         assert cs.nearest_rank_interval(values) == (5, 195)
@@ -667,3 +683,174 @@ class TestEveryFigureIsClaimedByOnePopulation:
         extra['populations'] = cs.populations(extra)
         with pytest.raises(AssertionError):
             assert_every_key_is_claimed_once(extra)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Every number in the report, transcribed from a committed file.
+
+@pytest.fixture(scope='module')
+def report():
+    """The report with whitespace runs collapsed, so a wrapped phrase still matches."""
+    with open(REPORT_MD, encoding='utf-8') as f:
+        return ' '.join(f.read().split())
+
+
+def _neg(text):
+    return text.replace('-', '−')
+
+
+def _eval_json(city):
+    with open(os.path.join(DATA_DIR, cs.EVAL_JSON % city), encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _smallest_scale(city, containment):
+    return min(r['k'] for r in _eval_json(city)['rescale_sweep']['v1-norm'] if r['containment'] >= containment)
+
+
+class TestReportMatchesTheArtifact:
+
+    def test_every_table_is_the_scripts(self, summary, report):
+        """The tables are printed by `tables` from the artifact; each line must appear in the report."""
+        checked = 0
+        for table in cs.REPORT_TABLES:
+            for line in table(summary):
+                assert ' '.join(line.split()) in report, line
+                checked += 1
+        assert checked > 100
+
+    def test_the_gold(self, summary, report):
+        g = summary['gold']
+        assert '%d items, %d boxed' % (g['n_items'], g['n_boxed']) in report
+        assert 'on the %d GSV ramps' % summary['tilt']['n_ramps'] in report
+        assert 'The %d Mapillary ramps have no pose' % summary['no_pose']['n'] in report
+        assert 'Its %d ramps on %d panos' % (g['by_city']['annapolis'], g['panos_by_city']['annapolis']) in report
+
+    def test_the_reproduction(self, summary, report):
+        rep = summary['reproduction']
+        assert "option A's matched scale (×%.1f)" % rep['option_a_matched_scale'] in report
+        assert "%.1f m matched to v2's pooled fill p50 of %.3f, %.1f m at the band centre" % (
+            rep['v3_matched_width_m'], rep['v2_pooled_fill_p50'], rep['v3_band_centre_width_m']) in report
+        n_values = len(CITIES) * (2 * len(cs.RAMPNET_SUMMARY_KEYS) + len(cs.RAMPNET_SWEEP_KEYS))
+        assert 'in all four cities, %d values in all' % n_values in report
+
+    def test_rampnets_rounds_from_the_copied_summaries(self, report):
+        names = {'sao_paulo': 'São Paulo', 'paterson': 'Paterson', 'richmond': 'Richmond', 'annapolis': 'Annapolis'}
+        order = ('sao_paulo', 'paterson', 'richmond', 'annapolis')
+        parts = ['×%.1f in %s' % (_smallest_scale(c, 0.985), names[c]) for c in order]
+        assert '%s, %s, %s and %s' % tuple(parts) in report
+        det = _eval_json('richmond')['summary']['detection']
+        assert 'geo-v1.5 containment %.3f and an apron aspect of %.2f:1' % (
+            det['geo-v1.5']['containment'], det['v1-norm']['box_aspect_p50']) in report
+        assert _smallest_scale('richmond', 0.995) == 3.5
+        assert 'the square scale RampNet needed to contain 99.5% of Richmond' in report
+
+    def test_e14_from_the_copied_validation_summary(self, report):
+        with open(os.path.join(DATA_DIR, cs.TILT_SUMMARY), encoding='utf-8') as f:
+            v = json.load(f)
+        s = lambda block: (block['sign_test_accepted']['pitch']['slope'], block['sign_test_accepted']['roll']['slope'])  # noqa: E731
+        p, r = s(v['all'])
+        pp, pr = s(v['by_split_all']['paterson'])
+        sp, sr = s(v['by_split_all']['sao_paulo'])
+        assert ('slopes %s (pitch) and %s (roll), MAE %s°, on %d accepted panos; Paterson %s / %s and São Paulo '
+                '%s / %s' % (p, r, v['all']['accepted']['mae_deg'], v['all']['accepted']['n'], pp, pr, sp, sr)) in report
+
+    def test_the_tagger_maps_from_the_pilot(self, report):
+        maps = {}
+        with open(os.path.join(DATA_DIR, 'pilot', 'probe_ap_repro.out.txt'), encoding='utf-8') as f:
+            for line in f:
+                arm = line.split()[0]
+                maps[arm] = line.split("'logit': ")[1].split(',')[0]
+        assert 'control %s, fov25 %s, fov50 %s, fov90 %s' % (
+            maps['control'], maps['fov25'], maps['fov50'], maps['fov90']) in report
+
+    def test_the_judge_rounds_from_the_snapshot(self, report):
+        with open(os.path.join(DATA_DIR, cs.PLAN_SNAPSHOT), encoding='utf-8') as f:
+            snap = f.read()
+        for token in ('132 comparisons', '112 comparisons', '144 crops', '**0.49**', '0.46–0.54', '68%', '74%'):
+            assert token in snap, token
+        assert ('132 and 112 forced choices, 144 absolute judgements, "too tight" above fill 0.49 (95% CI '
+                '0.46-0.54), 68% clearing at ×2.5') in report
+        assert '74% at 1:1, 3:2 and 2:1 alike' in report
+
+    def test_the_pilot_disclosure_from_the_pilot_output(self, report):
+        rows = {}
+        with open(os.path.join(DATA_DIR, 'pilot', 'probe_tilt.out.txt'), encoding='utf-8') as f:
+            for line in f:
+                city = line.split()[0]
+                dy = line.split('p50/p90/max [')[1].split(']')[0].split()
+                shares = line.split('share moved >10% v2 ')[1].split(' v3 ')
+                rows[city] = (dy[0], dy[1], round(100 * float(shares[0])), round(100 * float(shares[1])))
+        sp, pa = rows['sao_paulo'], rows['paterson']
+        assert ('|dy| p50 %s° / p90 %s° in São Paulo and %s° / %s° in Paterson' % (sp[0], sp[1], pa[0], pa[1])) in report
+        assert ('%d%% (v2) and %d%% (v3) in São Paulo, %d%% and %d%% in Paterson' % (sp[2], sp[3], pa[2], pa[3])) in report
+        assert "São Paulo's |dy| p90 reads %.3f° in the artifact against the pilot's %s°" % (
+            summary_shift_p90(), sp[1]) in report
+
+    def test_the_tilt_prose(self, summary, report):
+        t = summary['tilt']
+        assert ("R² %.3f of the GSV aprons' log width at r.y and %.3f at g.y"
+                % (t['isotonic_ceiling']['at_r_y'], t['isotonic_ceiling']['at_g_y'])) in report
+        v2, v3 = t['rules']['v2'], t['rules']['v3']
+        assert 'Criterion 6 reads **%s** for v2 and **%s** for v3' % (v2['verdict'], v3['verdict']) in report
+        assert v2['control_verdict'] == v3['control_verdict'] == 'not distinguishable'
+        assert ('moves %.1f%% of v2 windows and %.1f%% of v3 windows' % (
+            100 * v2['share_window_moves_over_10pct'], 100 * v3['share_window_moves_over_10pct'])) in report
+        off2, off3 = v2['off_minus_grav_containment'], v3['off_minus_grav_containment']
+        assert 'containment by %s [%s, %s] under v2 and by %.3f under v3' % (
+            _neg('%+.4f' % off2['pooled']), _neg('%.4f' % off2['interval'][0]), '%.4f' % off2['interval'][1],
+            off3['pooled']) in report
+        sel = summary['selection_at_gy']
+        assert 'gives %.1f m matched and %.1f m at the band centre' % (
+            sel['matched_context_width_m'], sel['band_centre_width_m']) in report
+        assert sel['matched_context_width_m'] == sel['at_r_y']['matched_context_width_m']
+
+    def test_the_outcome_matches_the_verdicts(self, summary, report):
+        p = summary['paired']
+        assert all(p[name]['metrics'][m]['verdict'] == 'first' for name in ('v3_minus_v2', 'A_minus_v2')
+                   for m in cs.DISCRIMINATING)
+        assert all(p[name]['metrics'][m]['out_of_sample']['holds'] for name in ('v3_minus_v2', 'A_minus_v2')
+                   for m in cs.DISCRIMINATING)
+        d7 = p['v3_minus_A']['metrics']
+        assert d7['r2']['verdict'] == 'first' and d7['fill_log_sd']['verdict'] == d7['fill_p90_over_p10']['verdict'] == 'none'
+        assert not any(row['misses_floor'] for held in summary['loco'].values() for row in held['rows'].values())
+        assert 'no held-out city misses the 45% floor' in report
+        assert summary['d6']['band']['mapillary_minus_gsv']['differs'] and summary['d6']['per_city_supported']
+        assert not summary['d6']['match_v2']['mapillary_minus_gsv']['differs']
+
+    def test_shape_and_camera_and_s4(self, summary, report):
+        sh = summary['shape']
+        c = sh['apron_aspect_by_city_p50']
+        assert '%.3f pooled (Richmond %.3f, São Paulo %.3f, Paterson %.3f, Annapolis %.3f)' % (
+            sh['apron_aspect_w_over_h_p50'], c['richmond'], c['sao_paulo'], c['paterson'], c['annapolis']) in report
+        r = summary['rules']
+        assert 'vertical fill p50 is %.3f under v2 ×2.5 and %.3f under v1-norm ×3.5' % (
+            r['v2_x2.5']['strata']['pooled']['vfill_p50'], r['v1norm_x3.5_square']['strata']['pooled']['vfill_p50']) in report
+        assert 'every v3 window to %.1e°' % summary['camera_heights']['w_over_h_identity_max_abs_deg'] in report
+        with open(os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-tilt-s4-extent-gold.json'), encoding='utf-8') as f:
+            s4 = json.load(f)
+        assert 'S4 had %d pairs where its design needed %d' % (s4['n_pairs'], s4['min_pairs_to_analyse']) in report
+
+    def test_the_decisions_quote_the_artifact(self, summary, report):
+        r = summary['rules']
+        assert 'option A clears more (%.1f%% against %.1f%% pooled)' % (
+            100 * r['A_x2.2']['strata']['pooled']['frac_clearing_too_tight'],
+            100 * r['v3_5.8m']['strata']['pooled']['frac_clearing_too_tight']) in report
+        ann = summary['loco']['annapolis']['rows']['A_match_v2']
+        assert 'Option A clears it best (%.1f%% held out)' % (100 * ann['clearing']) in report
+        best = max(summary['loco']['annapolis']['rows'].values(), key=lambda row: row['clearing'])
+        assert best is ann
+
+    def test_the_criteria_commit_is_named(self, summary, report):
+        assert 'commit `%s`' % cs.CRITERIA_COMMIT[:7] in report
+        assert summary['meta']['criteria_file'] in report.replace('](plans/', '](reports/plans/') or \
+            os.path.basename(summary['meta']['criteria_file']) in report
+
+    def test_the_report_is_indexed_with_its_outcome(self):
+        with open(os.path.join(REPO_ROOT, 'reports', 'README.md'), encoding='utf-8') as f:
+            assert '(2026-11-22-crop-sizing-consolidation.md)' in f.read()
+
+
+def summary_shift_p90():
+    with open(SUMMARY_JSON, encoding='utf-8') as f:
+        return json.load(f)['tilt']['shift']['sao_paulo']['abs_dy_deg_p90']

@@ -1277,6 +1277,197 @@ def rampnet_sweep_row(ramps, spec, k):
 
 
 # ---------------------------------------------------------------------------------------------------------
+# The report's tables, computed from the artifact alone. main() prints them (`tables`), and the report test
+# asserts every line appears in the report, so no table cell is typed by hand.
+
+CITY_NAMES = {'richmond': 'Richmond', 'sao_paulo': 'São Paulo', 'paterson': 'Paterson', 'annapolis': 'Annapolis',
+              'pooled': '**pooled**', 'gsv': 'GSV', 'mapillary': 'Mapillary'}
+RULE_NAMES = {'v2_x2.5': 'v2 ×2.5 (shipped)', 'v2_x2.0': 'v2 ×2.0', 'v2_x3.0': 'v2 ×3.0',
+              'v3_5.8m': 'v3 5.8 m (shipped)', 'v3_6.0m': 'v3 6.0 m', 'A_x2.2': 'option A ×2.2', 'A_x2.5': 'option A ×2.5',
+              'v1norm_x1.0_square': 'v1-norm ×1.0, square', 'v1norm_x3.5_square': 'v1-norm ×3.5, square',
+              'geo_2.5m_square': 'geo-v1.5 2.5 m, square', 'geo_1.7m_square': 'geo-v1.5 1.7 m, square'}
+METRIC_NAMES = {'fill_log_sd': 'fill log-sd', 'fill_p90_over_p10': 'fill p90/p10', 'r2': 'R²',
+                'frac_clearing_too_tight': 'clearing', 'containment': 'containment'}
+PAIR_NAMES = {'v3_minus_v2': 'v3 − v2', 'A_minus_v2': 'option A − v2', 'v3_minus_A': 'v3 − option A'}
+
+
+def _f(x, spec='.3f'):
+    return fmt(x, spec)
+
+
+def _p(x):
+    return fmt(None if x is None else 100 * x, '.1f') + '%'
+
+
+def _iv(iv, spec='.3f', pct_=False):
+    lo, hi = iv
+    if pct_:
+        return '[%s, %s]' % (_p(lo), _p(hi))
+    return '[%s, %s]' % (fmt(lo, spec), fmt(hi, spec))
+
+
+def _signed(x, spec='+.3f'):
+    return fmt(x, spec).replace('-', '−')
+
+
+def _verdict_words(verdict, first, second):
+    return {'first': '%s better' % first, 'second': '%s better' % second}.get(verdict, 'not distinguishable')
+
+
+def rules_table(summary):
+    lines = ['| rule | fill p50 | fill log-sd [95%] | fill p90/p10 | R² [95%] | clearing [95%] | containment | '
+             'window p50 | vertical fill p50 |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+    for name in RULES:
+        m = summary['rules'][name]['strata']['pooled']
+        iv = summary['rule_intervals'][name]['pooled']
+        lines.append('| %s | %s | %s %s | %s | %s %s | %s %s | %s | %s° | %s |' % (
+            RULE_NAMES[name], _f(m['fill_p50']), _f(m['fill_log_sd']), _iv(iv['fill_log_sd']),
+            _f(m['fill_p90_over_p10'], '.2f'), _f(m['r2']), _iv(iv['r2']), _p(m['frac_clearing_too_tight']),
+            _iv(iv['frac_clearing_too_tight'], pct_=True), _f(m['containment']), _f(m['window_deg_p50'], '.1f'),
+            _f(m['vfill_p50'])))
+    return lines
+
+
+def strata_table(summary):
+    lines = ['| stratum | n | fill log-sd v2 / v3 / A | R² v2 / v3 / A | clearing v2 / v3 / A | isotonic ceiling [95%] |',
+             '|---|---:|---:|---:|---:|---:|']
+    for stratum in ('pooled',) + CITIES + PROVIDERS:
+        ms = [summary['rules'][r]['strata'][stratum] for r in ('v2_x2.5', 'v3_5.8m', 'A_x2.2')]
+        lines.append('| %s | %d | %s | %s | %s | %s %s |' % (
+            CITY_NAMES[stratum], ms[0]['n'], ' / '.join(_f(m['fill_log_sd']) for m in ms),
+            ' / '.join(_f(m['r2']) for m in ms), ' / '.join(_p(m['frac_clearing_too_tight']) for m in ms),
+            _f(summary['ceiling'][stratum]['isotonic_r2']), _iv(summary['ceiling_intervals'][stratum])))
+    return lines
+
+
+def paired_table(summary):
+    lines = ['| comparison | metric | pooled difference [95%] | Richmond / São Paulo / Paterson / Annapolis | '
+             'criterion 2 | sign holds in all four held-out folds |', '|---|---|---:|---:|---|---|']
+    for name, pair in summary['paired'].items():
+        first, second = PAIR_NAMES[name].split(' − ')
+        for metric in DISCRIMINATING:
+            e = pair['metrics'][metric]
+            lines.append('| %s | %s | %s %s | %s | %s | %s |' % (
+                PAIR_NAMES[name], METRIC_NAMES[metric], _signed(e['pooled'], '+.4f'),
+                _iv(e['interval'], '+.4f').replace('-', '−'),
+                ' / '.join(_signed(e['cities'][c]) for c in CITIES),
+                _verdict_words(e['verdict'], first, second), 'yes' if e['out_of_sample']['holds'] else 'no'))
+    return lines
+
+
+def loco_table(summary):
+    labels = {'v2_x2.5_fixed': 'v2 ×2.5 (not cross-validated)', 'v2_band': 'v2, band centre',
+              'v3_match_v2': 'v3, match v2', 'v3_band': 'v3, band centre', 'A_match_v2': 'option A, match v2',
+              'A_band': 'option A, band centre'}
+    lines = ['| held out | rule, criterion | constant | clearing [95%] | misses the 45% floor | fill p50 [95%] | '
+             'p50 in 0.28-0.44 |', '|---|---|---:|---:|---|---:|---|']
+    for held in CITIES:
+        rows = summary['loco'][held]['rows']
+        for label in labels:
+            r = rows[label]
+            constant = '%.1f m' % r['constant'] if r['family'] == 'v3' else '×%s' % fmt(r['constant'], 'g')
+            lines.append('| %s | %s | %s | %s %s | %s | %s %s | %s |' % (
+                CITY_NAMES[held], labels[label], constant,
+                _p(r['clearing']), _iv(r['clearing_interval'], pct_=True), 'yes' if r['misses_floor'] else 'no',
+                _f(r['fill_p50']), _iv(r['fill_p50_interval']), 'yes' if r['in_band'] else 'no'))
+    return lines
+
+
+def selection_table(summary):
+    lines = ['| criterion | selected | replicates 2.5% / 50% / 97.5% | replicates selecting 5.8 m | selecting 6.0 m |',
+             '|---|---:|---:|---:|---:|']
+    block = summary['selection_bootstrap']['v3_study_grid']
+    for criterion, label in (('match_v2', "match v2's fill p50"), ('band', 'band centre (fill p50 nearest 0.36)')):
+        b = block[criterion]
+        lines.append('| %s | %.1f m | %.1f / %.1f / %.1f m | %s | %s |' % (
+            label, b['point'], b['p2_5'], b['p50'], b['p97_5'], _p(b['share_5_8']), _p(b['share_6_0'])))
+    return lines
+
+
+def d6_table(summary):
+    d6 = summary['d6']
+    lines = ['| group | band-centre width [95%] | v2-matched width [95%] |', '|---|---:|---:|']
+    for g in PROVIDERS + CITIES:
+        lines.append('| %s | %.1f m %s | %.1f m %s |' % (
+            CITY_NAMES[g], d6['band']['widths'][g], _iv(d6['band']['width_intervals'][g], '.1f'),
+            d6['match_v2']['widths'][g], _iv(d6['match_v2']['width_intervals'][g], '.1f')))
+    for label, name in (('mapillary_minus_gsv', 'Mapillary − GSV'), ('annapolis_minus_richmond', 'Annapolis − Richmond')):
+        a, b = d6['band'][label], d6['match_v2'][label]
+        lines.append('| %s | %s m %s | %s m %s |' % (
+            name, _signed(a['point'], '+.1f'), _iv(a['interval'], '+.1f').replace('-', '−'),
+            _signed(b['point'], '+.1f'), _iv(b['interval'], '+.1f').replace('-', '−')))
+    return lines
+
+
+def power_table(summary):
+    mults = [r['multiplier'] for r in summary['power']['v2']['rows']]
+    lines = ['| rule | %s | minimum detectable multiplier |' % ' | '.join('×%g' % m for m in mults),
+             '|---|%s---:|' % ('---:|' * len(mults))]
+    for name, block in summary['power'].items():
+        lines.append('| %s | %s | ×%s |' % (name, ' | '.join(fmt(r['power'], '.3f') for r in block['rows']),
+                                            fmt(block['mde_multiplier'], 'g')))
+    return lines
+
+
+def tilt_config_table(summary):
+    lines = ['| rule | configuration | fill p50 | fill log-sd | fill p90/p10 | R² | clearing | containment | window p50 |',
+             '|---|---|---:|---:|---:|---:|---:|---:|---:|']
+    for name, block in summary['tilt']['rules'].items():
+        for cfg in TILT_CONFIGS:
+            m = block['configs'][cfg]
+            lines.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s° |' % (
+                name, cfg, _f(m['fill_p50']), _f(m['fill_log_sd']), _f(m['fill_p90_over_p10'], '.2f'), _f(m['r2']),
+                _p(m['frac_clearing_too_tight']), _f(m['containment']), _f(m['window_deg_p50'], '.1f')))
+    return lines
+
+
+def tilt_diff_table(summary):
+    lines = ['| rule | difference | metric | pooled [95%] | Paterson | São Paulo | criterion 2 |',
+             '|---|---|---|---:|---:|---:|---|']
+    rows = (('grav_minus_rig', 'S-grav − S-rig', 'S-grav', 'S-rig'), ('grav_minus_neg', 'S-grav − S-neg', 'S-grav', 'S-neg'),
+            ('neg_minus_rig', 'S-neg − S-rig', 'S-neg', 'S-rig'), ('noise_minus_rig', 'S-grav-noise − S-rig', 'S-grav-noise', 'S-rig'))
+    for name, block in summary['tilt']['rules'].items():
+        for key, label, first, second in rows:
+            for metric in TILT_METRICS:
+                e = block[key][metric]
+                lines.append('| %s | %s | %s | %s %s | %s | %s | %s |' % (
+                    name, label, METRIC_NAMES[metric], _signed(e['pooled'], '+.4f'),
+                    _iv(e['interval'], '+.4f').replace('-', '−'), _signed(e['cities']['paterson']),
+                    _signed(e['cities']['sao_paulo']), _verdict_words(e['verdict'], first, second)))
+        for beta, d in block['beta_sensitivity_grav_minus_rig'].items():
+            for metric in TILT_METRICS:
+                e = d[metric]
+                lines.append('| %s | S-grav − S-rig at beta %s | %s | %s %s | %s | %s | %s |' % (
+                    name, beta, METRIC_NAMES[metric], _signed(e['pooled'], '+.4f'),
+                    _iv(e['interval'], '+.4f').replace('-', '−'), _signed(e['cities']['paterson']),
+                    _signed(e['cities']['sao_paulo']), _verdict_words(e['verdict'], 'S-grav', 'S-rig')))
+    return lines
+
+
+def label_type_table(summary):
+    lines = ['| label type | n | depression p10 / p50 / p90 / p99 | v2 window | v3 5.8 m window | option A ×2.2 window |',
+             '|---|---:|---:|---:|---:|---:|']
+    for label_type, block in summary['label_types']['label_types'].items():
+        rows = block['rows']
+        lines.append('| %s | {:,} | %s | %s | %s | %s |'.format(block['n']) % (
+            label_type, ' / '.join('%.1f°' % r['depression_deg'] for r in rows),
+            ' / '.join('%.1f°' % r['v2_x2.5'] for r in rows), ' / '.join('%.1f°' % r['v3_5.8m'] for r in rows),
+            ' / '.join('%.1f°' % r['A_x2.2'] for r in rows)))
+    return lines
+
+
+def camera_table(summary):
+    lines = ['| height | value | where | what it is |', '|---|---:|---|---|']
+    for c in summary['camera_heights']['heights']:
+        lines.append('| %s | %s m | %s | %s |' % (c['name'], fmt(c['value_m'], 'g'), c['where'], c['what']))
+    return lines
+
+
+REPORT_TABLES = (rules_table, strata_table, paired_table, loco_table, selection_table, d6_table, power_table,
+                 tilt_config_table, tilt_diff_table, label_type_table, camera_table)
+
+
+# ---------------------------------------------------------------------------------------------------------
 # Printing, from the summary alone.
 
 def print_summary(summary):
@@ -1328,7 +1519,16 @@ def main(argv=None):
     st.add_argument('--write')
     st.add_argument('--per-ramp')
     st.add_argument('--boot', type=int, default=N_BOOT)
+    tb = sub.add_parser('tables', help="print the report's tables from a committed summary")
+    tb.add_argument('--summary', default=SUMMARY_JSON)
     args = parser.parse_args(argv)
+
+    if args.command == 'tables':
+        with open(args.summary, encoding='utf-8') as f:
+            summary = json.load(f)
+        for table in REPORT_TABLES:
+            print('\n'.join(table(summary)) + '\n')
+        return 0
 
     if args.command == 'extract':
         files = build_extract(args.rampnet, args.labeler)

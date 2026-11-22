@@ -1,0 +1,20 @@
+M1 pitch and roll swapped                        T_b_below                        KILLED  4 failed, 67 deselected in 3.35s
+M2 tilt sign flipped                             T_b_below                        KILLED  4 failed, 67 deselected in 1.34s
+M3 roll not wrapped                              roll_is_wrapped                  KILLED  1 failed, 70 deselected in 1.17s
+M4 every configuration sized at r.y              sizing_at_g_changes              KILLED  1 failed, 70 deselected in 1.17s
+M5 Off sized at r.y                              identical_size_metrics           KILLED  1 failed, 70 deselected in 1.16s
+M6 bootstrap resamples ramps                     resamples_panos                  KILLED  1 failed, 70 deselected in 1.11s
+M7 only the first ramp of a drawn pano counted   resamples_panos                  KILLED  1 failed, 70 deselected in 1.14s
+M8 criterion 2 ignores the cities                criterion_2                      KILLED  1 failed, 70 deselected in 1.16s
+M9 a city at 0 agrees                            criterion_2                      KILLED  1 failed, 70 deselected in 1.16s
+M10 percentile rank floored                      expanded_list                    KILLED  1 failed, 70 deselected in 1.14s
+M11 sd with ddof 0                               unit_weights                     KILLED  1 failed, 1 passed, 69 deselected in 1.15s
+M12 leave-one-out keeps the held-out city        other_cities_only                KILLED  1 failed, 70 deselected in 1.13s
+M13 last grid value on a tie                     first_on_a_tie                   KILLED  1 failed, 70 deselected in 1.20s
+M14 power reads the gold apron                   without_apron_extents            KILLED  1 failed, 70 deselected in 1.21s
+M15 tilt verdict ignores a contrary metric       combines_the_two_metrics         KILLED  1 failed, 70 deselected in 1.15s
+M16 v2 scale ignored                             scale_multiplies                 KILLED  1 failed, 70 deselected in 1.10s
+M17 geo-v1.5 near clamp 1 m                      square_rules                     KILLED  1 failed, 4 passed, 66 deselected in 1.18s
+M18 square window not shifted at the pole        square_window                    KILLED  1 failed, 70 deselected in 1.20s
+M19 S-grav centred on g                          centres_on_the_modelled_point    KILLED  1 failed, 70 deselected in 1.13s
+killed 19 of 19
