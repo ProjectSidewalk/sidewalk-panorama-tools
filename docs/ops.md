@@ -934,6 +934,22 @@ python3 scan_black_bands.py <storage-dir> --max-runtime 240   # a slice; the res
 python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano with ANY band: calibration
 ```
 
+**Keep its outputs off the store.** By default both files land *inside* `<storage-dir>`, and on a host whose
+account can write the store that write succeeds. Pass `--ledger` and `--worklist` outside the store every time.
+The #179 calibration went one step further and never handed the tool a store path at all: it swept a
+**symlink farm** on local disk, `<farm>/<city>/<shard>/<id>.jpg`, real shard directories and each file a
+symlink to the stored pano. `walk_store_panos` lists and `os.stat`/Pillow follow links, so the ledger's `size`
+and `mtime_ns` are the stored file's and even a forgotten default lands on scratch:
+
+```bash
+python3 scan_black_bands.py <farm>/<city> --ledger <out>/<city>/black_bands.csv \
+    --worklist <out>/<city>/black_band_worklist.csv --max-runtime 240
+```
+
+`reports/scripts/edge_band_calibration.py frame` builds such a farm from a frozen id list, and its `run`
+dispatches the unmodified tool over it under a read-rate cap; see
+[the calibration report](../reports/2026-11-22-edge-band-calibration.md).
+
 **It reads, and writes only its own two files.** No panorama is written, moved or deleted. The files are:
 
 - `<storage-dir>/black_bands.csv` (`--ledger`), one row per pano scanned: `pano_id, size, mtime_ns, width,

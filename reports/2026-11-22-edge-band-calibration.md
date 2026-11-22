@@ -87,3 +87,36 @@ measured in the run environment) was the only measurement taken.
 whose latency is written down first; abort on 30 s continuously in uninterruptible sleep, on 120 s of unpaused
 time with no ledger row, stdout line or read, or on the last 100 panos of a source taking over 3 times the
 baseline; no retry after an abort; a hard stop at 17:00 Pacific.
+
+## Session log (partial; the measurement is not finished)
+
+Times are Pacific, 2026-11-22. Nothing in this section is a band result.
+
+| Session | Start | End | Readers | Panos ledgered | GB read | Outcome |
+|---|---|---|---:|---:|---:|---|
+| opening | 08:54 | 09:06 | 1 | 3,415 | 33.0 | stopped by its child's `--max-runtime`; no abort; no-writes check passed |
+| main1 | 09:07 | not observed | 2 | not yet brought home | | see below |
+
+**The opening slice** (`sessions/opening.json`, `baseline.json`): bayonne-fr, then the smallest GSV folders.
+Per 100 panos of unpaused time: **20.94 s for GSV** (one reader read 38.6 to 51.5 MB/s on the folders over 100
+panos) and **8.16 s for provider bytes** (bayonne-fr's 98 panos only, 18.6 MB/s). Reached of frozen: bayonne-fr 98
+of 98, goiania-br 9 of 9, beringen-be 49 of 49, newport-ky 257 of 257, clifton-nj 588 of 588, blackhawk-hills-il
+609 of 609, la-piedad-old 619 of 619, fort-wayne-in 695 of 695, hackensack-nj 491 of 758; 3,415 of 133,919 in all.
+
+**main1** was started at 09:07 with 2 readers and the opening's baseline, to sweep until 16:10 and then run the
+extras until 16:50. At 09:49 the connection used to wait on it was lost (exit 255, the multiplexed connection
+gone). By the stop rule for this run, no further contact with the host was made that day. The dispatcher runs
+detached on the host and ends itself under the same limits and stops; its ledgers, timing log, session record
+and the no-writes listings stay on the host's local scratch until they are brought home. Nothing it measured is
+in this commit.
+
+### Deviations so far
+
+- The opening slice ran 12 minutes, not 15: the dispatcher ends each child's `--max-runtime` 3 minutes before its
+  stop, so a `--minutes 15` session's child stops at 12. The baseline rests on 3,317 GSV panos and 98 provider panos.
+- The plan named `la-piedad-old` and `validation-study` as folders outside the fleet. Both are rows of
+  `log_analyzer/cities.csv` that the analyzer monitors (`analyze.py` drops only `#` rows), so by the plan's rule
+  ("whatever the analyzer treats as the roster") they are fleet folders here. Three Mapillary folders are not on
+  the roster (brussels-be, kaysville-ut, sacramento-ca) and are reported separately. **Provisional.**
+- The planner's "about 13 events" for a median stratum assumed a weight near 0.02; `frame.json` gives 0.0103
+  (burnaby), hence 25.
