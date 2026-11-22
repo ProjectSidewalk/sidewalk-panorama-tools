@@ -792,6 +792,9 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
     photo_host_answers = 0
     # Panos refused for a frame disagreement (#185), and the first one's text for the condition's detail.
     frame_refusals, first_frame_refusal = 0, None
+    # #185 Part 2, switch on only (#243 review N1): retired panos beside a kept original no copy can be made from
+    # (gsv.KeptOriginalRetiredError), and the first one's original, for the served-larger-kept detail.
+    retired_beside_original, first_retired_original = 0, None
     raise_seconds = 0.0     # monotonic seconds spent in attempts that raised, for the budget arm's duration gate
     # Files found on disk that are not whole JPEGs (#239), and the first one's path for the condition's detail.
     incomplete_count, first_incomplete = 0, None
@@ -870,12 +873,19 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 result_code = None      # not a verdict, so the breaker below neither counts nor forgives it
                 frame_refused = isinstance(e, gsv.FrameDisagreementError)
                 photo_host_answer = gsv.is_photo_host_answer(e)
+                # Google answered "no imagery" beside a kept original (#243 review N1): an answer like a frame
+                # refusal, with its own count. Only the retired case: a read-back mismatch stays a raise.
+                kept_original_retired = isinstance(e, gsv.KeptOriginalRetiredError)
                 if frame_refused:
                     # The one counting path for every arm that refuses a frame (#185): photometa's, the
                     # probe's, and any later check that raises the same exception.
                     frame_refusals += 1
                     if first_frame_refusal is None:
                         first_frame_refusal = str(e)
+                if kept_original_retired:
+                    retired_beside_original += 1
+                    if first_retired_original is None:
+                        first_retired_original = e.native_path
                 pushback = gsv.pushback_reason(e) if source == 'gsv' else None
                 mapillary_pushback = mapillary.pushback_reason(e) if source == 'mapillary' else None
                 # A raise's own duration rides on its ERROR line (#178 step 1): scrape.log is the one durable
@@ -891,13 +901,13 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                     # logging, and backoff logs nothing. `(HTTP N)` is what the ops grep keys on.
                     logging.error("IMAGEDOWNLOAD: Failed to download pano %s (%s): refused by Google: %s "
                                   "(after %.1f s)", pano_id, pushback, str(e), attempt_seconds)
-                elif frame_refused:
+                elif frame_refused or kept_original_retired:
                     logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s", pano_id, str(e))
                 else:
                     logging.error("IMAGEDOWNLOAD: Failed to download pano %s due to error %s (after %.1f s)",
                                   pano_id, str(e), attempt_seconds)
             else:
-                frame_refused = photo_host_answer = False
+                frame_refused = photo_host_answer = kept_original_retired = False
 
             # A push-back (#162) counts as RAISED: it is Google refusing this host, not an answer about any
             # pano, so a night of refusals and network errors with nothing answered is still no success. The
@@ -906,7 +916,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
             # count, so enough network raises between refusals reach the minimum before the trip - and then
             # both are reported, deliberately: those raises were real, and the trip books the city failed
             # through `tripped` either way.
-            if result_code is None and not frame_refused:
+            if result_code is None and not (frame_refused or kept_original_retired):
                 raised += 1
                 if photo_host_answer:
                     # Field 20 counts it (unledgered, retried), `images-no-success` does not, in EITHER tally:
@@ -920,7 +930,8 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                 # A frame disagreement (#74) is unledgered like a raise, but it is Google ANSWERING - the pano
                 # has its own WARNING and an app-side remedy - so for `images-no-success` it is an answer: ten
                 # of them on a mature city served nothing new would otherwise alarm nightly at "the network,
-                # the store, or a bug" (#174 final review, cross-PR note 3).
+                # the store, or a bug" (#174 final review, cross-PR note 3). A KeptOriginalRetiredError is the
+                # same: it exists only when Google answered tonight (#243 review N1).
                 answered += 1
 
             limit = MAX_CONSECUTIVE_PERMANENT_FAILURES.get(source)
@@ -1164,6 +1175,7 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                        % (flagged_edge_bands, gsv._edge_band_run.details[edge_bands_before]))
 
     kept_larger = gsv._served_larger_run.kept - kept_larger_before
+    served_larger_details = []
     if kept_larger:
         # #185 Part 2 (switch on only). Each pano already had its own WARNING on both channels; this is the one
         # end-of-phase line and the condition that fails the night. Worded without "frame disagreement", which
@@ -1173,11 +1185,26 @@ def download_panorama_images(storage_path, pano_infos, run_start_monotonic=None,
                    "docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records" % (kept_larger,))
         logging.warning("%s", message)
         print(message)
-        note_condition(stop_reasons, CONDITION_SERVED_LARGER_KEPT,
-                       "%d pano(s) kept at Google's larger frame; first: %s"
-                       % (kept_larger, gsv._served_larger_run.details[kept_larger_before]))
+        served_larger_details.append("%d pano(s) kept at Google's larger frame; first: %s"
+                                     % (kept_larger, gsv._served_larger_run.details[kept_larger_before]))
         if stop_reasons is not None:
             stop_reasons['served_larger_kept'] = kept_larger
+    if retired_beside_original:
+        # #243 review N1 (switch on only): raised every run and never ledgered, so without this the night exits 0
+        # and nobody is told there is a decision to make. The same code as a kept pano - the same remedy page -
+        # but its own line and its own half of the detail; not counted in `served_larger_kept`.
+        message = ("IMAGEDOWNLOAD: WARNING - %d retired GSV pano(s) beside a kept original no copy can be made from "
+                   "(served-larger-kept condition); not ledgered, retried next run. See "
+                   "docs/ops.md#a-gsv-pano-kept-at-a-larger-frame-than-the-app-records" % (retired_beside_original,))
+        logging.warning("%s", message)
+        print(message)
+        # The file's name, not its path: the detail is cut at CONDITION_DETAIL_MAX and may follow the kept half,
+        # the queue's line already names the city, and the pano's own WARNING carries the full path.
+        served_larger_details.append('%d retired pano(s) beside a kept original no copy can be made from; first: %s'
+                                     % (retired_beside_original, os.path.basename(first_retired_original)))
+    if served_larger_details:
+        # ONE note: note_condition keeps a code's first detail only, so two notes would drop the second fact.
+        note_condition(stop_reasons, CONDITION_SERVED_LARGER_KEPT, '; '.join(served_larger_details))
 
     if image_stats is not None:
         # Field 20 (#182). Here, not seeded before the loop: a phase that never got this far must leave the

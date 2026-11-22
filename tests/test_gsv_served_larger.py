@@ -405,6 +405,8 @@ class TestAPanoServedLargerIsKept:
 
         assert not isinstance(error.value, gsv.FrameDisagreementError), \
             '#207 counts FrameDisagreementError by isinstance; this is not a frame disagreement'
+        assert not isinstance(error.value, gsv.KeptOriginalRetiredError), \
+            'the mount or a bug, not Google answering: the runner must keep counting it as a raise (#243 N1)'
         assert '1024x512' in str(error.value) and '2048x1024' in str(error.value)
         assert not jpg(tmp_path).exists()
         assert gsv._served_larger_run.kept == 0
@@ -644,10 +646,12 @@ class TestTheCopyIsRebuiltFromAKeptOriginal:
         stub_probe(monkeypatch, -1)
         no_tiles(monkeypatch)
 
-        with pytest.raises(gsv.KeptOriginalError) as error:
+        with pytest.raises(gsv.KeptOriginalRetiredError) as error:
             download(tmp_path, pano_info(*NATIVE, pano_id=PANO))
 
         assert str(native(tmp_path)) in str(error.value)
+        assert error.value.native_path == str(native(tmp_path)), 'what the runner names in the condition (#243 N1)'
+        assert isinstance(error.value, gsv.KeptOriginalError)
         assert not isinstance(error.value, gsv.FrameDisagreementError)
         assert 'frame disagreement' not in str(error.value)
         assert native(tmp_path).read_bytes() == original

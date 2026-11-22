@@ -2128,7 +2128,7 @@ class TestAnyConditionFailsTheNight:
         assert code == 1
         assert '3/3 cities ok' in out
         assert ("[queue] served-larger-kept: GSV panos kept at Google's larger frame beside an app-frame copy; "
-                "the app's record is wrong") in out
+                "the app's record is wrong, or a retired pano's kept original needs a decision") in out
         assert "1 pano(s) kept at Google's larger frame" in out
 
     def test_an_unusable_image_ledger_is_labelled_and_fails_the_night(self, tmp_path, fake_runner, journal,

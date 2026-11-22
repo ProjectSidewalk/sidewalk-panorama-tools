@@ -701,8 +701,21 @@ class KeptOriginalError(Exception):
 
     TRANSIENT under the #41 ledger: counted in tonight's failures, not ledgered, retried next run. Deliberately
     NOT a FrameDisagreementError subclass: DownloadRunner counts that type by isinstance (#207), and neither case
-    is a frame disagreement.
+    is a frame disagreement. The read-back case is an ordinary raise there (the mount or a bug); the retired case
+    is KeptOriginalRetiredError, below.
     """
+
+
+class KeptOriginalRetiredError(KeptOriginalError):
+    """Switch on: Google answered "no imagery" for a pano whose `<pano_id>.native` is on disk and could not be
+    copied from (#243 review N1). Raised every run until an operator acts (docs/ops.md, the orphan), so
+    DownloadRunner recognises it by isinstance: an ANSWER for `images-no-success` and not in log.csv field 20
+    (Google answered tonight, as for a frame disagreement), and the `served-larger-kept` condition naming
+    `native_path`, so the night fails and someone hears of it."""
+
+    def __init__(self, message, native_path):
+        super().__init__(message)
+        self.native_path = native_path
 
 
 def _served_larger_plan(frame):
@@ -1162,12 +1175,14 @@ def download_single_pano(storage_path, pano_info):
         # photometa instead of returning None.
         #
         # Except, switch on, beside a kept original (#185 Part 2, #243 review): the store holds this pano, so
-        # it raises instead, unledgered, naming the file. Off, master's verdict stands (the documented orphan).
+        # it raises instead, unledgered, naming the file; the runner turns it into a condition (N1). Off,
+        # master's verdict stands (the documented orphan).
         if KEEP_SERVED_LARGER_ORIGINALS:
             native_path = common.native_original_path(out_image_name)
             if os.path.lexists(native_path):
-                raise KeptOriginalError('pano %s: Google answers no imagery for it, but a kept original is on disk '
-                                        'at %s; not ledgered downloaded=0, retried next run' % (pano_id, native_path))
+                raise KeptOriginalRetiredError(
+                    'pano %s: Google answers no imagery for it, but a kept original is on disk at %s; not '
+                    'ledgered downloaded=0, retried next run' % (pano_id, native_path), native_path)
         return DownloadResult.failure
     refusal = _frame_refusal(pano_id, frame)
     if refusal is not None:
