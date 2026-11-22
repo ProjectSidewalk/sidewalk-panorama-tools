@@ -40,7 +40,8 @@
  "rampnet_commit": "8d8d8eef58ad631b143c2a8e4d7224c2fe1221a5",
  "snapshot_redactions": [
   {
-   "from": "D:\\Git\\RampNet\\benchmark",
+   "pattern": "(?<![A-Za-z0-9])[A-Za-z]:\\\\[^\\s`]*?\\\\RampNet\\\\benchmark",
+   "removed_sha256": "21908e0814bec76025523ba2d5d255b787ef1474ff1d99e8330e3eb5ca95c4c4",
    "to": "<RampNet>\\benchmark"
   }
  ],

@@ -41,6 +41,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 
@@ -79,9 +80,11 @@ TILT_ROWS = 'pano_tilt_validation_gsv_gold_panos.json'
 PLAN_SNAPSHOT = 'PLAN-crop-clarity.working-notes-2c46e7f.md'
 LABELER_COMMIT = '2c46e7f510f017811c8fccd82d0fd17dbc8c774f'
 LABELER_PLAN_PATH = 'PLAN-crop-clarity.md'
-# The snapshot is the file at LABELER_COMMIT with exactly these substitutions, each of which must occur
-# once: committed files carry no machine's absolute paths.
-SNAPSHOT_REDACTIONS = (('D:\\Git\\RampNet\\benchmark', '<RampNet>\\benchmark'),)
+# The snapshot is the file at LABELER_COMMIT with each of these substitutions made exactly once: committed files
+# carry no machine's absolute paths. Each is a regex (a local drive-letter path ending in the RampNet benchmark
+# folder) and its replacement, so the path itself is written nowhere here; provenance.json records the sha256 of
+# each removed string instead (review 1 of PR #254, finding 1: an earlier version wrote the path out).
+SNAPSHOT_REDACTIONS = ((r'(?<![A-Za-z0-9])[A-Za-z]:\\[^\s`]*?\\RampNet\\benchmark', '<RampNet>\\benchmark'),)
 PROVENANCE_JSON = 'provenance.json'
 PER_RAMP_CSV = 'per_ramp.csv.gz'
 POWER_FIRST_JSON = 'power_first.json'
@@ -226,12 +229,16 @@ def _json_bytes(obj):
 
 
 def redact_snapshot(data):
+    """(redacted bytes, [sha256 of each removed string]). Each SNAPSHOT_REDACTIONS pattern must match once."""
     text = data.decode('utf-8')
-    for old, new in SNAPSHOT_REDACTIONS:
-        if text.count(old) != 1:
-            raise ValueError('expected one %r in the snapshot, found %d' % (old, text.count(old)))
-        text = text.replace(old, new)
-    return text.encode('utf-8')
+    removed = []
+    for pattern, replacement in SNAPSHOT_REDACTIONS:
+        found = re.findall(pattern, text)
+        if len(found) != 1:
+            raise ValueError('expected one match of %r in the snapshot, found %d' % (pattern, len(found)))
+        removed.append(_sha256(found[0].encode('utf-8')))
+        text = re.sub(pattern, lambda m: replacement, text)
+    return text.encode('utf-8'), removed
 
 
 def build_extract(rampnet_root, labeler_root):
@@ -262,7 +269,7 @@ def build_extract(rampnet_root, labeler_root):
     plan = _git_show(labeler_root, LABELER_COMMIT, LABELER_PLAN_PATH)
     sources.append({'repo': 'sidewalk-auto-labeler', 'commit': LABELER_COMMIT, 'path': LABELER_PLAN_PATH,
                     'sha256': _sha256(plan)})
-    files[PLAN_SNAPSHOT] = redact_snapshot(plan)
+    files[PLAN_SNAPSHOT], removed = redact_snapshot(plan)
     files[PROVENANCE_JSON] = _json_bytes({
         'rampnet_commit': rev,
         'labeler_commit': LABELER_COMMIT,
@@ -272,7 +279,8 @@ def build_extract(rampnet_root, labeler_root):
         'sources': sources,
         'extracts': {name: {'sha256': _sha256(data), 'bytes': len(data)} for name, data in sorted(files.items())},
         'gold_rows': len(rows),
-        'snapshot_redactions': [{'from': a, 'to': b} for a, b in SNAPSHOT_REDACTIONS],
+        'snapshot_redactions': [{'pattern': a, 'to': b, 'removed_sha256': h}
+                                for (a, b), h in zip(SNAPSHOT_REDACTIONS, removed)],
         'not_copied': 'the pano records\' attribution fields, which stay in RampNet',
     })
     return files

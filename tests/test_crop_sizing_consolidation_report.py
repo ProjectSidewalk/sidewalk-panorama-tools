@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 
 import numpy as np
@@ -44,6 +45,25 @@ REPORT_MD = os.path.join(REPO_ROOT, 'reports', '2026-11-22-crop-sizing-consolida
 V2_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-08-19-crop-sizing-v2.json')
 V3_JSON = os.path.join(REPO_ROOT, 'reports', 'data', '2026-09-26-crop-sizing-v3.json')
 CITIES = ('richmond', 'sao_paulo', 'paterson', 'annapolis')
+
+
+# A local absolute path: a drive letter (not inside a word, so https:// is not one) followed by one or two
+# slashes or backslashes and a letter, or a POSIX home, or the user name. Built without writing a path out.
+_LOCAL_PATH = re.compile(r'(?<![A-Za-z0-9])[A-Za-z]:(?:' + re.escape(chr(92)) + r'{1,2}|/)[A-Za-z]'
+                         r'|/Users/|/home/|jonf')
+
+
+def _json_strings(obj):
+    """Every string (key or value) in a decoded JSON document."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k
+            yield from _json_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _json_strings(v)
+    elif isinstance(obj, str):
+        yield obj
 
 
 def ramp(depression=10.0, bearing=0.0, pano_h=4096, box_w=200.0, box_h=60.0, pitch=0.0, roll=0.0,
@@ -451,22 +471,35 @@ class TestTheGoldExtract:
                              capture_output=True, text=True, check=True).stdout
         assert out.strip().endswith(': text: unset'), out
 
-    def test_no_committed_extract_names_a_machine(self):
-        needles = ('D:' + chr(92) + 'Git', 'D:/Git', 'C:' + chr(92) + 'Users', '/Users/', '/home/', 'jonf')
-        seen = 0
-        for root, _, files in os.walk(DATA_DIR):
-            for name in files:
-                path = os.path.join(root, name)
-                opener = gzip.open if name.endswith('.gz') else open
-                with opener(path, 'rt', encoding='utf-8') as f:
-                    text = f.read()
-                seen += 1
-                for needle in needles:
-                    assert needle not in text, (name, needle)
-        assert seen >= 9, 'the extract folder is missing or nearly empty'
+    def test_no_committed_file_of_this_study_names_a_machine(self):
+        """No local absolute path in the extract, the script, the report or the criteria. Checked on the raw text
+        AND on every decoded JSON string, because JSON doubles a backslash and a plain substring search for a
+        Windows path then cannot match (review 1 of PR #254, finding 1). Any drive-letter path counts."""
+        files = [os.path.join(root, name) for root, _, names in os.walk(DATA_DIR) for name in names]
+        assert len(files) >= 9, 'the extract folder is missing or nearly empty'
+        files += [os.path.join(SCRIPTS, 'crop_sizing_consolidation.py'), REPORT_MD,
+                  os.path.join(REPO_ROOT, cs.CRITERIA_FILE)]
+        for path in files:
+            opener = gzip.open if path.endswith('.gz') else open
+            with opener(path, 'rt', encoding='utf-8') as f:
+                text = f.read()
+            texts = [text]
+            if path.endswith('.json'):
+                texts += list(_json_strings(json.loads(text)))
+            for t in texts:
+                assert not _LOCAL_PATH.search(t), (path, _LOCAL_PATH.search(t).group(0))
+
+    def test_the_path_check_sees_a_json_escaped_path(self):
+        """Guards the guard: the path a JSON file stores with doubled backslashes is still found."""
+        path = 'E:' + chr(92) + 'Work' + chr(92) + 'x'
+        text = json.dumps({'from': path})
+        assert chr(92) * 2 in text
+        assert any(_LOCAL_PATH.search(t) for t in [text] + list(_json_strings(json.loads(text))))
+        assert _LOCAL_PATH.search('see /home/someone/x') and not _LOCAL_PATH.search('<RampNet>' + chr(92) + 'benchmark')
 
     def test_the_plan_snapshot_is_the_labeler_file_with_one_path_redacted(self, provenance):
-        assert provenance['snapshot_redactions'] == [{'from': a, 'to': b} for a, b in cs.SNAPSHOT_REDACTIONS]
+        assert [(r['pattern'], r['to']) for r in provenance['snapshot_redactions']] == list(cs.SNAPSHOT_REDACTIONS)
+        assert all(len(r['removed_sha256']) == 64 for r in provenance['snapshot_redactions'])
         with open(os.path.join(DATA_DIR, cs.PLAN_SNAPSHOT), encoding='utf-8') as f:
             text = f.read()
         assert cs.SNAPSHOT_REDACTIONS[0][1] in text
