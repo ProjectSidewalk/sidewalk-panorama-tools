@@ -33,6 +33,7 @@ every difference is paired. Percentiles are nearest rank, on the replicate's exp
 """
 import argparse
 import csv
+import functools
 import gzip
 import hashlib
 import io
@@ -588,9 +589,16 @@ def tilt_rule_verdict(per_metric):
 # ---------------------------------------------------------------------------------------------------------
 # Selection of a constant.
 
+@functools.lru_cache(maxsize=None)
+def _cut_width(family, k, size_y, pano_w, pano_h):
+    """cut_box's width alone, which does not depend on the centre; cached, because every selection below
+    re-cuts the same ramps at the same grid values."""
+    return cut_box({'x': 0.0, 'y': size_y, 'pano_w': pano_w, 'pano_h': pano_h}, (family, k)).width
+
+
 def _fills(ramps, family, k, size_ys=None):
-    sizes = [None] * len(ramps) if size_ys is None else size_ys
-    return [r['box_w'] / cut_box(r, (family, k), size_y=s).width for r, s in zip(ramps, sizes)]
+    sizes = [r['y'] for r in ramps] if size_ys is None else size_ys
+    return [r['box_w'] / _cut_width(family, k, s, r['pano_w'], r['pano_h']) for r, s in zip(ramps, sizes)]
 
 
 def select_constant(ramps, family, grid, target, size_ys=None):
@@ -615,9 +623,15 @@ def fill_matrix(ramps, family, grid, size_ys=None):
     return np.array([_fills(ramps, family, k, size_ys) for k in grid]).T
 
 
-def replicate_selection(F, W, targets, grid):
-    """The grid value each replicate selects: fill p50 nearest its target, first on a tie."""
-    P = np.stack([weighted_percentile(F[:, g], W, 50) for g in range(F.shape[1])], axis=1)
+def replicate_p50s(F, W):
+    """Each replicate's fill p50 at each grid value (replicates x grid)."""
+    return np.stack([weighted_percentile(F[:, g], W, 50) for g in range(F.shape[1])], axis=1)
+
+
+def replicate_selection(F, W, targets, grid, P=None):
+    """The grid value each replicate selects: fill p50 nearest its target, first on a tie. `P` is
+    replicate_p50s(F, W), passed in when several targets share it."""
+    P = replicate_p50s(F, W) if P is None else P
     return np.asarray(grid)[np.argmin(np.abs(P - np.asarray(targets)[:, None]), axis=1)]
 
 
@@ -795,9 +809,10 @@ def selection_bootstrap_block(ramps, W):
     out = {}
     for grid_name, grid in (('v3_study_grid', csv3.GRID_M), ('wide_grid', WIDE_WIDTH_GRID)):
         F = fill_matrix(ramps, 'v3', grid)
+        P = replicate_p50s(F, W)
         block = {'grid_min_m': grid[0], 'grid_max_m': grid[-1], 'grid_step_m': 0.1}
         for criterion, targets in (('match_v2', targets_v2), ('band', targets_band)):
-            sel = replicate_selection(F, W, targets, grid)
+            sel = replicate_selection(F, W, targets, grid, P)
             vals = sel.tolist()
             block[criterion] = {
                 'point': select_constant(ramps, 'v3', grid, v2_fill_p50(ramps) if criterion == 'match_v2'
@@ -819,20 +834,22 @@ def d6_block(ramps, W):
     for city in CITIES:
         groups[city] = np.array([r['city'] == city for r in ramps])
     out = {'grid_min_m': grid[0], 'grid_max_m': grid[-1]}
+    p50s = {name: replicate_p50s(F[mask], W[:, mask]) for name, mask in groups.items()}
     for criterion in ('band', 'match_v2'):
         sel, point = {}, {}
         for name, mask in groups.items():
             Wm = W[:, mask]
             targets = (np.full(len(W), BAND_CENTRE_FILL) if criterion == 'band'
                        else weighted_percentile(v2_fills[mask], Wm, 50))
-            sel[name] = replicate_selection(F[mask], Wm, targets, grid)
+            sel[name] = replicate_selection(F[mask], Wm, targets, grid, p50s[name])
             sub = _subset(ramps, mask)
             point[name] = select_constant(sub, 'v3', grid, BAND_CENTRE_FILL if criterion == 'band'
                                           else v2_fill_p50(sub))
         block = {'widths': point, 'width_intervals': {k: _interval(v) for k, v in sel.items()}}
         for label, a, b in (('mapillary_minus_gsv', 'mapillary', 'gsv'),
                             ('annapolis_minus_richmond', 'annapolis', 'richmond')):
-            iv = _interval(sel[a] - sel[b])
+            # Rounded to the grid's 0.1 m, so a difference of two grid values reads as one.
+            iv = _interval(np.round(sel[a] - sel[b], 1))
             block[label] = {'point': num(round(point[a] - point[b], 1)), 'interval': iv,
                             'differs': iv[0] is not None and (iv[0] > 0 or iv[1] < 0)}
         out[criterion] = block
@@ -1056,13 +1073,18 @@ def per_ramp_rows(ramps, boxes_by_rule, gsv_ramps, tilt_boxes_by_rule):
                      'window_width', 'window_height', 'fill', 'vfill', 'contained'])
     for r, name, cfg, beta, b in rows:
         writer.writerow([r['city'], r['pano_id'], r['key'], name, cfg, beta, b.left, b.top, b.width, b.height,
-                         repr(r['box_w'] / b.width), repr(r['box_h'] / b.height),
+                         '%.6g' % (r['box_w'] / b.width), '%.6g' % (r['box_h'] / b.height),
                          int(bool(csv2.box_inside_window(r, b.left, b.top, b.width, b.height)))])
-    raw = out.getvalue().encode('utf-8')
+    return out.getvalue().encode('utf-8'), len(rows)
+
+
+def gzip_bytes(raw):
+    """gzip with no name and no timestamp. The compressed bytes can still differ between zlib builds, so the
+    artifact records the sha256 of the uncompressed CSV."""
     buf = io.BytesIO()
     with gzip.GzipFile(filename='', mode='wb', fileobj=buf, mtime=0) as gz:
         gz.write(raw)
-    return buf.getvalue(), len(rows)
+    return buf.getvalue()
 
 
 GOLD_KEYS = ('gold', 'reproduction', 'rules', 'rule_intervals', 'ceiling', 'ceiling_intervals', 'paired',
@@ -1336,11 +1358,11 @@ def main(argv=None):
                            ' --boot %d' % args.boot if args.boot != N_BOOT else '')}
     print_summary(summary)
     if args.per_ramp:
-        data, n = per_ramp_rows(ramps, boxes_by_rule, gsv_ramps, tilt_boxes_for_rows(gsv_ramps))
+        raw, n = per_ramp_rows(ramps, boxes_by_rule, gsv_ramps, tilt_boxes_for_rows(gsv_ramps))
         with open(args.per_ramp, 'wb') as f:
-            f.write(data)
+            f.write(gzip_bytes(raw))
         summary['meta']['per_ramp_rows'] = n
-        summary['meta']['per_ramp_sha256'] = _sha256(data)
+        summary['meta']['per_ramp_csv_sha256'] = _sha256(raw)
         print('wrote %s (%d rows)' % (_canonical(args.per_ramp), n))
     if args.write:
         _write_json(args.write, summary)

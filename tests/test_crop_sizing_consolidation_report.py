@@ -545,3 +545,125 @@ def test_the_extracts_reproduce_from_rampnet(provenance):
     for name, data in files.items():
         with open(os.path.join(DATA_DIR, name), 'rb') as f:
             assert f.read() == data, name
+
+
+# ---------------------------------------------------------------------------------------------------------
+# The committed artifact, regenerated from the committed inputs. The full run measured 33 s on a Windows dev box
+# (2026-11-22), under the plan's 60 s line, so CI regenerates every block, intervals included.
+
+@pytest.fixture(scope='module')
+def summary():
+    with open(SUMMARY_JSON, encoding='utf-8') as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope='module')
+def regenerated(gold, gold_rows):
+    fresh, boxes_by_rule, gsv_ramps = cs.build_summary(gold, gold_rows)
+    raw, n = cs.per_ramp_rows(gold, boxes_by_rule, gsv_ramps, cs.tilt_boxes_for_rows(gsv_ramps))
+    return fresh, raw, n
+
+
+# Every key whose value depends on the bootstrap replicates (or, for power, on the simulation).
+INTERVAL_KEYS = {'rule_intervals', 'ceiling_intervals', 'interval', 'clearing_interval', 'fill_p50_interval',
+                 'width_intervals', 'verdict', 'control_verdict', 'misses_floor', 'differs', 'per_city_supported',
+                 'p2_5', 'p50', 'p97_5', 'share_5_8', 'share_6_0', 'undefined_replicates', 'power'}
+
+
+def _split(obj, keep_interval):
+    """The point-estimate part of an artifact (keep_interval False) or its interval part (True)."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in INTERVAL_KEYS:
+                if keep_interval:
+                    out[k] = v
+            else:
+                sub = _split(v, keep_interval)
+                if not keep_interval or sub not in ({}, [], None):
+                    out[k] = sub
+        return out
+    if isinstance(obj, list):
+        return [_split(v, keep_interval) for v in obj] if not keep_interval else \
+            [s for s in (_split(v, True) for v in obj) if s not in ({}, [], None)]
+    return obj if not keep_interval else None
+
+
+def _approx_equal(a, b, path=''):
+    """Exact for strings, ints and bools; floats to 1e-9 relative, since CI's numpy is not this box's."""
+    if isinstance(a, dict):
+        assert isinstance(b, dict) and set(a) == set(b), (path, sorted(set(a) ^ set(b or {})))
+        for k in a:
+            _approx_equal(a[k], b[k], path + '.' + str(k))
+    elif isinstance(a, list):
+        assert isinstance(b, list) and len(a) == len(b), path
+        for i, (x, y) in enumerate(zip(a, b)):
+            _approx_equal(x, y, '%s[%d]' % (path, i))
+    elif isinstance(a, float) or isinstance(b, float):
+        assert b == pytest.approx(a, rel=1e-9, abs=1e-12), path
+    else:
+        assert a == b, path
+
+
+class TestTheArtifactRegenerates:
+
+    def test_the_point_estimates_reproduce_from_committed_inputs(self, summary, regenerated):
+        fresh = regenerated[0]
+        committed = {k: v for k, v in summary.items() if k != 'meta'}
+        point = _split(committed, False)
+        assert point['rules'] and point['tilt'] and point['loco'], 'the split dropped a block'
+        _approx_equal(point, _split(fresh, False))
+
+    def test_the_intervals_reproduce_from_committed_inputs(self, summary, regenerated):
+        fresh = regenerated[0]
+        committed = {k: v for k, v in summary.items() if k != 'meta'}
+        intervals = _split(committed, True)
+        assert intervals['rule_intervals'] and intervals['paired'] and intervals['power']
+        _approx_equal(intervals, _split(fresh, True))
+
+    def test_the_per_ramp_rows_reproduce(self, summary, regenerated):
+        raw, n = regenerated[1], regenerated[2]
+        assert summary['meta']['per_ramp_rows'] == n
+        assert hashlib.sha256(raw).hexdigest() == summary['meta']['per_ramp_csv_sha256']
+        with gzip.open(os.path.join(DATA_DIR, cs.PER_RAMP_CSV), 'rb') as f:
+            assert f.read() == raw
+
+    def test_the_power_block_is_the_one_committed_first(self, summary):
+        with open(os.path.join(DATA_DIR, cs.POWER_FIRST_JSON), encoding='utf-8') as f:
+            first = json.load(f)
+        assert first['power'] == summary['power']
+        assert first['criteria_commit'] == cs.CRITERIA_COMMIT == summary['meta']['criteria_commit']
+
+    def test_the_inputs_are_the_committed_extract(self, summary, provenance):
+        for name, sha in summary['meta']['inputs_sha256'].items():
+            assert provenance['extracts'][name]['sha256'] == sha, name
+        assert 'study --write reports/data/2026-11-22-crop-sizing-consolidation.json' in summary['meta']['generated_by']
+
+    def test_the_split_is_not_vacuous(self):
+        sample = {'a': 1.0, 'interval': [0, 1], 'b': {'verdict': 'x', 'c': 2}}
+        assert _split(sample, False) == {'a': 1.0, 'b': {'c': 2}}
+        assert _split(sample, True) == {'interval': [0, 1], 'b': {'verdict': 'x'}}
+
+
+def assert_every_key_is_claimed_once(summary):
+    pops = summary['populations']
+    claimed = (pops['gold']['covers'] + pops['gold_gsv']['covers'] + pops['mapillary_no_pose']['covers']
+               + pops['clamp_census']['covers'] + pops['no_population'])
+    assert len(claimed) == len(set(claimed)), claimed
+    assert set(claimed) == set(summary) - {'meta', 'populations'}
+
+
+class TestEveryFigureIsClaimedByOnePopulation:
+
+    def test_the_committed_artifact(self, summary):
+        assert_every_key_is_claimed_once(summary)
+        pops = summary['populations']
+        assert pops['gold']['n'] == 658 and pops['gold_gsv']['n'] == 228 and pops['mapillary_no_pose']['n'] == 430
+        assert pops['gold']['n'] == pops['gold_gsv']['n'] + pops['mapillary_no_pose']['n']
+
+    def test_a_new_key_must_be_claimed(self, summary):
+        """The claim is computed from the summary, so a key added without a population fails."""
+        extra = dict(summary, unclaimed_block={'x': 1})
+        extra['populations'] = cs.populations(extra)
+        with pytest.raises(AssertionError):
+            assert_every_key_is_claimed_once(extra)
