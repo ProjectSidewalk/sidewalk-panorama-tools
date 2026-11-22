@@ -1,0 +1,9 @@
+fixture,bottom_band,right_band,near_bottom_band,near_right_band
+clean.jpg,0.0000,0.0000,0.0000,0.0000
+d4.jpg,0.1875,0.1875,0.1875,0.1875
+dark_scene.jpg,0.0000,0.0000,0.0000,0.0000
+nadir_cap_3.jpg,0.0156,0.0000,0.0156,0.0000
+near_black_band_q40.jpg,0.0000,0.0000,0.1406,0.0000
+near_black_nadir.jpg,0.0000,0.0000,0.1406,0.0000
+thin_bottom_10.jpg,0.0938,0.0000,0.0938,0.0000
+thin_bottom_15.jpg,0.1406,0.0000,0.1406,0.0000

@@ -169,6 +169,26 @@ class TestTheFrameAndTheFarm:
         assert doc['cities']['gamma']['gsv22_dedup'] == 1
         assert doc['cities']['gamma']['frozen_dup_of_earlier'] == [GSV[0]]
 
+    def test_an_existing_frame_json_alone_refuses(self, tmp_path):
+        store = make_store(tmp_path)
+        out = tmp_path / 'out'
+        out.mkdir()
+        (out / 'frame.json').write_text('{}')
+        with pytest.raises(ebc.RefusedError):
+            ebc.frame(str(store), str(tmp_path / 'farm'), str(out), roster=['alpha'], device_of=devices(store))
+        assert not (tmp_path / 'farm').exists() and not (out / 'ids').exists()
+
+    def test_an_existing_id_list_alone_refuses(self, tmp_path):
+        store = make_store(tmp_path)
+        args = (str(store), str(tmp_path / 'farm'), str(tmp_path / 'out'))
+        ebc.frame(*args, roster=['alpha'], device_of=devices(store))
+        os.remove(str(tmp_path / 'out' / 'frame.json'))
+        shutil.rmtree(str(tmp_path / 'farm' / 'beta'))
+        before = (tree(tmp_path / 'farm'), tree(tmp_path / 'out'))
+        with pytest.raises(ebc.RefusedError):
+            ebc.frame(*args, roster=['alpha'], device_of=devices(store))
+        assert (tree(tmp_path / 'farm'), tree(tmp_path / 'out')) == before
+
 
 class SyncToolOps:
     """Runs each child to completion at spawn time (the real scan_black_bands), so `run` can be driven on any
@@ -276,8 +296,11 @@ class TestTheGuards:
         store = make_store(tmp_path)
         link = tmp_path / 'out'
         os.symlink(str(store / 'alpha'), str(link))
-        with pytest.raises(ebc.GuardError):
-            ebc.check_outputs(str(store), [str(link)], device_of=lambda p: 1 if 'store' in os.path.realpath(p) else 2)
+        store_real = os.path.realpath(str(store))
+        # Only the store root itself is "the store's device", so the device test cannot rescue a path test that
+        # fails to resolve the link: the refusal has to come from commonpath on the real path.
+        with pytest.raises(ebc.GuardError, match='inside the store'):
+            ebc.check_outputs(str(store), [str(link)], device_of=lambda p: 1 if p == store_real else 2)
 
     def test_a_sibling_store_root2_is_not_inside(self, tmp_path):
         store = make_store(tmp_path)
@@ -499,6 +522,7 @@ class TestTheAbortRulesOnSamples:
         code, doc, ops, out = dispatch(tmp_path, ['alpha', 'beta'], {'alpha': wedged, 'beta': steady()})
         assert code == ebc.EXIT_ABORT
         assert ops.spawned == ['alpha'], 'nothing more is started after an abort'
+        assert ops.now() < ebc.D_STATE_LIMIT_S + 5, 'the dispatcher exits at the abort, not at the deadline'
         marker = json.loads((out / 'abort.json').read_text())
         assert 'state D' in marker['reason']
         assert doc['abort_reason'] == marker['reason']

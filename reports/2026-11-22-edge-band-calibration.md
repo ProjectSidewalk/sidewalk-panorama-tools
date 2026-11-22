@@ -70,6 +70,17 @@ left out, as `log_analyzer/analyze.py` does) and are de-duplicated on `pano_id`,
 Said in advance: exact black cannot come from dark imagery in tiles of the current request shape, so class U can
 only fill from the older one.
 
+### Addendum, 2026-11-22, after `frame` and before the sweep
+
+`frame` ran (enumeration only; no pano opened) and froze 133,919 ids over 62 folders (`frame.json`,
+`ids/<city>.txt.gz`); 35 folders are sampled. **What would fail D1, computed by
+`edge_band_calibration.d1_what_would_fail` from `frame.json`'s weights**, which replace the pilot
+approximation above: the zero-event upper bound is 11.80 per 10,000; the heaviest stratum is chicago-il
+(weight 0.1800, n = 2,500), where 2 U events over 0.05 fail the estimate; the median sampled stratum is burnaby
+(weight 0.0103, n = 2,499 after one id that also sits in an earlier roster folder), where 25 do. No band depth
+had been read when this was written; the instrument check (`instrument-check.csv`, the committed fixtures
+measured in the run environment) was the only measurement taken.
+
 ### Load limits
 
 1 reader to start, 2 at most; 60 MB/s aggregate, held by pausing readers; a 15-minute opening slice at 1 reader
