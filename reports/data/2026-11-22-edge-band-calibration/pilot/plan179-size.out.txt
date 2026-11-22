@@ -1,0 +1,91 @@
+# Output of plan179-size.sh, run once on 2026-11-22 ~07:53 Pacific on the login host that mounts the store.
+# Planner's sizing pilot for #179. REDACTED before saving: the host name, the account's scratch listing, and the
+# helper's temp-script path in two stderr lines (shown as <tmp-script>). Store root shown as <store-root>.
+# Instrument: system Python 3.12.15 / Pillow 11.0.0, an inline copy of the detector's shape, BOTTOM band only.
+# Not the production tool and not Pillow 12.3.0; a pilot, superseded by the real run.
+# FURTHER REDACTED for the repo (2026-11-22): the uptime/user-count line, the core count and the scratch
+# file-system line are removed. Nothing else changed.
+== host
+<host>
+== python
+Python 3.12.15
+PIL 11.0.0 numpy 1.26.4
+requests 2.32.4 urllib3 1.26.19
+venv+ensurepip ok
+== scratch
+== store root
+65 entries (62 city folders with a pano_id_log.csv, old_scrapes, oldest_scrapes, scrape_queue.log)
+== per city: pano_id_log.csv lines, 2-char shard dirs, files named *black_band*
+amsterdam,14912,4000,0
+auckland,2302,1747,0
+bayonne-fr,99,83,0
+beringen-be,50,47,0
+blackhawk-hills-il,623,588,0
+brussels-be,883,90,0
+burnaby,17421,4048,0
+cdmx,48775,4096,0
+chandigarh-india,4291,2664,0
+chicago-il,297467,4096,0
+cliffside-park-nj,1354,1150,0
+clifton-nj,599,551,0
+columbia-sc,151350,4096,0
+columbus-oh,21814,4074,0
+cuenca,5773,3062,0
+danville-il,13162,3922,0
+detroit-mi,1892,1506,0
+fort-wayne-in,709,649,0
+gainesville-fl,31729,4094,0
+goiania-br,10,9,0
+hackensack-nj,760,687,0
+houston-tx,2440,1869,0
+juneau-ak,5336,86,0
+kaohsiung-tw,209911,4096,0
+kaysville-ut,301,62,0
+keelung-tw,2207,1733,0
+knox-oh,17716,4043,0
+la-ca,2188,1708,0
+la-piedad,517,1487,0
+la-piedad-old,1375,1175,0
+laurens-ia,4657,79,0
+madison-wi,3084,2179,0
+maywood-nj,4906,2882,0
+mendota-il,8795,3642,0
+newberg-or,7606,3477,0
+newport-ky,267,251,0
+new-taipei-tw,2935,2101,0
+niagara-falls-ny,2744,2000,0
+<tmp-script>: line 14: <store-root>/oldest_scrapes//pano_id_log.csv: No such file or directory
+oldest_scrapes,NA,0,0
+<tmp-script>: line 14: <store-root>/old_scrapes//pano_id_log.csv: No such file or directory
+old_scrapes,NA,0,0
+oradell-nj,5666,3065,0
+paterson-nj,32345,4093,0
+pittsburgh-pa,19781,4059,0
+rancagua-chile,1985,1599,0
+richmond-va,9408,91,0
+sacramento-ca,831,81,0
+santiago-chile,1192,1043,0
+sao-paulo-brazil,1116,985,0
+seattle-wa,185008,4096,0
+spgg,34708,4094,0
+st-louis-mo,103237,4096,0
+taichung-tw,6732,3281,0
+tainan-tw,974,860,0
+taipei,23474,4088,0
+teaneck-nj,24568,4084,0
+tucson-az,5699,3060,0
+validation-study,6704,3302,0
+vancouver-wa,142630,4096,0
+virden-il,1694,1391,0
+walla-walla-wa,30519,4091,0
+waltham-ma,6684,3297,0
+washington-dc,78513,4096,0
+west-chester-pa,2730,1999,0
+zurich,3154,2097,0
+== timing
+seattle-wa shards=4096 picked=18 list=0.02s read=0.174s/pano decode=0.142s/pano mean=11.8MB dims={(16384, 8192): 17, (13312, 6656): 1} bands=[]
+chicago-il shards=4096 picked=18 list=0.02s read=0.181s/pano decode=0.137s/pano mean=11.1MB dims={(16384, 8192): 18} bands=[]
+richmond-va shards=91 picked=18 list=0.02s read=0.084s/pano decode=0.039s/pano mean=2.2MB dims={(11000, 5500): 8, (12288, 6144): 1, (4096, 2048): 8, (5760, 2880): 1} bands=[('915292510049907.jpg', 0.1875, 0.189), ('918736950206977.jpg', 0.1875, 0.189), ('2576203436081781.jpg', 0.0, 0.138), ('2564980587175053.jpg', 0.186, 0.189), ('2938482169634701.jpg', 0.1875, 0.1875)]
+bayonne-fr shards=83 picked=6 list=0.00s read=0.068s/pano decode=0.043s/pano mean=1.5MB dims={(5760, 2880): 1, (5376, 2688): 5} bands=[]
+juneau-ak shards=86 picked=18 list=0.01s read=0.084s/pano decode=0.040s/pano mean=2.3MB dims={(8000, 4000): 17, (4096, 2048): 1} bands=[('947478730505514.jpg', 0.174, 0.174), ('947588173812980.jpg', 0.174, 0.174), ('943918054153361.jpg', 0.174, 0.174), ('433531156206433.jpg', 0.174, 0.174), ('435804682539321.jpg', 0.174, 0.174), ('431916509598465.jpg', 0.174, 0.174), ('2936658429808481.jpg', 0.174, 0.174), ('299795906539217.jpg', 0.174, 0.174), ('329509400185713.jpg', 0.174, 0.174), ('3285966781708024.jpg', 0.174, 0.174), ('321292691023957.jpg', 0.174, 0.174), ('314628384914369.jpg', 0.174, 0.174), ('311133942073919.jpg', 0.174, 0.174), ('315808614957628.jpg', 0.172, 0.174), ('763206709335497.jpg', 0.174, 0.174), ('763232289357990.jpg', 0.174, 0.174), ('7644732008908353.jpg', 0.174, 0.174)]
+== done

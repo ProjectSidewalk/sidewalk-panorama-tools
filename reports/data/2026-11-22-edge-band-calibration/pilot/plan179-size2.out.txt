@@ -1,0 +1,61 @@
+# Output of plan179-size2.sh, run once on 2026-11-22 between 07:54 and 08:00 Pacific on the login host that mounts the store.
+# Planner's second sizing pilot for #179. REDACTED before saving: the account's group list (replaced by the one
+# fact that matters), and the owner column of the directory listings. Store root shown as <store-root>.
+# Instrument: system Python 3.12.15 / Pillow 11.0.0, an inline copy of the detector's shape. A pilot.
+# CORRECTED for the repo (2026-11-22): the header said ~08:10 Pacific; the probe ran between 07:54 and
+# 08:00 Pacific. Nothing else changed.
+== groups
+(redacted) the account IS a member of the group that owns the store, and the store's folders are group-writable
+(drwxrwsr-x), so a write under the store root would SUCCEED. Nothing but the caller's care prevents one.
+== imports
+aiohttp 3.11.18
+ModuleNotFoundError: No module named 'backoff'
+scipy 1.11.3
+ModuleNotFoundError: No module named 'pyproj'
+ModuleNotFoundError: No module named 'pytest'
+== tools
+/usr/bin/git
+/usr/bin/curl
+/usr/bin/pip3
+git version 2.52.0
+== pypi
+200
+== github
+200
+== non-dir entries at the store root
+<store-root>/.pano-store
+<store-root>/scrape_queue.log
+== old scrapes
+scrapes_dump_newberg_20190422.tar.gz
+scrapes_dump_seattle_20190422.tar.gz
+scrapes_dump_seattle_badsize
+tohme
+scrapes
+scrapes2
+scrapes3
+scrapes4
+scrapes5
+== city-root files (seattle-wa, juneau-ak): names and sizes only
+seattle-wa: depth_log.csv 6115908, gsv_panorama_id_log.csv 2741320, log.csv 220037, pano_id_log.csv 4673020,
+  pano_id_log.csv.bak-20261105T163710 4632543, pano_id_log.csv.readmitted-20261105T163710.csv 4087,
+  refetch.log 0, scrape.log 188254
+juneau-ak: depth_log.csv 16, log.csv 1741, pano_id_log.csv 274771, scrape.log 11504
+== id forms (every stored pano of each city, by walk; counts are panos)
+beringen-be 49 {'gsv22': 49}
+goiania-br 9 {'gsv22': 9}
+brussels-be 882 {'numeric': 882}
+kaysville-ut 300 {'numeric': 300}
+laurens-ia 4656 {'numeric': 4656}
+sacramento-ca 830 {'numeric': 830}
+richmond-va 9407 {'numeric': 9407}
+juneau-ak 5335 {'numeric': 5335}
+bayonne-fr 98 {'uuid': 98}
+la-piedad 1823 {'gsv22': 1823}
+validation-study 5865 {'gsv22': 5865}
+newport-ky 257 {'gsv22': 257}
+== full-detector look at 4 non-GSV panos (bottom, right, top; exact and near)
+juneau-ak 947478730505514 (8000, 4000) reduced (1000, 500) lines bottom/right/top exact (87, 0, 0) near (87, 0, 0)
+juneau-ak 315808614957628 (8000, 4000) reduced (1000, 500) lines bottom/right/top exact (86, 0, 0) near (87, 0, 0)
+richmond-va 915292510049907 (11000, 5500) reduced (1375, 688) lines bottom/right/top exact (129, 0, 0) near (130, 0, 0)
+richmond-va 2576203436081781 (12288, 6144) reduced (1536, 768) lines bottom/right/top exact (0, 0, 0) near (106, 0, 0)
+== done
