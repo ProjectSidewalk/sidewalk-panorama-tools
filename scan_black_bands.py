@@ -6,7 +6,8 @@ layout"). It reads each pano and writes two files of its own:
 
 * the **ledger** (default `<storage_path>/black_bands.csv`): one row per pano scanned, with the bottom and right
   band depths as fractions of the frame, whatever they are - so it is also the calibration measurement for
-  `downloaders.common.EDGE_BAND_MAX_FRACTION` (#179 item 4). Two measurements per edge, from one decode: the
+  `downloaders.common.EDGE_BAND_MAX_FRACTION` (#179 item 4; the store calibration that ran it over a symlink
+  farm, with outputs off the store, is reports/2026-11-22-edge-band-calibration.md). Two measurements per edge, from one decode: the
   exact-black band (`bottom_band`, `right_band`, luma 0 - the downloader's own definition) and the NEAR-black
   band (`near_bottom_band`, `near_right_band`, luma <= `EDGE_BAND_NEAR_BLACK_LUMA`), because exact black is
   encoder-dependent and a store of provider bytes can hold a band the exact definition cannot see. The
@@ -16,7 +17,9 @@ layout"). It reads each pano and writes two files of its own:
   `--min-band` (default `EDGE_BAND_MAX_FRACTION`), rewritten from the whole ledger at the end of every run.
   Its `pano_id,width,height` columns are what `refetch_panos.py --worklist` reads (the stored frame, so the
   refetch pass sees no `dims_changed`), and the same ids name the crops to delete and re-cut, because an
-  existing crop is the cropper's resume marker and is never re-cut on its own.
+  existing crop is the cropper's resume marker and is never re-cut on its own. On a folder whose panos are the
+  provider's own files it lists camera caps too: two Mapillary camera setups carry exact-black caps at 0.174
+  and 0.1875 (the calibration report).
 
 Why a pano-level check at all: the cropper's window check (`black_content`, #164) withholds a label inside a
 bottom band only when the band is deeper than a sixth of the pano, and cannot see the D4 shape (#156) outside

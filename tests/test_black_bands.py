@@ -319,9 +319,9 @@ def pano_file(tmp_path):
 class TestTheDownloaderSavesAndFlagsADeepEdgeBand:
     """#179 item 2 as #213's review resolved it (S1): a stitch with a deep edge band is SAVED, ledgered
     downloaded=1, and said loudly on both channels - never refused. The store is an archive: a refused pano
-    that Google later retires is lost for good, the limit is uncalibrated, and since #181/#214 both arms
-    refuse a frame larger than served before the fan-out, so what reaches this check is the unmeasured
-    class the calibration needs to see. Because the file is the resume marker, a flagged pano is said once,
+    that Google later retires is lost for good, the store calibration kept the limit at 0.05 without being able
+    to separate caps from faults by depth (reports/2026-11-22-edge-band-calibration.md), and since #181/#214
+    both arms refuse a frame larger than served before the fan-out. Because the file is the resume marker, a flagged pano is said once,
     ever. It is NOT a frame disagreement (S2): no exception, no FrameDisagreementError subclass, which #207
     counts by isinstance."""
 
