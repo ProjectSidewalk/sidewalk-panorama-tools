@@ -939,8 +939,13 @@ class TestReviewOneSurvivors:
         doc = ebc.frame(str(store), str(farm), str(out), roster=['alpha', 'gamma'], device_of=devices(store))
         ebc.run(str(farm), str(out), str(store), ebc.run_order(doc), deadline=3600, ops=SyncToolOps(),
                 device_of=devices(store))
-        with open(str(out / 'sweep' / 'alpha' / 'black_bands.csv'), 'a', newline='') as f:
-            f.write('xxPanoAAAAAAAAAAAAAAAA,1,1,1024,512,0.0938,0.0000,0.0938,0.0000\r\n')   # not frozen
+        ledger = out / 'sweep' / 'alpha' / 'black_bands.csv'
+        rows = ledger.read_text().splitlines()
+        # D1 must read the EXACT bottom band: give alpha's U pano a (crafted) near band under 0.05, so a classifier
+        # fed the near column would see no event.
+        rows = [r.rsplit(',', 2)[0] + ',0.0400,0.0000' if r.startswith('thPano') else r for r in rows]
+        rows.append('xxPanoAAAAAAAAAAAAAAAA,1,1,1024,512,0.0938,0.0000,0.0938,0.0000')   # not frozen
+        ledger.write_text('\r\n'.join(rows) + '\r\n')
         shutil.copy(os.path.join(DATA, 'tile-tolerance.json'), str(out / 'tile-tolerance.json'))
         result, unresolved = ebc.analyze(str(out))
         # alpha: N 4, n 4, one U (0.0938). gamma: N 2 (zz, nb; th is alpha's), n 2, no U. 4/6 x 1/4 = 1/6.
