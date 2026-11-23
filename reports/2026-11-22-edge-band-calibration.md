@@ -104,7 +104,7 @@ panos) and **8.16 s for provider bytes** (bayonne-fr's 98 panos only, 18.6 MB/s)
 of 98, goiania-br 9 of 9, beringen-be 49 of 49, newport-ky 257 of 257, clifton-nj 588 of 588, blackhawk-hills-il
 609 of 609, la-piedad-old 619 of 619, fort-wayne-in 695 of 695, hackensack-nj 491 of 758; 3,415 of 133,919 in all.
 
-**main1** (`sessions/main1.json`, `abort.json`, `run-main1.log`, `timing.csv`) was started at 09:07 with 2 readers
+**main1** (`sessions/main1.json`, `abort.json`, `run-main1.log.txt`, `timing.csv`) was started at 09:07 with 2 readers
 and the opening's baseline, to sweep until 16:10 and then run the extras until 16:50. At 09:49 the connection
 used to wait on it was lost from this side (exit 255); the host and the job were found healthy at 10:11, and
 the session ran detached. It read 1,097.8 GB in 6 h 06 min of wall time, **50.0 MB/s on average**, under the 60

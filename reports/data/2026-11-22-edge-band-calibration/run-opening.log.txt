@@ -1,0 +1,2 @@
+session opening: stop deadline (a child reached its --max-runtime), abort None, 3415 rows, 33.0 GB
+baseline per 100 panos (s): {"gsv": 20.94, "provider": 8.16}

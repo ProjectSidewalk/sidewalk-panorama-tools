@@ -1,0 +1,5 @@
+sweep start 2026-11-22T17:07:02Z
+session main1: stop None, abort chicago-il: last 100 gsv panos took 65.1 s, over 3x the baseline 20.9 s, 127769 rows, 1097.8 GB
+baseline per 100 panos (s): {"gsv": 25.22, "provider": 14.18}
+sweep exit 5 2026-11-22T23:12:52Z
+extras not run: the sweep did not end cleanly

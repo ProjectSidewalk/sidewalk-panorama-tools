@@ -1,0 +1,57 @@
+{
+ "abort_reason": null,
+ "baseline_per100_s": {
+  "gsv": 20.94,
+  "provider": 8.16
+ },
+ "children": [
+  {
+   "active_s": 233.2,
+   "bytes": 7966825284,
+   "city": "knox-oh",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 722
+   },
+   "rows": 722,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 722,
+    "current": 1902,
+    "examined": 2624,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 614.5,
+   "bytes": 21663517043,
+   "city": "chicago-il",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "gsv": 1988,
+    "provider": 25
+   },
+   "rows": 2013,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2013,
+    "current": 772,
+    "examined": 2785,
+    "failed": 0,
+    "unreached": 0
+   }
+  }
+ ],
+ "children_alive_after_term": [],
+ "end_utc": "2026-11-23T17:23:09Z",
+ "rate_cap_bytes_per_s": 60000000.0,
+ "readers": 1,
+ "session": "main2",
+ "start_utc": "2026-11-23T17:08:57Z",
+ "stop_reason": "done"
+}
