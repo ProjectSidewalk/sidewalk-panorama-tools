@@ -130,7 +130,7 @@ of 98, goiania-br 9 of 9, beringen-be 49 of 49, newport-ky 257 of 257, clifton-n
 and the opening's baseline, to sweep until 16:10 and then run the extras until 16:50. At 09:49 the connection
 used to wait on it was lost from this side (exit 255); the host and the job were found healthy at 10:11, and
 the session ran detached. It read 1,097.8 GB in 6 h 06 min of wall time, **50.0 MB/s on average**, under the 60
-MB/s cap, which paused a reader for 5 to 457 s per GSV folder. At 15:12:52 the 3x rule fired on chicago-il: its
+MB/s cap, which paused a reader for 5.0 to 456.5 s per GSV folder. At 15:12:52 the 3x rule fired on chicago-il: its
 last 100 GSV panos took 65.1 s of unpaused time against a limit of 62.8 s. The dispatcher continued and then
 terminated both children (chicago-il and knox-oh, exit -15), none was left alive, and no extras ran. Per the
 rule, there was no retry that day. Unpaused time per 100 panos over main1's GSV folders ran 18.2 to 29.0 s, against

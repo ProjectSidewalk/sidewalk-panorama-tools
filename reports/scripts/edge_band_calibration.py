@@ -1272,6 +1272,33 @@ def prose_figures(data_dir, frame_doc, measured, extras_rows, strata, absorbed):
             for c in s['children']:
                 if c['exit'] != 0:
                     out['main1.reached.%s' % c['city']] = n(c['rows'])
+    # Review 2, B2: the remaining session figures the report quotes.
+    def gsv_children(s, min_rows=1):
+        return [c for c in s['children'] if c['rows'] >= min_rows
+                and c['per_source_rows'].get('gsv', 0) * 2 > sum(c['per_source_rows'].values())]
+    baseline_path = os.path.join(data_dir, 'baseline.json')
+    if os.path.exists(baseline_path):
+        with open(baseline_path, encoding='utf-8') as f:
+            for source, v in json.load(f).items():
+                out['baseline.%s' % source] = '%.2f' % v
+    if 'opening' in sessions:
+        rates = [c['bytes'] / 1e6 / (c['active_s'] + c['paused_s']) for c in gsv_children(sessions['opening'], 101)]
+        if rates:
+            out['opening.gsv_mb_per_s.lo'], out['opening.gsv_mb_per_s.hi'] = '%.1f' % min(rates), '%.1f' % max(rates)
+    if 'main1' in sessions:
+        kids = gsv_children(sessions['main1'])
+        paused = [c['paused_s'] for c in kids]
+        per100 = [100.0 * c['active_s'] / c['rows'] for c in kids]
+        out['main1.gsv_paused_s.lo'], out['main1.gsv_paused_s.hi'] = '%.1f' % min(paused), '%.1f' % max(paused)
+        out['main1.gsv_per100_s.lo'], out['main1.gsv_per100_s.hi'] = '%.1f' % min(per100), '%.1f' % max(per100)
+        before = [s for name, s in sessions.items() if name in ('opening', 'main1')]
+        out['after_main1.measured'] = n(sum(c['rows'] for s in before for c in s['children']))
+        out['after_main1.folders_complete'] = str(len(frame_doc['cities']) - sum(
+            1 for c in sessions['main1']['children'] if c['exit'] not in (0, 1)))
+        out['frozen.total'] = n(sum(c['frozen'] for c in frame_doc['cities'].values()))
+    if 'main2' in sessions:
+        for c in sessions['main2']['children']:
+            out['main2.per100_s.%s' % c['city']] = '%.1f' % (100.0 * c['active_s'] / c['rows'])
     abort_path = os.path.join(data_dir, 'abort-main1.json')
     if os.path.exists(abort_path):
         with open(abort_path, encoding='utf-8') as f:

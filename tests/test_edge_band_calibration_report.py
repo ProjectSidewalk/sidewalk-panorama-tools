@@ -952,6 +952,11 @@ class TestReviewOneSurvivors:
         assert result['decision']['primary']['0.05']['estimate'] == pytest.approx(1 / 6.0)
         assert result['reached']['alpha'] == 4
         assert result['tables']['d2'] == ['| N | gsv22 | 1 |']
+        # Review 2, B1: the round-1 additions on synthetic data. Read as F-rows, alpha's one U band is no event
+        # (no group of 5 to fold), so the reading confirms 0.05; a weight is quoted only for a stratum with U events;
+        # the D2 depth split counts only near-only bands.
+        assert (result['u_read_as_f_rows']['outcome'], result['u_read_as_f_rows']['primary']['0.05']['events']) ==             ('confirmed', 0)
+        assert {k: v for k, v in result['prose'].items() if k.startswith(('weight.', 'D2.'))} ==             {'weight.alpha': '0.6667', 'D2.near.0.1406': '1'}
 
 
     def test_a_tool_name_fails_and_a_nightly_writer_is_listed(self, tmp_path):
@@ -1061,9 +1066,30 @@ class TestTheCommittedRun:
             elif parts[0] == 'F-frame':
                 phrases[key] = '%s %s stitch' % (v, parts[1])
             elif parts[0] == 'U':
+                # Review 2, B3: the folder count must sit in its OWN depth's parenthesis, not anywhere.
                 city, frame, depth = parts[1], parts[2], '.'.join(parts[3:])
-                phrases[key] = '%s on %s frames' % (depth, frame)
-                phrases[key + '#n'] = '%s %s' % (city, v)
+                m = re.search(r'%s on %s frames \(([^)]*)\)' % (re.escape(depth), re.escape(frame)), text)
+                assert m, (key, 'no "%s on %s frames (...)" phrase' % (depth, frame))
+                assert re.search(r'(?<![\w-])%s %s(?!\d)' % (re.escape(city), re.escape(v)), m.group(1)), (key, m.group(1))
+                continue
+            elif key == 'baseline.gsv':
+                phrases[key] = '%s s for GSV' % v
+            elif key == 'baseline.provider':
+                phrases[key] = '%s s for provider bytes' % v
+            elif key.endswith('.lo'):
+                hi = prose[key[:-3] + '.hi']
+                tail = {'opening.gsv_mb_per_s': ' MB/s', 'main1.gsv_paused_s': ' s per GSV folder',
+                        'main1.gsv_per100_s': ' s'}[key[:-3]]
+                phrases[key] = '%s to %s%s' % (v, hi, tail)
+            elif key.endswith('.hi') or key == 'frozen.total':
+                continue
+            elif key == 'after_main1.measured':
+                phrases[key] = '%s of %s frozen ids were measured: %s folders complete' % (
+                    v, prose['frozen.total'], prose['after_main1.folders_complete'])
+            elif key == 'after_main1.folders_complete':
+                continue
+            elif parts[:2] == ['main2', 'per100_s']:
+                phrases[key] = '%s s (%s)' % (v, parts[2])
             elif parts[0] == 'weight':
                 phrases[key] = '%s (%s)' % (v, parts[1])
             elif parts[:2] == ['D2', 'near']:
