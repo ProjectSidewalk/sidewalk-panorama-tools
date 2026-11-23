@@ -303,7 +303,7 @@ be: the classification stands on id form alone. The optional server cross-check 
 
 ## What changed in the code
 
-Comments and docs only, in the commit that adds this section: `downloaders/common.py` (the limit's comment states
+Comments and docs only, in 36e81f4: `downloaders/common.py` (the limit's comment states
 this calibration), the docstrings in `downloaders/gsv.py`, `scan_black_bands.py` and `tests/test_black_bands.py`,
 the comment in `DownloadRunner.py`, `docs/ops.md`, `docs/downloader.md`, `docs/cropper.md`,
 `.claude/rules/store-repair.md` and `.claude/rules/downloader.md`. The study script is
