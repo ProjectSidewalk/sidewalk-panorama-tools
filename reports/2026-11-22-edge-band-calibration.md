@@ -7,20 +7,23 @@ Does 0.05 separate real black bands from our own stitching faults on the stored 
 **The answer, on 133,919 of 133,919 frozen ids** (every non-GSV pano on the store, and a census or a 2,500-pano
 sample of each folder's GSV panos):
 
-- **Depth cannot separate them on GSV stitches, so rule D1 keeps 0.05 and the choice is the owner's.** 18 GSV
-  stitches carry a bottom band that is not the stitcher's tile-row shape as the rule defines it (class U). All 18
-  are deeper than both candidates, so 0.05 and 0.0605 give the same 1.68 false flags per 10,000 stored GSV
-  stitches (bound 14.24): over the 1-per-10,000 estimate D1 allows. Read on their shape, though, these 18 look
-  like tile faults just outside the rule's window, not like imagery (Results, class U).
+- **Rule D1 could not confirm 0.05, so 0.05 stays and the choice is the owner's.** No GSV stitch carries an
+  exact-black band shallower than 0.0745 (32 of 111,524 carry one at all), and no black cap was identified on a
+  GSV stitch. But 18 of those bands fall outside the stitcher's tile-row shape as the rule defines it (class U),
+  and all 18 are deeper than both candidates. So 0.05 and 0.0605 give the same 1.68 false flags per 10,000 stored
+  GSV stitches (bound 14.24), over the 1-per-10,000 estimate D1 allows. This run cannot tell 0.05 from 0.0605:
+  every limit under 0.0745 flags the same 32 panos. Read on their shape, these 18 look like tile faults just
+  outside the rule's window, not like imagery (Results, class U).
 - **On Mapillary a deep exact-black bottom band is the normal shape of two camera setups**: juneau-ak's
   8000x4000 panos (4,847 of 4,847 over 0.05, mostly at 0.1740) and richmond-va's 11000x5500 ones (4,132 of 5,075,
-  mostly at 0.1875). The work-list on such a folder lists camera caps. Panoramax and the other Mapillary folders
-  carry none.
+  mostly at 0.1875). The work-list on such a folder lists camera caps. Panoramax and the other Mapillary frames
+  carry none, apart from one kaysville-ut 8192x4096 pano at 0.1816.
 - Photospheres: 2 of 869 are over 0.05, by the sweep's definition and the downloader's alike.
 - No production behaviour changes. The limit stays 0.05 (decision 6, provisional); comments and docs now point here.
 
 This file opens with the dated decision entry, committed and pushed before any band depth of the run was read
-(6a38e90; the addendum in 9ed414c). It is unchanged below; the results follow it.
+(6a38e90; the addendum in 9ed414c). It is unchanged below; the results follow it. The run environment is
+recorded, after the fact and with where each value came from, in `data/2026-11-22-edge-band-calibration/snapshot.json`.
 
 ## Decision entry, 2026-11-22 (written before the measurement)
 
@@ -184,7 +187,7 @@ All 21,410 Mapillary (`numeric`), 98 Panoramax (`uuid`) and 869 photosphere pano
 (the provider's bytes). Of 111,524 measured `gsv22` stitches, 111,472 have no band of any kind. The 18 `other` ids
 are all clean.
 
-- **F-frame, 10:** 9 seattle-wa stitches with the D4 shape (bottom and right 0.1875), and one keelung-tw stitch
+- **F-frame, 10:** 9 seattle-wa stitches with the D4 shape (bottom and right 0.1875), and 1 keelung-tw stitch
   with a 0.75 band (the pre-#44 zoom-3 grid shape), per `extras.csv.gz`. These are the faults the limit exists for,
   and both candidates flag them.
 - **F-rows, 4:** the table below. A whole 512-px row read 8 px short (0.0757 x 6656 = 504 px), within t.
@@ -198,11 +201,11 @@ are all clean.
 
 ### Class U: 18 stitches, and what their shape says
 
-`unresolved.csv` lists them: newberg-or 10, washington-dc 7, columbus-oh 1. They come in exactly two depths:
+`unresolved.csv` lists them. They come in exactly two depths:
 
-- **0.0745 on 13312x6656 frames (10 panos):** 0.0745 x 6656 = 496 px, one 512-px tile row read 16 px short. The
-  committed tolerance is t = 8 px, so the rule calls them U.
-- **0.0769 on 3328x1664 frames (8 panos):** 0.0769 x 1664 = 128 px. A 3328x1664 pano is native at zoom 3, and
+- **0.0745 on 13312x6656 frames (10 panos: washington-dc 7, newberg-or 3):** 0.0745 x 6656 = 496 px, one 512-px
+  tile row read 16 px short. The committed tolerance is t = 8 px, so the rule calls them U.
+- **0.0769 on 3328x1664 frames (8 panos: newberg-or 7, columbus-oh 1):** 0.0769 x 1664 = 128 px. A 3328x1664 pano is native at zoom 3, and
   1664 = 3 x 512 + 128, so 128 px is exactly the **partial last tile row** of that grid. The F-rows rule only
   looks for whole 512-px rows, so it cannot see this shape.
 
@@ -224,8 +227,9 @@ upper bound, and a folder measured whole contributes its exact share.
 | folded | 0.0605 | 18 | 1.68 | 14.24 |
 
 Both candidates count the same 18 events, because every U depth (0.0745, 0.0769) is over 0.0605 too. Each gives
-an estimate of 1.68 per 10,000 against the 1 allowed, and a bound of 14.24 against the 15 allowed. washington-dc's
-7 events in a 2,500-pano sample of a stratum weighted 0.0511 are enough on their own to fail the estimate. The
+an estimate of 1.68 per 10,000 against the 1 allowed, and a bound of 14.24 against the 15 allowed. The three
+strata with events are weighted 0.0511 (washington-dc), 0.0049 (newberg-or) and 0.0139 (columbus-oh), and
+washington-dc's 7 events in a 2,500-pano sample are enough on their own to fail the estimate. The
 sensitivity fold found no group of 5 or more identical-depth F-rows panos in one (city, frame), so it changed
 nothing.
 
@@ -266,9 +270,9 @@ exact band over 0.05:
 
 ### D4, photospheres (report only)
 
-| Photospheres | Over 0.05 (sweep) | In-memory reading known | Over 0.05 (in memory) | Agree |
-|---:|---:|---:|---:|---:|
-| 869 | 2 | 869 | 2 | 869 |
+| Photospheres | Over 0.05 (sweep) | In-memory reading measured | In-memory reading inferred | Over 0.05 (in memory) | Agree |
+|---:|---:|---:|---:|---:|---:|
+| 869 | 2 | 3 | 866 | 2 | 869 |
 
 - 2 of 869 stored photospheres have a band over 0.05: two zurich files at 0.0720, by both definitions. The
   downloader flags each such pano once, when it saves it.
@@ -279,13 +283,14 @@ exact band over 0.05:
 
 ### D5, the 98% line minimum (report only)
 
-| Line minimum | Banded panos whose verdict at 0.05 changes |
+| Line minimum | Banded panos whose bottom-band verdict at 0.05 changes |
 |---|---:|
 | 0.90 | 0 |
 | 1.00 | 0 |
 
-Among the 9,987 panos with any band, none changes its verdict at 0.05 when the line minimum is 0.90 or 1.00.
-The bands are clean-edged.
+Among the 9,987 panos with any band, none changes its bottom-band verdict at 0.05 when the line minimum is 0.90 or
+1.00: the bands are clean-edged. Only the bottom band was re-measured; the right bands found (0.1875 and 0.75 on
+GSV stitches, none on provider bytes) are far from the limit either way.
 
 ### The file witness
 
@@ -331,9 +336,20 @@ the comment in `DownloadRunner.py`, `docs/ops.md`, `docs/downloader.md`, `docs/c
 - **The F-rows rule did not anticipate the two shapes class U is made of.** t was measured as 8 px on stitches
   made by the stitcher, from imagery tiles above a black row. The stored 13312x6656 bands read 16 px short. The
   rule also only looks for whole 512-px rows, which misses the 128-px partial last row of a native zoom-3 frame.
-  Both were found after the decision entry. **By the plan, the rules were not changed to fit them.** Folding these
-  18 into F-rows would make D1 pass, so that is exactly the kind of change that must be the owner's: decision 6,
-  and the class-U look, decision 7.
+  Both were found after the decision entry. **By the plan, the rules were not changed to fit them.** And under the
+  committed rules no reading of these 18 confirms 0.05 or moves the limit (`u_read_as_f_rows` in the summary).
+  Read as F-rows, the primary run passes (0 events, bound 11.80 per 10,000). But the sensitivity fold committed in
+  the same entry then folds the two identical-depth groups back into U (washington-dc 13312x6656 at 0.0745, and
+  newberg-or 3328x1664 at 0.0769, 7 panos each): 14 events, an estimate of 1.57 per 10,000, outcome `fold-flips`.
+  So 0.05 stays and the choice is the owner's either way. The pre-committed fold catches exactly this case. (An
+  earlier version of this report said that folding them into F-rows would make D1 pass; review 1 found that the
+  fold says otherwise.)
+- **The extras pass ran outside the abort rules.** It read the 9,987 banded panos, 32.5 GB by the ledgers' sizes
+  (in-memory re-reads counted twice), under the byte pacing only: no D-state, stall or 3x watch and no timing log.
+  It finished in 26 minutes without incident; a later pass should run under the dispatcher.
+- **The run environment was not recorded at run time.** The plan asked for `snapshot.json` and the script never
+  wrote it. It was recovered after the fact (review 1, S3): the delivered archive is byte-identical to
+  `git archive 6a38e90`, and the venv reads Python 3.12.15, Pillow 12.3.0, libjpeg-turbo 3.1.4.1.
 - **The opening slice ran 12 minutes, not 15**, because of the child margin (Deviations).
 
 ## Open questions
@@ -342,11 +358,22 @@ The plan's decisions table (decisions 1 to 10 in the plan on #179) stands. These
 
 - **Decision 6, the limit.** Keep 0.05: a false flag costs one alarm under save-and-flag. Or look at the 18 U
   panos first: if they are tile faults, they are correct flags and D1's premise (U means not ours) does not hold
-  for them.
+  for them. Either way the committed rules keep 0.05 (Wrong turns).
 - **Decision 7.** Someone looks at the 18 panos in `unresolved.csv`.
 - **Decision 2.** A per-source policy for juneau-ak's and richmond-va's caps (0.1740, 0.1875).
 - **Decision 3.** 2 of 869 photospheres are over the limit.
 - **Decision 4.** Whether to sweep the whole fleet: F-class panos were found (10 F-frame, 4 F-rows).
+- **Decision 10, D1's pass figures.** The bound half of D1 is mostly the design: the zero-event bound is 11.80 of
+  the 15 per 10,000 allowed, so the bound can only fail on about 3.2 per 10,000 of headroom whatever is measured.
+  The estimate half is what decided this run.
+
+## What this cannot show
+
+- The fleet's complete work-list, a per-folder rate below about 1 in 800, anything about panos not yet downloaded,
+  and what an unresolved band is (that needs an eye), as the plan said.
+- **That the frozen samples are the seeded draws.** `frame.json` records a sha256 of each folder's full id list,
+  not the list, so re-running the draw needs the store. The sampled ids' first characters are as uniform as the
+  census folders' (review 1's check); that is a sanity check, not a proof.
 
 ## Appendix: reach and the provider-bytes depth table
 

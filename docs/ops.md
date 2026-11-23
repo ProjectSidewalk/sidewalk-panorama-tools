@@ -885,12 +885,14 @@ the limit with room to spare, while a black cap up to 9° of elevation is under 
 [calibration](../reports/2026-11-22-edge-band-calibration.md) swept 133,919 frozen panos (every non-GSV pano,
 and a census or a 2,500-pano sample of each folder's GSV panos) and found:
 
-- On GSV stitches, 18 bands that are not the stitcher's tile-row shape as its rule defines it, all deeper than
-  both candidate limits (0.05, 0.0605). Depth cannot separate them, so the rule kept 0.05 and the value is the
-  owner's to revisit. Their shapes look like tile faults just outside the rule's window; nobody has looked yet.
+- On GSV stitches, no exact-black band shallower than 0.0745 and no black cap: the 32 stitches with a band at all
+  sit at tile-grid depths. Rule D1 could not confirm 0.05, because 18 of those bands are not the stitcher's
+  tile-row shape as its rule defines it and all 18 are deeper than both candidates (0.05, 0.0605), so 0.05 stays
+  and the value is the owner's to revisit. Every limit under 0.0745 flags the same 32 panos. The 18 look like
+  tile faults just outside the rule's window; nobody has looked yet.
 - On Mapillary, exact-black camera caps at 0.174 (juneau-ak, 8000x4000) and 0.1875 (richmond-va, 11000x5500), all
   over the limit; richmond-va's 12288x6144 panos carry a near-black cap at about 0.138 with no exact band.
-  Panoramax and the other Mapillary frames carry none.
+  Panoramax and the other Mapillary frames carry none, apart from one kaysville-ut pano at 0.1816.
 - 2 of 869 stored photospheres are over the limit.
 
 **Exact black depends on the encoder.** The stitcher's canvas is exact RGB 0, so the downloader's own
@@ -908,8 +910,8 @@ not a verdict: the work-list is cut on the exact band, and the downloader's in-m
 `gsv.download_single_pano` measures the stitch **after** the atomic save and never refuses it
 ([#213](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/213) review, decision S1). The store is an archive: a refused pano that Google later retires is
 lost for good, while a saved one with a band costs a work-list row and one alarm, and even a D4 stitch holds
-the real pano losslessly in its top-left. The calibration kept the limit at 0.05 without depth being able to
-tell caps from faults on GSV, and since
+the real pano losslessly in its top-left. The calibration found no cap on a GSV stitch and its rule could not
+confirm the limit, so 0.05 stays, and since
 [#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181) both arms refuse a frame
 larger than served *before* the fan-out, so what reaches this check is the class nobody has measured — a
 genuinely black nadir cap deeper than 9°, or Google serving black tiles inside the pano — which a refusal

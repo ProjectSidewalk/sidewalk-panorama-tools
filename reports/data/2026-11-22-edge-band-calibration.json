@@ -115,7 +115,8 @@
  },
  "photospheres": {
   "agree": 869,
-  "inmem_known": 869,
+  "inmem_inferred": 866,
+  "inmem_measured": 3,
   "inmem_over": 2,
   "n": 869,
   "sweep_over": 2
@@ -143,7 +144,8 @@
   ],
   "gsv22-fleet-strata-deduplicated": [
    "decision",
-   "tables.d1"
+   "tables.d1",
+   "u_read_as_f_rows"
   ],
   "instrument": [
    "tolerance_px",
@@ -155,7 +157,41 @@
   ],
   "provider-forms-census": [
    "tables.d3"
+  ],
+  "sessions-and-prose-as-measured": [
+   "prose"
   ]
+ },
+ "prose": {
+  "D2.near.0.1367": "3",
+  "D2.near.0.1380": "901",
+  "F-frame.keelung-tw": "1",
+  "F-frame.seattle-wa": "9",
+  "U.columbus-oh.3328x1664.0.0769": "1",
+  "U.newberg-or.13312x6656.0.0745": "3",
+  "U.newberg-or.3328x1664.0.0769": "7",
+  "U.washington-dc.13312x6656.0.0745": "7",
+  "absorbed.folded_estimate_per_10000": "1.57",
+  "absorbed.folded_events": "14",
+  "absorbed.primary_bound_per_10000": "11.80",
+  "extras.gb": "32.5",
+  "extras.panos": "9,987",
+  "gsv22.measured": "111,524",
+  "gsv22.shallowest_exact_bottom": "0.0745",
+  "gsv22.with_exact_band": "32",
+  "main1.abort_last100_s": "65.1",
+  "main1.gb": "1,097.8",
+  "main1.mb_per_s": "50.0",
+  "main1.panos": "127,769",
+  "main1.reached.chicago-il": "772",
+  "main1.reached.knox-oh": "1,902",
+  "main2.gb": "29.6",
+  "main2.panos": "2,735",
+  "opening.gb": "33.0",
+  "opening.panos": "3,415",
+  "weight.columbus-oh": "0.0139",
+  "weight.newberg-or": "0.0049",
+  "weight.washington-dc": "0.0511"
  },
  "reached": {
   "amsterdam": 2508,
@@ -361,7 +397,7 @@
    "| zurich | 9728x4864 | photosphere | 1 | 0.0000 | 1 | 0 |"
   ],
   "d4": [
-   "| 869 | 2 | 869 | 2 | 869 |"
+   "| 869 | 2 | 3 | 866 | 2 | 869 |"
   ],
   "d5": [
    "| 0.90 | 0 |",
@@ -442,6 +478,48 @@
   ]
  },
  "tolerance_px": 8.0,
+ "u_read_as_f_rows": {
+  "fold_groups": [
+   {
+    "bottom_band": "0.0769",
+    "city": "newberg-or",
+    "frame": "3328x1664",
+    "n": 7
+   },
+   {
+    "bottom_band": "0.0745",
+    "city": "washington-dc",
+    "frame": "13312x6656",
+    "n": 7
+   }
+  ],
+  "folded": {
+   "0.05": {
+    "bound": 0.0014070476274585264,
+    "estimate": 0.0001568577758126584,
+    "events": 14
+   },
+   "0.0605": {
+    "bound": 0.0014070476274585264,
+    "estimate": 0.0001568577758126584,
+    "events": 14
+   }
+  },
+  "limit": 0.05,
+  "outcome": "fold-flips",
+  "primary": {
+   "0.05": {
+    "bound": 0.0011798725593853622,
+    "estimate": 0.0,
+    "events": 0
+   },
+   "0.0605": {
+    "bound": 0.0011798725593853622,
+    "estimate": 0.0,
+    "events": 0
+   }
+  }
+ },
  "unresolved": 18,
  "what_would_fail": {
   "heaviest": {

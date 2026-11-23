@@ -815,7 +815,139 @@ class TestAnalyzeEndToEnd:
         json.dumps(result, allow_nan=False)
 
 
-class TestTheNoWritesCheck:
+class TestReviewOneSurvivors:
+    """Synthetic tests for the mutants review 1 found surviving every test (S4); each docstring names its mutant."""
+
+    def test_a_candidate_can_fail_on_the_bound_alone(self):
+        """Kills PASS_BOUND raised tenfold: no event, estimate 0, bound about 50 per 10,000 (n = 600)."""
+        r = ebc.rate_at([stratum('a', 300000, 600)], 0.05)
+        assert r['estimate'] == 0 and ebc.PASS_BOUND < r['bound'] < 10 * ebc.PASS_BOUND
+        assert not ebc.passes(r)
+        assert ebc.d1_decide([stratum('a', 300000, 600)])['outcome'] == 'neither-passes'
+
+    def test_the_estimate_alone_can_fail_a_candidate(self):
+        """Kills `passes` joined with `or`: 2 events in the heavy stratum fail the estimate, the bound still passes."""
+        strata = [stratum('heavy', 180000, 2500, [0.07, 0.07])] + \
+            [stratum('s%d' % i, 20000, 2500) for i in range(40)] + [stratum('census', 1000, 1000)]
+        r = ebc.rate_at(strata, 0.05)
+        assert r['estimate'] > ebc.PASS_ESTIMATE and r['bound'] <= ebc.PASS_BOUND
+        assert not ebc.passes(r)
+
+    def test_the_fold_stops_a_raise_to_0605(self):
+        """Kills fold-flips returning the primary limit: the one path where the fold blocks 0.0605."""
+        strata = [stratum('a', 300000, 2500, [0.0601] * 3), stratum('b', 5000, 2500)]
+        d = ebc.d1_with_sensitivity(strata, {'a': [(16384, 8192, '0.0625')] * 5})
+        assert d['primary']['limit'] == 0.0605 and d['folded']['outcome'] == 'neither-passes'
+        assert (d['limit'], d['outcome']) == (0.05, 'fold-flips')
+
+    def test_a_value_exactly_on_a_candidate_is_not_over_it(self):
+        """Kills a non-strict is_over: production's `>` is the comparison."""
+        assert ebc.rate_at([stratum('a', 1000, 1000, [0.05, 0.0605])], 0.05)['events'] == 1
+        assert ebc.rate_at([stratum('a', 1000, 1000, [0.05, 0.0605])], 0.0605)['events'] == 0
+
+    def test_a_child_that_left_panos_unreached_is_not_done(self, tmp_path):
+        """Kills done.json written whatever `unreached` says: a part-swept folder must resume next session."""
+        def partial(p, t):
+            if t >= 3:
+                p.lines.append('Examined 10 panorama(s): 0 with an edge band over 5.0%, 7 without, 0 already '
+                               'ledgered, 0 failed, 3 unreached. Work-list: x')
+                p.code = 0
+        code, doc, ops, out = dispatch(tmp_path, ['alpha', 'beta'], {'alpha': partial, 'beta': steady()})
+        assert not (out / 'sweep' / 'alpha' / 'done.json').exists()
+        assert ops.spawned == ['alpha'] and 'deadline' in doc['stop_reason']
+
+    def test_a_folder_with_done_json_is_not_swept_again(self, tmp_path):
+        """Kills `run` ignoring done.json."""
+        (tmp_path / 'out' / 'sweep' / 'alpha').mkdir(parents=True)
+        (tmp_path / 'out' / 'sweep' / 'alpha' / 'done.json').write_text('{}')
+        code, doc, ops, out = dispatch(tmp_path, ['alpha', 'beta'], {'alpha': finishing(0), 'beta': finishing(0)})
+        assert ops.spawned == ['beta']
+
+    def test_de_duplication_sees_the_whole_earlier_folder(self, tmp_path, monkeypatch):
+        """Kills a de-duplication that remembers only an earlier folder's FROZEN ids: alpha is sampled (2 of 4),
+        and gamma holds one of alpha's unsampled ids."""
+        monkeypatch.setattr(ebc, 'CENSUS_MAX_GSV', 2)
+        monkeypatch.setattr(ebc, 'SAMPLE_SIZE', 2)
+        store = make_store(tmp_path)
+        drawn = random.Random('179-calibration:alpha').sample(sorted(GSV), 2)
+        unsampled = sorted(set(GSV) - set(drawn))[0]
+        put(store, 'gamma', unsampled)
+        put(store, 'gamma', 'zzPanoAAAAAAAAAAAAAAAA')
+        doc = ebc.frame(str(store), str(tmp_path / 'farm'), str(tmp_path / 'out'), roster=['alpha', 'gamma'],
+                        device_of=devices(store))
+        assert doc['cities']['alpha']['design'] == 'sample'
+        assert doc['cities']['gamma']['gsv22_dedup'] == 1
+        assert doc['cities']['gamma']['frozen_dup_of_earlier'] == [unsampled]
+
+    def test_de_duplication_follows_the_roster_order(self, tmp_path):
+        """Kills de-duplication in alphabetical order: gamma comes first in the roster, so alpha holds the dup."""
+        store = make_store(tmp_path)
+        put(store, 'gamma', GSV[0], 'd4.jpg')
+        doc = ebc.frame(str(store), str(tmp_path / 'farm'), str(tmp_path / 'out'), roster=['gamma', 'alpha'],
+                        device_of=devices(store))
+        assert doc['cities']['gamma']['frozen_dup_of_earlier'] == []
+        assert doc['cities']['gamma']['gsv22_dedup'] == 1
+        assert doc['cities']['alpha']['frozen_dup_of_earlier'] == [GSV[0]]
+        assert doc['cities']['alpha']['gsv22_dedup'] == 3
+
+    def test_the_draw_sorts_the_ids_first(self):
+        """Kills a draw from the ids in walk/insertion order: the published formula is sample(sorted_ids, 2500)."""
+        forms = {'%022d' % i: 'gsv22' for i in reversed(range(3000))}
+        ids, design = ebc.draw('somecity', forms)
+        assert ids == sorted(random.Random('179-calibration:somecity').sample(sorted(forms), 2500))
+
+    def test_the_census_cut_includes_its_own_size(self, monkeypatch):
+        """Kills a strict census cut: a folder with exactly CENSUS_MAX_GSV gsv22 panos is a census."""
+        monkeypatch.setattr(ebc, 'CENSUS_MAX_GSV', 3)
+        monkeypatch.setattr(ebc, 'SAMPLE_SIZE', 2)
+        assert ebc.draw('c', {'a' * 22: 'gsv22', 'b' * 22: 'gsv22', 'c' * 22: 'gsv22'})[1] == 'census'
+        assert ebc.draw('c', {x * 22: 'gsv22' for x in 'abcd'})[1] == 'sample'
+
+    def test_the_roster_leaves_out_hash_rows(self, tmp_path):
+        """Kills a roster that keeps '#' rows (the analyzer drops them)."""
+        p = tmp_path / 'cities.csv'
+        p.write_text('city_id,display_name\nseattle-wa,Seattle\n#zurich-infra3d,Zurich\n', encoding='utf-8')
+        assert ebc.load_roster(str(p)) == ['seattle-wa']
+
+    def test_planned_strata_drop_the_duplicates(self):
+        """Kills the what-would-fail strata keeping ids already counted in an earlier folder."""
+        doc = {'cities': {'a': {'in_roster': True, 'gsv22_dedup': 4000, 'frozen_forms': {'gsv22': 2500},
+                                'frozen_dup_of_earlier': ['x', 'y']}}}
+        assert ebc.planned_strata(doc) == [{'city': 'a', 'N': 4000, 'n': 2498, 'u': []}]
+
+    @pytest.mark.parametrize('args, cls', [
+        (('gsv22', 0.0, 0.001, 0.0, 0.001, 8192, 8.0), 'F-frame'),     # any right band, not only a deep one
+        (('gsv22', 0.0, 0.0, 0.0, 0.0137, 8192, 8.0), 'N'),           # near band on the right alone
+    ])
+    def test_class_boundaries_review_one_found_untested(self, args, cls):
+        assert ebc.classify(*args) == cls
+
+    def test_a_uuid_with_a_suffix_is_not_a_uuid(self):
+        assert ebc.id_form(UUID + 'x') == 'other'
+
+    def test_analyze_strata_are_deduplicated_roster_gsv22_and_frozen_only(self, tmp_path):
+        """Kills, in analyze: measured rows not de-duplicated; `other` ids joining the strata; N taken from the raw
+        gsv22 count; non-roster folders joining D1; ledger rows outside the frozen list counted; D2 ignoring
+        the exact band."""
+        store = make_store(tmp_path)
+        put(store, 'gamma', 'thPanoAAAAAAAAAAAAAAAA', 'thin_bottom_10.jpg')    # alpha's U pano, again
+        put(store, 'gamma', 'zzPanoAAAAAAAAAAAAAAAA', 'clean.jpg')
+        put(store, 'gamma', 'nbPanoAAAAAAAAAAAAAAAA', 'near_black_band_q40.jpg')
+        put(store, 'gamma', 'otPanoAAAAAAAAAAAAAAA', 'thin_bottom_15.jpg')     # 21 characters: `other`
+        put(store, 'delta', 'dlPanoAAAAAAAAAAAAAAAA', 'thin_bottom_10.jpg')    # a U pano outside the roster
+        farm, out = tmp_path / 'farm', tmp_path / 'out'
+        doc = ebc.frame(str(store), str(farm), str(out), roster=['alpha', 'gamma'], device_of=devices(store))
+        ebc.run(str(farm), str(out), str(store), ebc.run_order(doc), deadline=3600, ops=SyncToolOps(),
+                device_of=devices(store))
+        with open(str(out / 'sweep' / 'alpha' / 'black_bands.csv'), 'a', newline='') as f:
+            f.write('xxPanoAAAAAAAAAAAAAAAA,1,1,1024,512,0.0938,0.0000,0.0938,0.0000\r\n')   # not frozen
+        shutil.copy(os.path.join(DATA, 'tile-tolerance.json'), str(out / 'tile-tolerance.json'))
+        result, unresolved = ebc.analyze(str(out))
+        # alpha: N 4, n 4, one U (0.0938). gamma: N 2 (zz, nb; th is alpha's), n 2, no U. 4/6 x 1/4 = 1/6.
+        assert result['decision']['primary']['0.05']['estimate'] == pytest.approx(1 / 6.0)
+        assert result['reached']['alpha'] == 4
+        assert result['tables']['d2'] == ['| N | gsv22 | 1 |']
+
 
     def test_a_tool_name_fails_and_a_nightly_writer_is_listed(self, tmp_path):
         store = make_store(tmp_path)
@@ -881,17 +1013,70 @@ class TestTheCommittedRun:
         with open(path, newline='', encoding='utf-8') as f:
             assert list(csv.DictReader(f)) == ebc.instrument_rows()
 
-    def test_every_ledger_id_is_in_its_citys_frozen_list(self):
-        if not os.path.exists(os.path.join(DATA, 'frame.json')):
-            pytest.skip('no frame committed yet')
+    def test_every_frozen_id_is_measured_and_nothing_else(self):
+        """Review 1, N7: the run is complete, so each folder's ledger holds EXACTLY its frozen list, every folder has
+        done.json, and the total is 133,919 of 133,919, from the raw files alone."""
         with open(os.path.join(DATA, 'frame.json'), encoding='utf-8') as f:
             frame_doc = json.load(f)
+        total = 0
         for city in frame_doc['cities']:
             ids = ebc.read_ids(os.path.join(DATA, 'ids', city + '.txt.gz'))
             assert len(ids) == frame_doc['cities'][city]['frozen']
-            p = os.path.join(DATA, 'sweep', city, 'black_bands.csv.gz')
-            if os.path.exists(p):
-                assert set(ebc.load_ledger_rows(p)) <= set(ids), city
+            rows = ebc.load_ledger_rows(os.path.join(DATA, 'sweep', city, 'black_bands.csv.gz'))
+            assert set(rows) == set(ids), city
+            assert os.path.exists(os.path.join(DATA, 'sweep', city, 'done.json')), city
+            total += len(rows)
+        assert total == 133919 == sum(c['frozen'] for c in frame_doc['cities'].values())
+
+    def test_every_prose_figure_is_in_the_report(self):
+        """Review 1, S5: the numbers the report quotes in prose are derived by analyze (`prose`, re-derived from the
+        raw files by the summary test above), and each is quoted in the report in its own phrase."""
+        with open(SUMMARY, encoding='utf-8') as f:
+            prose = json.load(f)['prose']
+        text = ' '.join(open(REPORT, encoding='utf-8').read().split())
+        phrases = {}
+        for key, v in prose.items():
+            parts = key.split('.')
+            if key.endswith('.panos') and parts[0] in ('opening', 'main1', 'main2'):
+                phrases[key] = '| %s |' % v
+            elif key.endswith('.gb') and parts[0] in ('opening', 'main1', 'main2'):
+                phrases[key] = '| %s |' % v
+            elif key == 'main1.mb_per_s':
+                phrases[key] = '%s MB/s' % v
+            elif key == 'main1.abort_last100_s':
+                phrases[key] = '%s s' % v
+            elif parts[:2] == ['main1', 'reached']:
+                phrases[key] = '%s at %s of' % (parts[2], v)
+            elif key == 'gsv22.measured':
+                phrases[key] = '%s measured' % v
+            elif key == 'gsv22.with_exact_band':
+                phrases[key] = '%s of %s carry one' % (v, prose['gsv22.measured'])
+            elif key == 'gsv22.shallowest_exact_bottom':
+                phrases[key] = 'shallower than %s' % v
+            elif parts[0] == 'F-frame':
+                phrases[key] = '%s %s stitch' % (v, parts[1])
+            elif parts[0] == 'U':
+                city, frame, depth = parts[1], parts[2], '.'.join(parts[3:])
+                phrases[key] = '%s on %s frames' % (depth, frame)
+                phrases[key + '#n'] = '%s %s' % (city, v)
+            elif parts[0] == 'weight':
+                phrases[key] = '%s (%s)' % (v, parts[1])
+            elif parts[:2] == ['D2', 'near']:
+                phrases[key] = '%s (%s' % ('.'.join(parts[2:]), v)
+            elif key == 'extras.panos':
+                phrases[key] = '%s banded panos' % v
+            elif key == 'extras.gb':
+                phrases[key] = '%s GB' % v
+            elif key == 'absorbed.primary_bound_per_10000':
+                phrases[key] = 'bound %s per 10,000' % v
+            elif key == 'absorbed.folded_events':
+                phrases[key] = '%s events, an estimate of %s per 10,000' % (v, prose['absorbed.folded_estimate_per_10000'])
+            elif key == 'absorbed.folded_estimate_per_10000':
+                continue
+            else:
+                raise AssertionError('no phrase rule for prose figure %s' % key)
+        missing = {k: p for k, p in phrases.items() if p not in text}
+        assert not missing
 
     def test_the_summary_is_what_the_raw_files_reduce_to(self):
         if not os.path.exists(SUMMARY):

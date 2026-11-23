@@ -1250,6 +1250,63 @@ def load_data(data_dir):
     return frame_doc, ids, ledgers, extras_rows, tolerance
 
 
+def prose_figures(data_dir, frame_doc, measured, extras_rows, strata, absorbed):
+    """The numbers the report quotes in its prose, each derived here from the committed raw files, formatted as the
+    report prints them (the desk-study rule: a prose number is transcribed from an artifact and a test says so)."""
+    def n(x):
+        return '{:,}'.format(x)
+    out = {}
+    sessions = {}
+    for name in sorted(os.listdir(os.path.join(data_dir, 'sessions'))):
+        with open(os.path.join(data_dir, 'sessions', name), encoding='utf-8') as f:
+            sessions[name[:-len('.json')]] = json.load(f)
+    for name, s in sessions.items():
+        rows = sum(c['rows'] for c in s['children'])
+        gb = sum(c['bytes'] for c in s['children']) / 1e9
+        out['%s.panos' % name] = n(rows)
+        out['%s.gb' % name] = '{:,.1f}'.format(gb)
+        start = datetime.datetime.strptime(s['start_utc'], '%Y-%m-%dT%H:%M:%SZ')
+        end = datetime.datetime.strptime(s['end_utc'], '%Y-%m-%dT%H:%M:%SZ')
+        if name == 'main1':
+            out['main1.mb_per_s'] = '%.1f' % (gb * 1e3 / (end - start).total_seconds())
+            for c in s['children']:
+                if c['exit'] != 0:
+                    out['main1.reached.%s' % c['city']] = n(c['rows'])
+    abort_path = os.path.join(data_dir, 'abort-main1.json')
+    if os.path.exists(abort_path):
+        with open(abort_path, encoding='utf-8') as f:
+            m = re.search(r'took ([0-9.]+) s', json.load(f)['reason'])
+        out['main1.abort_last100_s'] = m.group(1)
+    gsv = [(c, p, cls, r) for c, p, form, cls, r in measured if form == 'gsv22']
+    out['gsv22.measured'] = n(len(gsv))
+    exact = [r['bottom_band'] for c, p, cls, r in gsv if float(r['bottom_band']) > 0 or float(r['right_band']) > 0]
+    out['gsv22.with_exact_band'] = n(len(exact))
+    out['gsv22.shallowest_exact_bottom'] = min(b for b in exact if float(b) > 0)
+    lo = repr(CANDIDATES[0])
+    out['absorbed.primary_bound_per_10000'] = '%.2f' % (1e4 * absorbed['primary']['rates'][lo]['bound'])
+    out['absorbed.folded_events'] = str(absorbed['folded']['rates'][lo]['events'])
+    out['absorbed.folded_estimate_per_10000'] = '%.2f' % (1e4 * absorbed['folded']['rates'][lo]['estimate'])
+    for city, k in sorted(Counter(c for c, p, cls, r in gsv if cls == 'F-frame').items()):
+        out['F-frame.%s' % city] = str(k)
+    for (city, frame, depth), k in sorted(Counter((c, '%sx%s' % (r['width'], r['height']), r['bottom_band'])
+                                                  for c, p, cls, r in gsv if cls == 'U').items()):
+        out['U.%s.%s.%s' % (city, frame, depth)] = str(k)
+    total = float(sum(s['N'] for s in strata))
+    for s in strata:
+        if s['u']:
+            out['weight.%s' % s['city']] = '%.4f' % (s['N'] / total)
+    for depth, k in sorted(Counter(r['near_bottom_band'] for c, p, form, cls, r in measured
+                                   if float(r['near_bottom_band']) > CANDIDATES[0]
+                                   and not is_over(float(r['bottom_band']), CANDIDATES[0])).items()):
+        out['D2.near.%s' % depth] = n(k)
+    out['extras.panos'] = n(len(extras_rows))
+    by_id = {(c, p): r for c, p, form, cls, r in measured}
+    nbytes = sum(int(by_id[key]['size']) * (2 if ex['inmem_bottom'] != '' else 1)
+                 for key, ex in extras_rows.items() if key in by_id)
+    out['extras.gb'] = '{:,.1f}'.format(nbytes / 1e9)
+    return out
+
+
 def _pct(k, n):
     return None if not n else 100.0 * k / n
 
@@ -1279,7 +1336,7 @@ def analyze(data_dir):
             measured.append((city, pano_id, form, cls, r))
 
     # D1 strata: measured, de-duplicated gsv22 panos of roster folders
-    strata, frows_by_city = [], defaultdict(list)
+    strata, frows_by_city, u_rows_by_city = [], defaultdict(list), defaultdict(list)
     for city, c in cities.items():
         if not c['in_roster'] or not c['gsv22_dedup']:
             continue
@@ -1289,7 +1346,13 @@ def analyze(data_dir):
                        'u': [float(r['bottom_band']) for p, cls, r in mine if cls == 'U']})
         frows_by_city[city] = [(int(r['width']), int(r['height']), r['bottom_band'])
                                for p, cls, r in mine if cls == 'F-rows']
+        u_rows_by_city[city] = [(int(r['width']), int(r['height']), r['bottom_band'])
+                                for p, cls, r in mine if cls == 'U']
     decision = d1_with_sensitivity(strata, frows_by_city)
+    # Review 1, S1: what the committed rules give if every class-U pano were read as F-rows instead. Not a rule:
+    # the report quotes it to show the pre-committed fold would still keep 0.05.
+    absorbed = d1_with_sensitivity([dict(s, u=[]) for s in strata],
+                                   {c: frows_by_city[c] + u_rows_by_city[c] for c in frows_by_city})
     would_fail = d1_what_would_fail(planned_strata(frame_doc))
 
     tables = {}
@@ -1314,20 +1377,24 @@ def analyze(data_dir):
     ph = [(city, p, r) for city, p, form, cls, r in measured if form == 'photosphere']
     ph_sweep = sum(1 for city, p, r in ph if common.deep_edge_bands(
         common.EdgeBands(float(r['bottom_band']), float(r['right_band']))))
-    ph_inmem = ph_agree = ph_known = 0
+    ph_inmem = ph_agree = ph_measured = ph_inferred = 0
     for city, p, r in ph:
         ex = extras_rows.get((city, p))
         sweep_over = bool(common.deep_edge_bands(common.EdgeBands(float(r['bottom_band']), float(r['right_band']))))
         if ex and ex['inmem_bottom'] != '':
             mem_over = bool(common.deep_edge_bands(common.EdgeBands(float(ex['inmem_bottom']), float(ex['inmem_right']))))
+            ph_measured += 1
         elif not has_band(r):
-            mem_over = False     # no band at all in the file: the in-memory reading is not computed
+            # No exact or near band in the file: the in-memory reading is NOT computed, and is inferred "not over"
+            # (a line that is not near-black at 1/8 scale cannot be exact black after a box mean).
+            mem_over = False
+            ph_inferred += 1
         else:
             continue
-        ph_known += 1
         ph_inmem += mem_over
         ph_agree += mem_over == sweep_over
-    tables['d4'] = ['| %d | %d | %d | %d | %d |' % (len(ph), ph_sweep, ph_known, ph_inmem, ph_agree)]
+    tables['d4'] = ['| %d | %d | %d | %d | %d | %d |' % (len(ph), ph_sweep, ph_measured, ph_inferred, ph_inmem,
+                                                          ph_agree)]
     # D5: verdict changes at line minimums 0.90 and 1.00
     d5 = Counter()
     for city, p, form, cls, r in measured:
@@ -1375,15 +1442,22 @@ def analyze(data_dir):
                                  for k, v in decision['primary']['rates'].items()},
                      'folded': {k: {kk: (num(vv) if isinstance(vv, float) else vv) for kk, vv in v.items()}
                                 for k, v in decision['folded']['rates'].items()}},
+        'u_read_as_f_rows': {'limit': absorbed['limit'], 'outcome': absorbed['outcome'],
+                             'fold_groups': absorbed['fold_groups'],
+                             'primary': {k: {kk: (num(vv) if isinstance(vv, float) else vv) for kk, vv in v.items()}
+                                         for k, v in absorbed['primary']['rates'].items()},
+                             'folded': {k: {kk: (num(vv) if isinstance(vv, float) else vv) for kk, vv in v.items()}
+                                        for k, v in absorbed['folded']['rates'].items()}},
         'what_would_fail': {'zero_event_bound': num(would_fail['zero_event_bound']),
                             'heaviest': would_fail['heaviest'], 'median': would_fail['median']},
-        'photospheres': {'n': len(ph), 'sweep_over': ph_sweep, 'inmem_known': ph_known, 'inmem_over': ph_inmem,
-                         'agree': ph_agree},
+        'photospheres': {'n': len(ph), 'sweep_over': ph_sweep, 'inmem_measured': ph_measured,
+                         'inmem_inferred': ph_inferred, 'inmem_over': ph_inmem, 'agree': ph_agree},
+        'prose': prose_figures(data_dir, frame_doc, measured, extras_rows, strata, absorbed),
         'unresolved': len(unresolved),
         'tables': tables,
         'populations': {
             'census-and-sample-as-measured': ['reached', 'classes', 'tables.classes', 'tables.d2', 'tables.reach'],
-            'gsv22-fleet-strata-deduplicated': ['decision', 'tables.d1'],
+            'gsv22-fleet-strata-deduplicated': ['decision', 'tables.d1', 'u_read_as_f_rows'],
             'gsv22-fleet-strata-as-planned': ['what_would_fail'],
             'provider-forms-census': ['tables.d3'],
             'photosphere-census': ['photospheres', 'tables.d4'],
@@ -1391,6 +1465,7 @@ def analyze(data_dir):
             'class-F-rows-as-measured': ['tables.frows'],
             'class-U-as-measured': ['unresolved'],
             'instrument': ['tolerance_px', 'frozen'],
+            'sessions-and-prose-as-measured': ['prose'],
         },
     }
     return doc, unresolved

@@ -332,9 +332,10 @@ EDGE_BAND_LINE_MIN_BLACK = 0.98
 #: leave at zoom 5 is over it with margin for the 1/8-scale measurement, and the H/6 (16.7%) band the cropper
 #: can catch, the D4 shape (18.75%) and the 10% and 15% bands it cannot are all far over it; a black nadir cap
 #: up to 9 degrees of elevation is under it. CALIBRATED on the store (#179 item 4,
-#: reports/2026-11-22-edge-band-calibration.md): 133,919 frozen panos swept by scan_black_bands.py. Rule D1 kept
-#: 0.05 because depth cannot separate caps from faults on GSV stitches (18 unexplained bands, all deeper than
-#: either candidate limit), so the value is the owner's to revisit. Provider bytes are another matter: two
+#: reports/2026-11-22-edge-band-calibration.md): 133,919 frozen panos swept by scan_black_bands.py. It found no
+#: GSV band under 0.0745 and no cap on a GSV stitch (every GSV band sits at a tile-grid depth). Rule D1 could not
+#: confirm 0.05, because 18 of those bands fall outside its tile-row definition and all are deeper than either
+#: candidate limit, so 0.05 stays and the value is the owner's to revisit. Provider bytes are another matter: two
 #: Mapillary camera setups carry exact-black caps at 0.174 and 0.1875, all over this limit.
 EDGE_BAND_MAX_FRACTION = 0.05
 
