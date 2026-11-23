@@ -1,0 +1,1 @@
+Examined 300 panorama(s): 1 with an edge band over 5.0%, 299 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/kaysville-ut/black_band_worklist.csv

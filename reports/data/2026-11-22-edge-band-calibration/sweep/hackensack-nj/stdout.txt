@@ -1,0 +1,2 @@
+Examined 491 panorama(s): 0 with an edge band over 5.0%, 491 without, 0 already ledgered, 0 failed, 267 unreached. Work-list: <out>/sweep/hackensack-nj/black_band_worklist.csv
+Examined 758 panorama(s): 0 with an edge band over 5.0%, 267 without, 491 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/hackensack-nj/black_band_worklist.csv

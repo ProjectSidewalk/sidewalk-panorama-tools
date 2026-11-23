@@ -1,6 +1,6 @@
 # Calibrating the edge black-band limit on the real pano store (#179 item 4)
 
-**Status: measurement in progress.** This file opens with the dated decision entry, committed and pushed before
+**Status: measurement in progress (131,184 of 133,919 frozen ids measured; chicago-il and knox-oh partial; extras not run).**
 any band depth of the run was read. The results, the decision and the docs follow in later commits on the same
 branch; nothing below the decision entry is a result yet.
 
@@ -95,7 +95,7 @@ Times are Pacific, 2026-11-22. Nothing in this section is a band result.
 | Session | Start | End | Readers | Panos ledgered | GB read | Outcome |
 |---|---|---|---:|---:|---:|---|
 | opening | 08:54 | 09:06 | 1 | 3,415 | 33.0 | stopped by its child's `--max-runtime`; no abort; no-writes check passed |
-| main1 | 09:07 | not observed | 2 | not yet brought home | | see below |
+| main1 | 09:07 | 15:12 | 2 | 127,769 | 1,097.8 | **aborted by the 3x rule** on chicago-il (last 100 GSV panos 65.1 s against 3 x 20.94 s); both children continued and terminated, none left alive; no-writes check passed |
 
 **The opening slice** (`sessions/opening.json`, `baseline.json`): bayonne-fr, then the smallest GSV folders.
 Per 100 panos of unpaused time: **20.94 s for GSV** (one reader read 38.6 to 51.5 MB/s on the folders over 100
@@ -103,12 +103,19 @@ panos) and **8.16 s for provider bytes** (bayonne-fr's 98 panos only, 18.6 MB/s)
 of 98, goiania-br 9 of 9, beringen-be 49 of 49, newport-ky 257 of 257, clifton-nj 588 of 588, blackhawk-hills-il
 609 of 609, la-piedad-old 619 of 619, fort-wayne-in 695 of 695, hackensack-nj 491 of 758; 3,415 of 133,919 in all.
 
-**main1** was started at 09:07 with 2 readers and the opening's baseline, to sweep until 16:10 and then run the
-extras until 16:50. At 09:49 the connection used to wait on it was lost (exit 255, the multiplexed connection
-gone). By the stop rule for this run, no further contact with the host was made that day. The dispatcher runs
-detached on the host and ends itself under the same limits and stops; its ledgers, timing log, session record
-and the no-writes listings stay on the host's local scratch until they are brought home. Nothing it measured is
-in this commit.
+**main1** (`sessions/main1.json`, `abort.json`, `run-main1.log`, `timing.csv`) was started at 09:07 with 2 readers
+and the opening's baseline, to sweep until 16:10 and then run the extras until 16:50. At 09:49 the connection
+used to wait on it was lost from this side (exit 255); the host and the job were found healthy at 10:11, and
+the session ran detached. It read 1,097.8 GB in 6 h 06 min of wall time, **50.0 MB/s on average**, under the 60
+MB/s cap, which paused a reader for 5 to 457 s per GSV folder. At 15:12:52 the 3x rule fired on chicago-il: its
+last 100 GSV panos took 65.1 s of unpaused time against a limit of 62.8 s. The dispatcher continued and then
+terminated both children (chicago-il and knox-oh, exit -15), none was left alive, and no extras ran. Per the
+rule, there was no retry that day. Unpaused time per 100 panos over main1's GSV folders ran 18.2 to 29.0 s
+(the baseline was 20.94 s at one reader), so two readers were already slower per pano than one.
+
+**Reached of frozen after main1: 131,184 of 133,919.** 60 folders are complete (`done.json`); chicago-il has 772 of
+2,785 and knox-oh 1,902 of 2,624 (the sorted-id prefix of each frozen list). 2,735 frozen ids remain, all in those
+two folders, and the extras have not run. Not analysed: the decision rules wait for the whole frozen set.
 
 ### Deviations so far
 

@@ -1,0 +1,1101 @@
+{
+ "abort_reason": "chicago-il: last 100 gsv panos took 65.1 s, over 3x the baseline 20.9 s",
+ "baseline_per100_s": {
+  "gsv": 20.94,
+  "provider": 8.16
+ },
+ "children": [
+  {
+   "active_s": 23.0,
+   "bytes": 243761191,
+   "city": "kaysville-ut",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 300
+   },
+   "rows": 300,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 1,
+    "clean": 299,
+    "current": 0,
+    "examined": 300,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 105.1,
+   "bytes": 2661821549,
+   "city": "sacramento-ca",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 830
+   },
+   "rows": 830,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 830,
+    "current": 0,
+    "examined": 830,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 96.1,
+   "bytes": 1539341555,
+   "city": "brussels-be",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 882
+   },
+   "rows": 882,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 882,
+    "current": 0,
+    "examined": 882,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 576.8,
+   "bytes": 9117442342,
+   "city": "laurens-ia",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 4656
+   },
+   "rows": 4656,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 4656,
+    "current": 0,
+    "examined": 4656,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 707.9,
+   "bytes": 12564827449,
+   "city": "juneau-ak",
+   "exit": 0,
+   "paused_s": 0.0,
+   "per_source_rows": {
+    "provider": 5335
+   },
+   "rows": 5335,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 4847,
+    "clean": 488,
+    "current": 0,
+    "examined": 5335,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 64.1,
+   "bytes": 2629042781,
+   "city": "hackensack-nj",
+   "exit": 0,
+   "paused_s": 5.0,
+   "per_source_rows": {
+    "gsv": 267
+   },
+   "rows": 267,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 267,
+    "current": 491,
+    "examined": 758,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 212.3,
+   "bytes": 8791444056,
+   "city": "tainan-tw",
+   "exit": 0,
+   "paused_s": 32.0,
+   "per_source_rows": {
+    "gsv": 961
+   },
+   "rows": 961,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 961,
+    "current": 0,
+    "examined": 961,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 264.3,
+   "bytes": 10806704478,
+   "city": "santiago-chile",
+   "exit": 0,
+   "paused_s": 12.0,
+   "per_source_rows": {
+    "gsv": 1083
+   },
+   "rows": 1083,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1083,
+    "current": 0,
+    "examined": 1083,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 264.4,
+   "bytes": 10485922590,
+   "city": "sao-paulo-brazil",
+   "exit": 0,
+   "paused_s": 20.0,
+   "per_source_rows": {
+    "gsv": 1113
+   },
+   "rows": 1113,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1113,
+    "current": 0,
+    "examined": 1113,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 311.4,
+   "bytes": 13311465125,
+   "city": "cliffside-park-nj",
+   "exit": 0,
+   "paused_s": 81.1,
+   "per_source_rows": {
+    "gsv": 1304
+   },
+   "rows": 1304,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1304,
+    "current": 0,
+    "examined": 1304,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 1443.9,
+   "bytes": 26580292595,
+   "city": "richmond-va",
+   "exit": 0,
+   "paused_s": 13.0,
+   "per_source_rows": {
+    "provider": 9407
+   },
+   "rows": 9407,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 4132,
+    "clean": 5275,
+    "current": 0,
+    "examined": 9407,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 476.6,
+   "bytes": 18931287862,
+   "city": "virden-il",
+   "exit": 0,
+   "paused_s": 130.2,
+   "per_source_rows": {
+    "gsv": 1666
+   },
+   "rows": 1666,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1666,
+    "current": 0,
+    "examined": 1666,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 460.6,
+   "bytes": 15480608333,
+   "city": "rancagua-chile",
+   "exit": 0,
+   "paused_s": 257.3,
+   "per_source_rows": {
+    "gsv": 1737
+   },
+   "rows": 1737,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1737,
+    "current": 0,
+    "examined": 1737,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 425.6,
+   "bytes": 13659394065,
+   "city": "la-piedad",
+   "exit": 0,
+   "paused_s": 150.2,
+   "per_source_rows": {
+    "gsv": 1823
+   },
+   "rows": 1823,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1823,
+    "current": 0,
+    "examined": 1823,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 486.6,
+   "bytes": 19368400985,
+   "city": "detroit-mi",
+   "exit": 0,
+   "paused_s": 246.3,
+   "per_source_rows": {
+    "gsv": 1859
+   },
+   "rows": 1859,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 1859,
+    "current": 0,
+    "examined": 1859,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 495.6,
+   "bytes": 20015074573,
+   "city": "keelung-tw",
+   "exit": 0,
+   "paused_s": 253.3,
+   "per_source_rows": {
+    "gsv": 2008,
+    "provider": 1
+   },
+   "rows": 2009,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 1,
+    "clean": 2008,
+    "current": 0,
+    "examined": 2009,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 484.6,
+   "bytes": 17631375030,
+   "city": "la-ca",
+   "exit": 0,
+   "paused_s": 282.3,
+   "per_source_rows": {
+    "gsv": 2172
+   },
+   "rows": 2172,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2172,
+    "current": 0,
+    "examined": 2172,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 548.7,
+   "bytes": 21410151465,
+   "city": "auckland",
+   "exit": 0,
+   "paused_s": 281.3,
+   "per_source_rows": {
+    "gsv": 2280
+   },
+   "rows": 2280,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2280,
+    "current": 0,
+    "examined": 2280,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 639.8,
+   "bytes": 24842800425,
+   "city": "houston-tx",
+   "exit": 0,
+   "paused_s": 347.4,
+   "per_source_rows": {
+    "gsv": 2434
+   },
+   "rows": 2434,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2434,
+    "current": 0,
+    "examined": 2434,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 639.8,
+   "bytes": 25000244660,
+   "city": "cdmx",
+   "exit": 0,
+   "paused_s": 289.3,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 501.7,
+   "bytes": 12936425108,
+   "city": "chandigarh-india",
+   "exit": 0,
+   "paused_s": 186.2,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 715.9,
+   "bytes": 28084048543,
+   "city": "danville-il",
+   "exit": 0,
+   "paused_s": 274.3,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 724.9,
+   "bytes": 27298333186,
+   "city": "gainesville-fl",
+   "exit": 0,
+   "paused_s": 428.5,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 684.9,
+   "bytes": 26527693306,
+   "city": "madison-wi",
+   "exit": 0,
+   "paused_s": 343.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 676.8,
+   "bytes": 26884107590,
+   "city": "maywood-nj",
+   "exit": 0,
+   "paused_s": 368.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 503.6,
+   "bytes": 15619205888,
+   "city": "newberg-or",
+   "exit": 0,
+   "paused_s": 238.3,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 10,
+    "clean": 2490,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 615.8,
+   "bytes": 24422908608,
+   "city": "niagara-falls-ny",
+   "exit": 0,
+   "paused_s": 305.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 701.9,
+   "bytes": 32344182895,
+   "city": "oradell-nj",
+   "exit": 0,
+   "paused_s": 435.5,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 670.9,
+   "bytes": 22751908568,
+   "city": "paterson-nj",
+   "exit": 0,
+   "paused_s": 381.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 707.9,
+   "bytes": 30934585855,
+   "city": "teaneck-nj",
+   "exit": 0,
+   "paused_s": 382.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 661.9,
+   "bytes": 22940201974,
+   "city": "tucson-az",
+   "exit": 0,
+   "paused_s": 369.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 638.8,
+   "bytes": 26051583319,
+   "city": "validation-study",
+   "exit": 0,
+   "paused_s": 345.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 662.9,
+   "bytes": 25285971429,
+   "city": "vancouver-wa",
+   "exit": 0,
+   "paused_s": 384.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 667.8,
+   "bytes": 28057184773,
+   "city": "waltham-ma",
+   "exit": 0,
+   "paused_s": 358.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 523.7,
+   "bytes": 17375933417,
+   "city": "washington-dc",
+   "exit": 0,
+   "paused_s": 300.3,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 8,
+    "clean": 2492,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 658.8,
+   "bytes": 29092642880,
+   "city": "west-chester-pa",
+   "exit": 0,
+   "paused_s": 321.4,
+   "per_source_rows": {
+    "gsv": 2500
+   },
+   "rows": 2500,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2500,
+    "current": 0,
+    "examined": 2500,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 687.9,
+   "bytes": 23563296527,
+   "city": "walla-walla-wa",
+   "exit": 0,
+   "paused_s": 401.5,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 1
+   },
+   "rows": 2501,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2501,
+    "current": 0,
+    "examined": 2501,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 706.9,
+   "bytes": 30882617904,
+   "city": "columbia-sc",
+   "exit": 0,
+   "paused_s": 383.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 2
+   },
+   "rows": 2502,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2502,
+    "current": 0,
+    "examined": 2502,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 627.8,
+   "bytes": 25004830899,
+   "city": "new-taipei-tw",
+   "exit": 0,
+   "paused_s": 426.5,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 2
+   },
+   "rows": 2502,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2502,
+    "current": 0,
+    "examined": 2502,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 645.8,
+   "bytes": 28628844530,
+   "city": "mendota-il",
+   "exit": 0,
+   "paused_s": 376.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 3
+   },
+   "rows": 2503,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2503,
+    "current": 0,
+    "examined": 2503,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 608.8,
+   "bytes": 23605960596,
+   "city": "taichung-tw",
+   "exit": 0,
+   "paused_s": 402.5,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 4
+   },
+   "rows": 2504,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2504,
+    "current": 0,
+    "examined": 2504,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 594.7,
+   "bytes": 24391917903,
+   "city": "columbus-oh",
+   "exit": 0,
+   "paused_s": 334.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 6
+   },
+   "rows": 2506,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 4,
+    "clean": 2502,
+    "current": 0,
+    "examined": 2506,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 641.8,
+   "bytes": 26657722340,
+   "city": "amsterdam",
+   "exit": 0,
+   "paused_s": 390.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 8
+   },
+   "rows": 2508,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2508,
+    "current": 0,
+    "examined": 2508,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 652.9,
+   "bytes": 24010664601,
+   "city": "kaohsiung-tw",
+   "exit": 0,
+   "paused_s": 351.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 15
+   },
+   "rows": 2515,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2515,
+    "current": 0,
+    "examined": 2515,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 646.8,
+   "bytes": 26158548752,
+   "city": "pittsburgh-pa",
+   "exit": 0,
+   "paused_s": 369.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 19
+   },
+   "rows": 2519,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2519,
+    "current": 0,
+    "examined": 2519,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 628.8,
+   "bytes": 26171072492,
+   "city": "st-louis-mo",
+   "exit": 0,
+   "paused_s": 327.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 21
+   },
+   "rows": 2521,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2521,
+    "current": 0,
+    "examined": 2521,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 459.6,
+   "bytes": 13155443892,
+   "city": "cuenca",
+   "exit": 0,
+   "paused_s": 230.3,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 25
+   },
+   "rows": 2525,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2525,
+    "current": 0,
+    "examined": 2525,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 640.8,
+   "bytes": 27162905943,
+   "city": "burnaby",
+   "exit": 0,
+   "paused_s": 314.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 47
+   },
+   "rows": 2547,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2547,
+    "current": 0,
+    "examined": 2547,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 679.9,
+   "bytes": 28843974542,
+   "city": "seattle-wa",
+   "exit": 0,
+   "paused_s": 456.5,
+   "per_source_rows": {
+    "gsv": 2503,
+    "provider": 45
+   },
+   "rows": 2548,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 9,
+    "clean": 2539,
+    "current": 0,
+    "examined": 2548,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 637.8,
+   "bytes": 25942227339,
+   "city": "taipei",
+   "exit": 0,
+   "paused_s": 367.4,
+   "per_source_rows": {
+    "gsv": 2502,
+    "provider": 57
+   },
+   "rows": 2559,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2559,
+    "current": 0,
+    "examined": 2559,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 615.8,
+   "bytes": 25578039742,
+   "city": "zurich",
+   "exit": 0,
+   "paused_s": 387.4,
+   "per_source_rows": {
+    "gsv": 2508,
+    "provider": 97
+   },
+   "rows": 2605,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 2,
+    "clean": 2603,
+    "current": 0,
+    "examined": 2605,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 567.7,
+   "bytes": 20153873040,
+   "city": "spgg",
+   "exit": 0,
+   "paused_s": 300.4,
+   "per_source_rows": {
+    "gsv": 2500,
+    "provider": 112
+   },
+   "rows": 2612,
+   "stdout_lines": 1,
+   "summary": {
+    "banded": 0,
+    "clean": 2612,
+    "current": 0,
+    "examined": 2612,
+    "failed": 0,
+    "unreached": 0
+   }
+  },
+  {
+   "active_s": 493.6,
+   "bytes": 20174419279,
+   "city": "knox-oh",
+   "exit": -15,
+   "paused_s": 269.3,
+   "per_source_rows": {
+    "gsv": 1778,
+    "provider": 124
+   },
+   "rows": 1902,
+   "stdout_lines": 0,
+   "summary": null
+  },
+  {
+   "active_s": 182.2,
+   "bytes": 6005891346,
+   "city": "chicago-il",
+   "exit": -15,
+   "paused_s": 114.1,
+   "per_source_rows": {
+    "gsv": 517,
+    "provider": 255
+   },
+   "rows": 772,
+   "stdout_lines": 0,
+   "summary": null
+  }
+ ],
+ "children_alive_after_term": [],
+ "end_utc": "2026-11-22T23:12:52Z",
+ "rate_cap_bytes_per_s": 60000000.0,
+ "readers": 2,
+ "session": "main1",
+ "start_utc": "2026-11-22T17:07:02Z",
+ "stop_reason": null
+}

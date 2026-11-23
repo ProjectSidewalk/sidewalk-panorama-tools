@@ -1,0 +1,1 @@
+Examined 2506 panorama(s): 4 with an edge band over 5.0%, 2502 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/columbus-oh/black_band_worklist.csv

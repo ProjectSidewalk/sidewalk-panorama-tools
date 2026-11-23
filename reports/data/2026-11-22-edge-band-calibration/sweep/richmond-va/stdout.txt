@@ -1,0 +1,1 @@
+Examined 9407 panorama(s): 4132 with an edge band over 5.0%, 5275 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/richmond-va/black_band_worklist.csv
