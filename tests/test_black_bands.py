@@ -901,3 +901,19 @@ class TestTheSweepsCommandLine:
     def test_min_band_must_be_a_fraction(self, tmp_path, value):
         with pytest.raises(SystemExit):
             scan_black_bands.main([str(tmp_path), '--min-band', value])
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_the_limit_is_the_committed_calibrations_decision():
+    """EDGE_BAND_MAX_FRACTION is the limit rule D1 of the #179 calibration returned on the committed run
+    (reports/2026-11-22-edge-band-calibration.md). It lives here, beside the constant, so a later and separately
+    decided change edits this one line and leaves the dated report alone. The synthetic D1 tests in
+    tests/test_edge_band_calibration_report.py are what keep the decision from being read back from its own output.
+    """
+    import json
+    with open(os.path.join(REPO_ROOT, 'reports', 'data', '2026-11-22-edge-band-calibration.json'),
+              encoding='utf-8') as f:
+        decision = json.load(f)['decision']
+    assert common.EDGE_BAND_MAX_FRACTION == decision['limit']
