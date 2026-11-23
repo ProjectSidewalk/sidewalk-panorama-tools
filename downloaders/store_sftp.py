@@ -93,9 +93,7 @@ IMAGE_SUFFIX = '.jpg'
 DEPTH_SUFFIX = '.depth.npz'
 
 # A pano id goes into a quoted path in the batch AND into a remote path sftp globs, so it is held to the
-# union of the id alphabets rather than to a blacklist: common.PANO_ID_SHAPE, the intake's own rule. That
-# includes a photosphere id's trailing '.' padding (#223), which is neither a quote nor a glob character; the
-# narrower [A-Za-z0-9_-]+ this used to be failed every dot-padded pano on every pull.
+# intake's whitelist. Its '.' padding (#223) is neither a quote nor a glob character.
 _SAFE_ID = PANO_ID_SHAPE
 # A city id is one path segment on the store: seattle-wa, cdmx, la-piedad. Starts alphanumeric, so it is
 # never '.', '..', or something sftp's option parser could read.
@@ -244,9 +242,9 @@ def sftp_argv(settings):
     """The sftp command line. Never interactive: BatchMode=yes makes a missing key or a passphrase fail in
     about a second under cron instead of waiting on a prompt nothing can answer.
 
-    StrictHostKeyChecking=accept-new (the log analyzer's setting too), not `no`: `no` silently accepts a CHANGED host key,
-    which on a credentialed channel writing imagery into someone's store is an invitation; accept-new trusts
-    an unknown host once and refuses a change (OpenSSH >= 7.6).
+    StrictHostKeyChecking=accept-new, as in the log analyzer, not `no`: `no` silently accepts a CHANGED host
+    key, which on a credentialed channel writing imagery into someone's store is an invitation; accept-new
+    trusts an unknown host once and refuses a change (OpenSSH >= 7.6).
     """
     argv = list(SFTP_COMMAND)
     if settings.port:

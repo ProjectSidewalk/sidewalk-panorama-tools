@@ -53,9 +53,8 @@ STOP_MAX_RUNTIME = 'max-runtime'
 CONDITION_MAPILLARY_TOKEN = 'mapillary-token-missing'
 CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
 CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
-# Ids dropped at intake as not a provider id (common.PANO_ID_SHAPE). No floor: production held none on 2026-11-23,
-# so one is either someone probing the store's paths or a new id form the shape must learn - both want a person,
-# and the second would otherwise skip those panos every night in silence.
+# Ids dropped at intake (common.PANO_ID_SHAPE). No floor: production had none on 2026-11-23, so one is a probe
+# of the store's paths or a new id form, and the second would otherwise be skipped every night in silence.
 CONDITION_PANO_ID_UNSAFE = 'pano-id-unsafe'
 CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
 CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
@@ -261,8 +260,7 @@ def progress_check(csv_pano_log_path):
     return ledgered_ids, total_processed, total_success, total_processed - total_success
 
 
-# The id becomes a path on the store (<id[:2]>/<id>.jpg) and a URL segment, so an id outside the shape is
-# dropped at intake. A module attribute so a test can widen it to reach the defences behind it.
+# A module attribute so a test can widen it to reach the defences behind it.
 _PANO_ID_SHAPE = common.PANO_ID_SHAPE
 
 
@@ -300,13 +298,13 @@ def _normalize_pano_records(records, conditions=None):
         unique_ids.add(pano_id)
         kept.append(record)
     if unsafe:
-        # Both channels (CLAUDE.md): one line, clipped, because the ids are whatever a stranger typed.
+        # Both channels (CLAUDE.md), clipped: the ids are whatever a stranger typed.
         detail = ("%d pano id(s) that are not a provider id (letters, digits, '_', '-', then optional '.' "
                   "padding); first: %s" % (len(unsafe), ', '.join('%.80r' % pano_id for pano_id in unsafe[:3])))
         message = "WARNING - dropped %s. Never fetched, never ledgered." % detail
         logging.warning(message)
         print(message)
-        # And the night fails (#161): stdout reaches the message only on a night that already exits nonzero.
+        # stdout reaches the night's message only on a night that already fails, so this fails it (#161).
         note_condition(conditions, CONDITION_PANO_ID_UNSAFE, detail)
     return kept
 
@@ -1836,7 +1834,7 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
             pano_infos = []
         # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
         # this runner does not know) is the filter's condition, already noted by it, and not the server's.
-        # Nor is a list intake emptied by dropping unsafe ids: the server served them, and that condition says so.
+        # Nor a list intake emptied of unsafe ids: that condition already says so.
         served_empty = not pano_infos and not any(
             c.get('code') == CONDITION_PANO_ID_UNSAFE for c in stop_reasons.get('conditions', ()))
         pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons,

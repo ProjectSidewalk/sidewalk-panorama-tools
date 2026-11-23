@@ -2698,8 +2698,7 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 pano_id = str(raw_id).strip()
                 if not pano_id:
                     raise ValueError("empty pano_id")
-                # The id becomes the path the pano is read from, and cvMetadata serves whatever id a browser
-                # submitted: '../x' would open a .jpg outside the pano folder (common.PANO_ID_SHAPE).
+                # The id becomes the path the pano is read from, and cvMetadata serves whatever a browser sent.
                 if not is_pano_id(pano_id):
                     raise ValueError("pano_id is not a provider id")
                 pano_x = float(row['pano_x'])

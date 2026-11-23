@@ -805,8 +805,7 @@ class TestBulkExtractCrops:
 
     @pytest.mark.parametrize('bad', ['../testpano0001', '/etc/x', 'ab/cd', 'a b'])
     def test_a_pano_id_that_is_not_a_provider_id_is_an_error(self, crop_runner, tmp_path, bad):
-        """The id becomes the path the pano is read from and cvMetadata serves what a browser submitted, so
-        '../x' must not be opened: a counted error, never a path outside the pano folder."""
+        """cvMetadata serves what a browser sent, so '../x' is a counted error, never a path that gets opened."""
         store, out = tmp_path / 'store', tmp_path / 'crops'
         put_pano(store, 'testpano0001')
         counts = crop_runner.bulk_extract_crops([label_row(pano_id=bad, label_id=1)], str(store), str(out))

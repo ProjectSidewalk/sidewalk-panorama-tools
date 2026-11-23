@@ -349,7 +349,7 @@ class TestBatchText:
     @pytest.mark.parametrize('pano_id,ok', [
         ('ok-id_1', True), (DASH_ID, True), ('123456789012345', True),
         ('3f9c2a1e-8b7d-4c6e-9a5f-0d1e2f3a4b5c', True),
-        ('CAoSLEFGMVFpcE5fabc..', True),     # a photosphere id's '.' padding (#223): on the store, so pullable
+        ('CAoSLEFGMVFpcE5fabc..', True),     # a photosphere id's '.' padding (#223)
         ('.hidden', False), ('a.b', False),
         ('a"b', False), ('a/b', False), ('a b', False), ('a\tb', False), ('a\nb', False), ('a*b', False),
         ('a?b', False), ('a[b', False), ('a\\b', False), ('', False), ('..', False)])

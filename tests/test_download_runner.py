@@ -1107,8 +1107,7 @@ class TestNumericPanoIds:
     @pytest.mark.parametrize('bad', ['../1234567890', 'ab/../../1234567890', '..', '.hidden', 'a/b', 'a\\b',
                                      '1234567890?x=1', 'abc def', 'abc\ndef', 'abc.def'])
     def test_normalize_pano_records_drops_ids_that_are_not_a_provider_id(self, bad, capsys, caplog):
-        """The id becomes a store path and a URL segment, and the app stores what a browser sent: '../<real
-        id>' fetched the real image and wrote it above the city's folder. Dropped once, on both channels."""
+        """'../<real id>' fetched the real image and wrote it above the city's folder. Dropped, on both channels."""
         with caplog.at_level(logging.WARNING):
             kept = DownloadRunner._normalize_pano_records([{'pano_id': bad}, {'pano_id': bad}, {'pano_id': 'ok-_1'}])
 
@@ -1117,8 +1116,7 @@ class TestNumericPanoIds:
         assert 'dropped 1 pano id(s)' in caplog.text
 
     def test_a_dropped_id_is_a_run_condition_with_no_floor(self):
-        """stdout reaches the night's message only on a night that already fails (--only-on-failure), so a
-        new id form the shape does not know would otherwise skip those panos every night in silence."""
+        """The night's message is sent only on failure, so a warning alone would skip a new id form unseen."""
         summary = {}
         DownloadRunner._normalize_pano_records([{'pano_id': '../x'}, {'pano_id': 'ok'}], summary)
         assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_PANO_ID_UNSAFE]
@@ -3451,8 +3449,7 @@ class TestAnEmptyPanoListForACityWithHistoryFailsTheNight:
         assert '/adminapi/panos' not in capsys.readouterr().out
 
     def test_a_list_intake_emptied_of_unsafe_ids_is_that_condition_only(self, monkeypatch, tmp_path, capsys):
-        """The server served panos and intake dropped them all: `pano-list-empty` would send the operator to
-        an /adminapi/panos that is fine."""
+        """The server served panos and intake dropped them: `pano-list-empty` would blame a server that is fine."""
         self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
 
         call_main(monkeypatch, tmp_path, '../somePano,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n',
@@ -4892,7 +4889,7 @@ class TestStoreMode:
 
     def test_an_id_the_batch_cannot_carry_is_counted_failed_and_never_sent(self, monkeypatch, tmp_path, caplog):
         bad = 'bad*panoAAAAAAAAAAAAAA'
-        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        # Intake drops this id first; widened here so the batch's own refusal is what runs.
         monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         with caplog.at_level(logging.WARNING):
@@ -4914,7 +4911,7 @@ class TestStoreMode:
         """Store mode ledgers no permanent verdict, so every pano it failed to place tonight - absent,
         truncated, an id the batch cannot carry - is transient and retried next run: its field 20 (#182)."""
         bad = 'bad*panoAAAAAAAAAAAAAA'
-        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        # Intake drops this id first; widened here so the batch's own refusal is what runs.
         monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
         monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[2] + '.jpg')
@@ -5039,7 +5036,7 @@ class TestStoreMode:
 
     def test_a_depth_id_the_batch_cannot_carry_is_counted_not_sent(self, monkeypatch, tmp_path):
         bad = 'bad*panoAAAAAAAAAAAAAA'
-        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        # Intake drops this id first; widened here so the batch's own refusal is what runs.
         monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         run.main(store_csv_rows([STORE_IDS[0], bad]), '--with-depth')

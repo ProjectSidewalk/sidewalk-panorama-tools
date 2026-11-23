@@ -22,17 +22,15 @@ from urllib3.util.retry import Retry
 CONDITION_DETAIL_MAX = 300
 
 
-# What a pano id may be, once, for everything that turns one into a path or a URL segment: the union of the
-# sources' alphabets - GSV's base64url (a photosphere id may end in '.' padding, #223), Mapillary's digits,
-# Panoramax's UUIDs. Starts with a non-dot, so it is never '.', '..', a hidden file or a path. The app stores
-# whatever id a browser submitted, and '../<real id>' still fetched (requests normalises the URL) and was
-# written above the city's folder. Measured 2026-11-23: none of the 1.7M ids in the 61 production schemas'
-# pano_data falls outside it.
+# The one definition of a pano id, for anything that builds a path or a URL from one: GSV's base64url (a
+# photosphere id may end in '.' padding, #223), Mapillary's digits, Panoramax's UUIDs. Never '.', '..' or a
+# path. The app stores whatever id a browser sends, and '../<real id>' was fetched and written above the
+# city's folder. Measured 2026-11-23: all 1.7M production ids match.
 PANO_ID_SHAPE = re.compile(r'[A-Za-z0-9_-]+\.*')
 
 
 def is_pano_id(pano_id):
-    """Whether `pano_id` is a str in PANO_ID_SHAPE, i.e. safe to build a store path or a provider URL from."""
+    """Whether `pano_id` is a str matching PANO_ID_SHAPE."""
     return isinstance(pano_id, str) and PANO_ID_SHAPE.fullmatch(pano_id) is not None
 
 
