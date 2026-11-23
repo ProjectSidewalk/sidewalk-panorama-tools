@@ -1,8 +1,9 @@
 # Calibrating the edge black-band limit on the real pano store (#179 item 4)
 
-**Status: measurement in progress (131,184 of 133,919 frozen ids measured; chicago-il and knox-oh partial; extras not run).**
-any band depth of the run was read. The results, the decision and the docs follow in later commits on the same
-branch; nothing below the decision entry is a result yet.
+**Status: measurement in progress (131,184 of 133,919 frozen ids measured; chicago-il and knox-oh partial; extras
+not run).** This file opens with the dated decision entry, committed and pushed before any band depth of the run
+was read. The results, the decision and the docs follow in later commits on the same branch; nothing below the
+decision entry is a result yet.
 
 ## Decision entry, 2026-11-22 (written before the measurement)
 
