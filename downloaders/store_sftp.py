@@ -242,7 +242,7 @@ def sftp_argv(settings):
     """The sftp command line. Never interactive: BatchMode=yes makes a missing key or a passphrase fail in
     about a second under cron instead of waiting on a prompt nothing can answer.
 
-    StrictHostKeyChecking=accept-new, not the log analyzer's `no`: `no` silently accepts a CHANGED host key,
+    StrictHostKeyChecking=accept-new (the log analyzer's setting too), not `no`: `no` silently accepts a CHANGED host key,
     which on a credentialed channel writing imagery into someone's store is an invitation; accept-new trusts
     an unknown host once and refuses a change (OpenSSH >= 7.6).
     """

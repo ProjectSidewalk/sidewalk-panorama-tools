@@ -98,26 +98,28 @@ class TestPanoCsvParsesLikeACsv:
         assert records[0]['source'] == 'gsv'
 
     def test_a_quoted_field_containing_a_comma_stays_whole(self, tmp_path):
-        """The tempting wrong turn here is `line.split(',')`, which pandas never did."""
+        """The tempting wrong turn here is `line.split(',')`, which pandas never did. In the source cell, not
+        the id: an id with a comma is dropped at intake as not a provider id, which is a different rule."""
         path = write_pano_csv(tmp_path,
-                              PANO_HEADER + '"pano,id",16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n')
+                              PANO_HEADER + 'panoid,16384,8192,47.6,-122.3,180.0,0.0,"gs,v",True\n')
 
         records = DownloadRunner.fetch_pano_ids_csv(path)
 
-        assert [r['pano_id'] for r in records] == ['pano,id']
+        assert [(r['pano_id'], r['source']) for r in records] == [('panoid', 'gs,v')]
 
     @pytest.mark.parametrize('embedded', ['\n', '\r\n', '\r'])
     def test_a_quoted_field_containing_a_newline_stays_whole(self, tmp_path, embedded):
         """The \\r cases are what newline='' on the reader buys, and they are pandas parity, not an
         invention: measured, read_csv also returns 'pano\\r\\nid' intact. Without newline='' the file
         object's universal-newline translation rewrites both to '\\n' before csv ever sees them, so the
-        reader silently edits the data it was asked to read."""
+        reader silently edits the data it was asked to read. In the source cell, not the id, for the comma
+        test's reason."""
         path = write_pano_csv(tmp_path, PANO_HEADER
-                              + '"pano%sid",16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n' % embedded)
+                              + 'panoid,16384,8192,47.6,-122.3,180.0,0.0,"gs%sv",True\n' % embedded)
 
         records = DownloadRunner.fetch_pano_ids_csv(path)
 
-        assert [r['pano_id'] for r in records] == ['pano%sid' % embedded]
+        assert [(r['pano_id'], r['source']) for r in records] == [('panoid', 'gs%sv' % embedded)]
 
     def test_crlf_line_endings_parse(self, tmp_path):
         text = (PANO_HEADER + pano_row()).replace('\n', '\r\n')

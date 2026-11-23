@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -257,8 +258,15 @@ def progress_check(csv_pano_log_path):
     return ledgered_ids, total_processed, total_success, total_processed - total_success
 
 
+# Every id alphabet the three sources use: GSV's base64url (a photosphere id may end in '.' padding, #223),
+# Mapillary's digits, Panoramax's UUIDs. The id becomes a path on the store (<id[:2]>/<id>.jpg) and a URL
+# segment, and the app stores whatever a browser submitted, so an id outside this shape is dropped at intake:
+# '../<real id>' still fetched (requests normalises the URL) and was written above the city's folder.
+_PANO_ID_SHAPE = re.compile(r'[A-Za-z0-9_-]+\.*')
+
+
 def _normalize_pano_records(records):
-    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial' rows, dedupe keeping the first.
+    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial'/unsafe rows, dedupe keeping the first.
 
     Numeric (Mapillary) ids otherwise arrive as ints and crash every pano_id[:2] shard slice, and set
     membership against the ledger's string ids silently misses (#46). Centralised so the CSV and webserver
@@ -266,6 +274,7 @@ def _normalize_pano_records(records):
     """
     unique_ids = set()
     kept = []
+    unsafe = []
     for record in records:
         raw = record.get('pano_id')
         # The float-nan case is the JSON path, not the CSV one: Python's json parses a bare NaN literal by
@@ -282,9 +291,20 @@ def _normalize_pano_records(records):
         if not pano_id or pano_id == 'tutorial':
             print("Pano ID is an empty string or is for tutorial")
             continue
+        if not _PANO_ID_SHAPE.fullmatch(pano_id):
+            unique_ids.add(pano_id)
+            unsafe.append(pano_id)
+            continue
         record['pano_id'] = pano_id
         unique_ids.add(pano_id)
         kept.append(record)
+    if unsafe:
+        # Both channels (CLAUDE.md): one line, clipped, because the ids are whatever a stranger typed.
+        message = ("WARNING - dropped %d pano id(s) that are not a provider id (letters, digits, '_', '-'); "
+                   "never fetched, never ledgered. First: %s"
+                   % (len(unsafe), ', '.join('%.80r' % pano_id for pano_id in unsafe[:3])))
+        logging.warning(message)
+        print(message)
     return kept
 
 

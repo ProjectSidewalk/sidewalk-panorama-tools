@@ -210,7 +210,7 @@ def download_log(city_id: str, dest: Path, sftp: dict) -> bool:
     if sftp["key"]:
         cmd += ["-i", sftp["key"]]
     cmd += [
-        "-o", "StrictHostKeyChecking=no",
+        "-o", "StrictHostKeyChecking=accept-new",   # trust an unknown host once, refuse a CHANGED key
         "-o", "BatchMode=yes",   # never prompt for a password
         "-b", "-",               # read commands from stdin
         destination,

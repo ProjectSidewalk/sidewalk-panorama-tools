@@ -40,7 +40,9 @@ is one photometa request per new GSV pano and [#74](https://github.com/ProjectSi
 app-vs-Google frame check — there is no app frame to compare — and every label on those panos loses the
 cropper's dims preflight. A `-c` CSV may omit the `width` and `height` columns, or leave cells blank.
 
-The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and `panoramax`, plus
+The downloader drops empty ids, the literal id `tutorial`, and any id that is not letters, digits, `_` and `-`
+(optionally ending in `.` padding) - the id becomes a path on the store, and the app stores whatever a browser
+submitted - then keeps `gsv` and `panoramax`, plus
 `mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume an
 id alphabet. Nor a GSV id length: a GSV id beginning `CAoS` is a user photosphere, 32 to 64 characters long in
 chicago-il's list (36 and 64 for the two forms measured), which the downloader fetches from the photo host rather than cbk

@@ -11,9 +11,11 @@
 set -u
 B=${1:?usage: fleet_logs_pull.sh <store-root>}
 cd "$B" || { echo "NO STORE"; exit 3; }
-LIST=$( { ls scrape_queue.log* 2>/dev/null
-          for c in */; do c=${c%/}; [ -f "$c/log.csv" ] || continue; ls "$c"/log.csv "$c"/scrape.log* 2>/dev/null; done
-          echo washington-dc/pano_id_log.csv; } )
+# NUL-separated names read by tar from stdin, never an unquoted word list on its command line: a file named
+# `scrape.log --checkpoint-action=exec=...` on the shared store was otherwise an option, and tar ran it.
 echo "BEGIN-PAYLOAD"
-tar czf - $LIST 2>/dev/null | base64
+{ for f in scrape_queue.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done
+  for c in */; do c=${c%/}; [ -f "$c/log.csv" ] || continue
+      for f in "$c"/log.csv "$c"/scrape.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done; done
+  printf '%s\0' washington-dc/pano_id_log.csv; } | tar czf - --null --verbatim-files-from -T - 2>/dev/null | base64
 echo "END-PAYLOAD"

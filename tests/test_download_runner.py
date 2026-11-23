@@ -1104,6 +1104,24 @@ class TestNumericPanoIds:
         assert [record['pano_id'] for record in kept] == ['123', 'abc']
         assert all(isinstance(record['pano_id'], str) for record in kept)
 
+    @pytest.mark.parametrize('bad', ['../1234567890', 'ab/../../1234567890', '..', '.hidden', 'a/b', 'a\\b',
+                                     '1234567890?x=1', 'abc def', 'abc\ndef', 'abc.def'])
+    def test_normalize_pano_records_drops_ids_that_are_not_a_provider_id(self, bad, capsys, caplog):
+        """The id becomes a store path and a URL segment, and the app stores what a browser sent: '../<real
+        id>' fetched the real image and wrote it above the city's folder. Dropped once, on both channels."""
+        with caplog.at_level(logging.WARNING):
+            kept = DownloadRunner._normalize_pano_records([{'pano_id': bad}, {'pano_id': bad}, {'pano_id': 'ok-_1'}])
+
+        assert [record['pano_id'] for record in kept] == ['ok-_1']
+        assert 'dropped 1 pano id(s)' in capsys.readouterr().out
+        assert 'dropped 1 pano id(s)' in caplog.text
+
+    @pytest.mark.parametrize('good', ['-0BIbaGbb6Ao2ctRBhyX9w', '1234567890', '0a1b2c3d-0000-4000-8000-00000000abcd',
+                                      'CAoSLEFGMVFpcE5fabc..'])
+    def test_normalize_pano_records_keeps_every_source_alphabet(self, good, capsys):
+        assert DownloadRunner._normalize_pano_records([{'pano_id': good}]) == [{'pano_id': good}]
+        assert capsys.readouterr().out == ''
+
     def test_numeric_ids_reach_the_downloader_as_strings(self, monkeypatch, tmp_path):
         """The network-free stand-in for the production crash: the shard slice pano_id[:2] in every
         downloader raises TypeError on an int. The recording stub replaces the code that would slice, so the
@@ -4849,7 +4867,7 @@ class TestStoreMode:
         assert sessions(run.record) == []
 
     def test_an_id_the_batch_cannot_carry_is_counted_failed_and_never_sent(self, monkeypatch, tmp_path, caplog):
-        bad = 'bad*panoAAAAAAAAAAAAAA'
+        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         with caplog.at_level(logging.WARNING):
             run.main(store_csv_rows([STORE_IDS[0], bad]))
@@ -4869,7 +4887,7 @@ class TestStoreMode:
     def test_field_20_counts_tonights_unpulled_panos(self, monkeypatch, tmp_path):
         """Store mode ledgers no permanent verdict, so every pano it failed to place tonight - absent,
         truncated, an id the batch cannot carry - is transient and retried next run: its field 20 (#182)."""
-        bad = 'bad*panoAAAAAAAAAAAAAA'
+        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
         run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
         monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[2] + '.jpg')
         run.main(store_csv_rows(STORE_IDS + [bad]))
@@ -4992,7 +5010,7 @@ class TestStoreMode:
         assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings) == (0, 0, 0, 0)
 
     def test_a_depth_id_the_batch_cannot_carry_is_counted_not_sent(self, monkeypatch, tmp_path):
-        bad = 'bad*panoAAAAAAAAAAAAAA'
+        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         run.main(store_csv_rows([STORE_IDS[0], bad]), '--with-depth')
         assert run.fields()[12:16] == ['0', '2', '0', '2']
