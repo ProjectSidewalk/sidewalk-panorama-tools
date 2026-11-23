@@ -6,6 +6,7 @@ import importlib
 import logging
 import logging.handlers
 import os
+import re
 import stat
 import tempfile
 from datetime import datetime, timezone
@@ -19,6 +20,20 @@ from urllib3.util.retry import Retry
 # The longest `detail` a run condition carries (#161). The detail is display-only - it rides into the night's
 # cron message once per condition KIND - and an exception's str can be a page of HTML.
 CONDITION_DETAIL_MAX = 300
+
+
+# What a pano id may be, once, for everything that turns one into a path or a URL segment: the union of the
+# sources' alphabets - GSV's base64url (a photosphere id may end in '.' padding, #223), Mapillary's digits,
+# Panoramax's UUIDs. Starts with a non-dot, so it is never '.', '..', a hidden file or a path. The app stores
+# whatever id a browser submitted, and '../<real id>' still fetched (requests normalises the URL) and was
+# written above the city's folder. Measured 2026-11-23: none of the 1.7M ids in the 61 production schemas'
+# pano_data falls outside it.
+PANO_ID_SHAPE = re.compile(r'[A-Za-z0-9_-]+\.*')
+
+
+def is_pano_id(pano_id):
+    """Whether `pano_id` is a str in PANO_ID_SHAPE, i.e. safe to build a store path or a provider URL from."""
+    return isinstance(pano_id, str) and PANO_ID_SHAPE.fullmatch(pano_id) is not None
 
 
 def note_condition(sink, code, detail):

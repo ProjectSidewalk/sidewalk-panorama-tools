@@ -144,6 +144,7 @@ CONDITION_UNREADABLE = 'conditions-unreadable'
 CONDITION_LABELS = OrderedDict([
     ('pano-schema-drift', 'the pano list lost a required field; nothing was scraped'),
     ('pano-list-empty', 'empty pano list for a city that has scraped before'),
+    ('pano-id-unsafe', 'pano ids that are not a provider id dropped; never fetched'),
     ('images-no-success', 'every image attempt raised; none succeeded'),
     ('frame-disagreement', 'GSV panos refused for a frame disagreement; not ledgered'),
     ('edge-band', 'GSV stitches saved with a deep exact-black edge band; check the work-list'),

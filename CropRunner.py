@@ -36,6 +36,7 @@ import pano_pose
 # Handed to pano_pose.resolve_pano_pose, so a --tilt-correction run never imports per pano (#193 review).
 # Not a new dependency: downloaders/__init__.py imports gsv, so the line below loads it already.
 from downloaders.gsv import DEPTH_ARTIFACT_SUFFIX
+from downloaders.common import is_pano_id
 from downloaders.common import atomic_output_path, black_fraction, raise_decompression_bomb_ceiling  # noqa: F401
 # Not a new dependency either: downloaders/common.py imports the package for the store primitives.
 from sidewalk_panorama_tools import ps_math
@@ -2697,6 +2698,10 @@ def bulk_extract_crops(labels_to_crop, path_to_gsv_scrapes, destination_dir, mar
                 pano_id = str(raw_id).strip()
                 if not pano_id:
                     raise ValueError("empty pano_id")
+                # The id becomes the path the pano is read from, and cvMetadata serves whatever id a browser
+                # submitted: '../x' would open a .jpg outside the pano folder (common.PANO_ID_SHAPE).
+                if not is_pano_id(pano_id):
+                    raise ValueError("pano_id is not a provider id")
                 pano_x = float(row['pano_x'])
                 pano_y = float(row['pano_y'])
                 label_type = resolve_label_type_id(row)

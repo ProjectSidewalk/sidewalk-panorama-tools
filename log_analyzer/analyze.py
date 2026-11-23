@@ -215,7 +215,7 @@ def download_log(city_id: str, dest: Path, sftp: dict) -> bool:
         "-b", "-",               # read commands from stdin
         destination,
     ]
-    batch = f"get {remote_path} {dest}\n"
+    batch = f'get "{remote_path}" "{dest}"\n'   # quoted: a space in either path is one argument
     result = subprocess.run(cmd, input=batch, capture_output=True, text=True)
     if result.returncode != 0:
         err = (result.stderr or result.stdout).strip()

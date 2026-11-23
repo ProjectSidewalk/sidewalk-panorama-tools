@@ -737,7 +737,7 @@ def test_run_writes_evidence_row_when_fetch_raises(tmp_path, monkeypatch):
     storage = tmp_path / 'storage'
     storage.mkdir()
 
-    def fetch_boom(sidewalk_server_fqdn):
+    def fetch_boom(sidewalk_server_fqdn, conditions=None):
         raise RuntimeError('webserver down')
 
     monkeypatch.setattr(module, 'fetch_pano_ids_from_webserver', fetch_boom)
@@ -1115,6 +1115,18 @@ class TestNumericPanoIds:
         assert [record['pano_id'] for record in kept] == ['ok-_1']
         assert 'dropped 1 pano id(s)' in capsys.readouterr().out
         assert 'dropped 1 pano id(s)' in caplog.text
+
+    def test_a_dropped_id_is_a_run_condition_with_no_floor(self):
+        """stdout reaches the night's message only on a night that already fails (--only-on-failure), so a
+        new id form the shape does not know would otherwise skip those panos every night in silence."""
+        summary = {}
+        DownloadRunner._normalize_pano_records([{'pano_id': '../x'}, {'pano_id': 'ok'}], summary)
+        assert [c['code'] for c in summary['conditions']] == [DownloadRunner.CONDITION_PANO_ID_UNSAFE]
+        assert "'../x'" in summary['conditions'][0]['detail']
+
+        clean = {}
+        DownloadRunner._normalize_pano_records([{'pano_id': 'ok'}], clean)
+        assert 'conditions' not in clean
 
     @pytest.mark.parametrize('good', ['-0BIbaGbb6Ao2ctRBhyX9w', '1234567890', '0a1b2c3d-0000-4000-8000-00000000abcd',
                                       'CAoSLEFGMVFpcE5fabc..'])
@@ -1621,7 +1633,7 @@ class TestTheLogTimestampSaysWhichClockItIsOn:
         storage = tmp_path / 'storage'
         storage.mkdir()
 
-        def explode(_fqdn):
+        def explode(_fqdn, conditions=None):
             raise requests.exceptions.ConnectionError('no network')
 
         monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_from_webserver', explode)
@@ -3438,6 +3450,17 @@ class TestAnEmptyPanoListForACityWithHistoryFailsTheNight:
         assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_MAPILLARY_TOKEN]
         assert '/adminapi/panos' not in capsys.readouterr().out
 
+    def test_a_list_intake_emptied_of_unsafe_ids_is_that_condition_only(self, monkeypatch, tmp_path, capsys):
+        """The server served panos and intake dropped them all: `pano-list-empty` would send the operator to
+        an /adminapi/panos that is fine."""
+        self.seed(tmp_path, 'pano_id_log.csv', 'pano_id,downloaded\nsomePano,1\n')
+
+        call_main(monkeypatch, tmp_path, '../somePano,16384,8192,47.6,-122.3,180.0,0.0,gsv,True\n',
+                  '--run-summary-file', str(tmp_path / 'summary.json'))
+
+        assert summary_codes(tmp_path) == [DownloadRunner.CONDITION_PANO_ID_UNSAFE]
+        assert '/adminapi/panos' not in capsys.readouterr().out
+
     def test_a_list_with_no_labelled_pano_is_not_empty(self, monkeypatch, tmp_path):
         """Without --all-panos the image list is the labelled panos only, and a hand run over a city with
         none left has an empty image list over a served one. The server served panos; nothing is wrong."""
@@ -3775,7 +3798,7 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
     """
 
     def run_with(self, monkeypatch, tmp_path, records):
-        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path, conditions=None: [dict(r) for r in records])
         return call_main(monkeypatch, tmp_path, GSV_CSV_ROWS, '--run-summary-file', str(tmp_path / 'summary.json'))
 
     def records(self, count, lacking=0, drop='source'):
@@ -3913,8 +3936,9 @@ class TestAPanoListWhoseSchemaMovedIsNotScraped:
                 DownloadRunner.CONDITION_PANO_SCHEMA_DRIFT,
                 DownloadRunner.CONDITION_FRAME_DISAGREEMENT,
                 DownloadRunner.CONDITION_EDGE_BAND, DownloadRunner.CONDITION_IMAGE_LEDGER,
-                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK} < DownloadRunner.RUN_CONDITIONS
-        assert len(DownloadRunner.RUN_CONDITIONS) == 14
+                DownloadRunner.CONDITION_INCOMPLETE_ON_DISK,
+                DownloadRunner.CONDITION_PANO_ID_UNSAFE} < DownloadRunner.RUN_CONDITIONS
+        assert len(DownloadRunner.RUN_CONDITIONS) == 15
 
 
 class TestFrameRefusalsAreCountedAndFailTheNight:
@@ -4321,7 +4345,7 @@ class TestAStopBeforeThePhasesStillWritesTheRow:
         stub_probe(monkeypatch, pick_zoom=-1)
         stub_photometa(monkeypatch, gone=True)
         records = [{'pano_id': 'gsvPano%04d' % i, 'source': 'gsv', 'has_labels': True} for i in range(5)]
-        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path: [dict(r) for r in records])
+        monkeypatch.setattr(DownloadRunner, 'fetch_pano_ids_csv', lambda path, conditions=None: [dict(r) for r in records])
         csv_path = tmp_path / 'panos.csv'
         csv_path.write_text(CSV_HEADER)
         storage = tmp_path / 'storage'
@@ -4867,7 +4891,9 @@ class TestStoreMode:
         assert sessions(run.record) == []
 
     def test_an_id_the_batch_cannot_carry_is_counted_failed_and_never_sent(self, monkeypatch, tmp_path, caplog):
-        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         with caplog.at_level(logging.WARNING):
             run.main(store_csv_rows([STORE_IDS[0], bad]))
@@ -4887,7 +4913,9 @@ class TestStoreMode:
     def test_field_20_counts_tonights_unpulled_panos(self, monkeypatch, tmp_path):
         """Store mode ledgers no permanent verdict, so every pano it failed to place tonight - absent,
         truncated, an id the batch cannot carry - is transient and retried next run: its field 20 (#182)."""
-        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs([STORE_IDS[0], STORE_IDS[2]]))
         monkeypatch.setenv('FAKE_SFTP_TRUNCATE', STORE_IDS[2] + '.jpg')
         run.main(store_csv_rows(STORE_IDS + [bad]))
@@ -5010,7 +5038,9 @@ class TestStoreMode:
         assert DownloadRunner.pull_depth_from_store(str(tmp_path / 's'), infos, settings) == (0, 0, 0, 0)
 
     def test_a_depth_id_the_batch_cannot_carry_is_counted_not_sent(self, monkeypatch, tmp_path):
-        bad = 'badpanoAAAAAAAAAAAAAA..'   # passes intake ('.' padding, #223); the sftp batch still cannot carry it
+        bad = 'bad*panoAAAAAAAAAAAAAA'
+        # Intake drops this id first (common.PANO_ID_SHAPE); widened here so the batch's own refusal is what runs.
+        monkeypatch.setattr(DownloadRunner, '_PANO_ID_SHAPE', re.compile('.+'))
         run = StoreRun(monkeypatch, tmp_path, jpgs(STORE_IDS[:1]))
         run.main(store_csv_rows([STORE_IDS[0], bad]), '--with-depth')
         assert run.fields()[12:16] == ['0', '2', '0', '2']

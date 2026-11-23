@@ -207,3 +207,7 @@ so every check guards against NaN rather than coercing to `int`.
 **It uses `sftp -b -`** (batch mode via stdin) rather than `scp`, because the store runs a restricted SFTP
 subsystem that doesn't speak the SCP wire protocol; newer `scp` clients default to SFTP-over-SSH and fail with
 `mtime.sec not present`.
+
+**A changed host key is refused** (`StrictHostKeyChecking=accept-new`: an unknown host is trusted once). If the
+store's key is rotated, every city's download fails with `Host key verification failed`; confirm the new key
+with whoever runs the host, then `ssh-keygen -R <host>` (`-R '[<host>]:<port>'` for a non-22 port) and rerun.

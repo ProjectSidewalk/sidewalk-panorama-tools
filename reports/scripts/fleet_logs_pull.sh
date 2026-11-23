@@ -13,9 +13,11 @@ B=${1:?usage: fleet_logs_pull.sh <store-root>}
 cd "$B" || { echo "NO STORE"; exit 3; }
 # NUL-separated names read by tar from stdin, never an unquoted word list on its command line: a file named
 # `scrape.log --checkpoint-action=exec=...` on the shared store was otherwise an option, and tar ran it.
+# --null alone, not --verbatim-files-from: GNU tar >= 1.29 implies it under --null and older ones reject the flag
+# (they never read options from a list).
 echo "BEGIN-PAYLOAD"
 { for f in scrape_queue.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done
   for c in */; do c=${c%/}; [ -f "$c/log.csv" ] || continue
       for f in "$c"/log.csv "$c"/scrape.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done; done
-  printf '%s\0' washington-dc/pano_id_log.csv; } | tar czf - --null --verbatim-files-from -T - 2>/dev/null | base64
+  printf '%s\0' washington-dc/pano_id_log.csv; } | tar czf - --null -T - 2>/dev/null | base64
 echo "END-PAYLOAD"
