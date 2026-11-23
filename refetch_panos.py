@@ -256,6 +256,11 @@ def read_worklist(path):
             if not pano_id or pano_id in seen:
                 continue
             seen.add(pano_id)
+            if not common.is_pano_id(pano_id):
+                # The id becomes a store path this pass may overwrite.
+                print("WARNING - work-list id %.80r is not a provider id; skipped" % pano_id)
+                logging.warning("work-list id %.80r is not a provider id; skipped", pano_id)
+                continue
             record = {'pano_id': pano_id}
             for key in ('width', 'height'):
                 value = (row.get(key) or '').strip()

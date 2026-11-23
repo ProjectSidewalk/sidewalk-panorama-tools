@@ -40,9 +40,11 @@ is one photometa request per new GSV pano and [#74](https://github.com/ProjectSi
 app-vs-Google frame check — there is no app frame to compare — and every label on those panos loses the
 cropper's dims preflight. A `-c` CSV may omit the `width` and `height` columns, or leave cells blank.
 
-The downloader drops empty ids and the literal id `tutorial`, then keeps `gsv` and `panoramax`, plus
-`mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume an
-id alphabet. Nor a GSV id length: a GSV id beginning `CAoS` is a user photosphere, 32 to 64 characters long in
+The downloader drops empty ids, the literal id `tutorial`, and any id outside
+`downloaders.common.PANO_ID_SHAPE` (letters, digits, `_`, `-`, then optional `.` padding; the night fails as
+`pano-id-unsafe`), because the id becomes a path on the store. It then keeps `gsv` and `panoramax`, plus
+`mapillary` when `MAPILLARY_ACCESS_TOKEN` is set. Panoramax `pano_id`s are UUIDs, so nothing may assume a
+narrower alphabet. Nor a GSV id length: a GSV id beginning `CAoS` is a user photosphere, 32 to 64 characters long in
 chicago-il's list (36 and 64 for the two forms measured), which the downloader fetches from the photo host rather than cbk
 ([#223](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/223)). See [Downloader → Imagery sources](downloader.md#imagery-sources).
 

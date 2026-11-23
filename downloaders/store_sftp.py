@@ -43,6 +43,7 @@ from .common import (TRAILING_BYTES_WINDOW, _first_scan_offset, atomic_output_pa
 # Defined in common since #239 (the image loop checks files it finds on disk with it); re-exported because
 # store mode's verifier is what it was written for, and the store-mode tests reach it here.
 from .common import is_complete_jpeg  # noqa: F401
+from .common import PANO_ID_SHAPE
 
 # The log analyzer's names, copied on purpose: log_analyzer/analyze.py::resolve_sftp is the twin, and
 # tests/test_store_sftp.py asserts the two lists agree, so a collaborator's one set of variables serves both.
@@ -92,9 +93,8 @@ IMAGE_SUFFIX = '.jpg'
 DEPTH_SUFFIX = '.depth.npz'
 
 # A pano id goes into a quoted path in the batch AND into a remote path sftp globs, so it is held to the
-# union of the three id alphabets rather than to a blacklist: GSV's base64url ids, Mapillary's digits and
-# Panoramax's UUIDs are all [A-Za-z0-9_-].
-_SAFE_ID = re.compile(r'[A-Za-z0-9_-]+')
+# intake's whitelist. Its '.' padding (#223) is neither a quote nor a glob character.
+_SAFE_ID = PANO_ID_SHAPE
 # A city id is one path segment on the store: seattle-wa, cdmx, la-piedad. Starts alphanumeric, so it is
 # never '.', '..', or something sftp's option parser could read.
 _SAFE_CITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
@@ -242,9 +242,9 @@ def sftp_argv(settings):
     """The sftp command line. Never interactive: BatchMode=yes makes a missing key or a passphrase fail in
     about a second under cron instead of waiting on a prompt nothing can answer.
 
-    StrictHostKeyChecking=accept-new, not the log analyzer's `no`: `no` silently accepts a CHANGED host key,
-    which on a credentialed channel writing imagery into someone's store is an invitation; accept-new trusts
-    an unknown host once and refuses a change (OpenSSH >= 7.6).
+    StrictHostKeyChecking=accept-new, as in the log analyzer, not `no`: `no` silently accepts a CHANGED host
+    key, which on a credentialed channel writing imagery into someone's store is an invitation; accept-new
+    trusts an unknown host once and refuses a change (OpenSSH >= 7.6).
     """
     argv = list(SFTP_COMMAND)
     if settings.port:

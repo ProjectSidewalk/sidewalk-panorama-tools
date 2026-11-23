@@ -210,12 +210,12 @@ def download_log(city_id: str, dest: Path, sftp: dict) -> bool:
     if sftp["key"]:
         cmd += ["-i", sftp["key"]]
     cmd += [
-        "-o", "StrictHostKeyChecking=no",
+        "-o", "StrictHostKeyChecking=accept-new",   # refuses a CHANGED host key
         "-o", "BatchMode=yes",   # never prompt for a password
         "-b", "-",               # read commands from stdin
         destination,
     ]
-    batch = f"get {remote_path} {dest}\n"
+    batch = f'get "{remote_path}" "{dest}"\n'   # quoted: a path may hold a space
     result = subprocess.run(cmd, input=batch, capture_output=True, text=True)
     if result.returncode != 0:
         err = (result.stderr or result.stdout).strip()

@@ -11,9 +11,12 @@
 set -u
 B=${1:?usage: fleet_logs_pull.sh <store-root>}
 cd "$B" || { echo "NO STORE"; exit 3; }
-LIST=$( { ls scrape_queue.log* 2>/dev/null
-          for c in */; do c=${c%/}; [ -f "$c/log.csv" ] || continue; ls "$c"/log.csv "$c"/scrape.log* 2>/dev/null; done
-          echo washington-dc/pano_id_log.csv; } )
+# Names reach tar NUL-separated on stdin, never as words on its command line: a store file named
+# `scrape.log --checkpoint-action=exec=...` was read as an option, and tar ran it. No --verbatim-files-from:
+# --null implies it from GNU tar 1.29, and older ones reject the flag.
 echo "BEGIN-PAYLOAD"
-tar czf - $LIST 2>/dev/null | base64
+{ for f in scrape_queue.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done
+  for c in */; do c=${c%/}; [ -f "$c/log.csv" ] || continue
+      for f in "$c"/log.csv "$c"/scrape.log*; do [ -f "$f" ] && printf '%s\0' "$f"; done; done
+  printf '%s\0' washington-dc/pano_id_log.csv; } | tar czf - --null -T - 2>/dev/null | base64
 echo "END-PAYLOAD"

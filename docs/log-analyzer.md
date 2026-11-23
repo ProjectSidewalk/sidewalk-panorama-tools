@@ -207,3 +207,7 @@ so every check guards against NaN rather than coercing to `int`.
 **It uses `sftp -b -`** (batch mode via stdin) rather than `scp`, because the store runs a restricted SFTP
 subsystem that doesn't speak the SCP wire protocol; newer `scp` clients default to SFTP-over-SSH and fail with
 `mtime.sec not present`.
+
+**A changed host key is refused** (`StrictHostKeyChecking=accept-new`). After a key rotation every download
+fails with `Host key verification failed`: confirm the new key with whoever runs the host, then run
+`ssh-keygen -R <host>` (`-R '[<host>]:<port>'` off port 22).

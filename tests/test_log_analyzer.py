@@ -259,7 +259,7 @@ def test_download_log_omits_optional_ssh_arguments(monkeypatch, tmp_path):
     assert analyze.download_log('seattle-wa', tmp_path / 'out.csv', sftp)
     assert '-P' not in captured['cmd'] and '-i' not in captured['cmd']
     assert captured['cmd'][-1] == 'ps-panos'
-    assert captured['input'].startswith('get /panos/seattle-wa/log.csv ')
+    assert captured['input'] == 'get "/panos/seattle-wa/log.csv" "%s"\n' % (tmp_path / 'out.csv')
 
 
 # ---------------------------------------------------------------------------

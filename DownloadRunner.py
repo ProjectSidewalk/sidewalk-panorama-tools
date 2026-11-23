@@ -53,6 +53,9 @@ STOP_MAX_RUNTIME = 'max-runtime'
 CONDITION_MAPILLARY_TOKEN = 'mapillary-token-missing'
 CONDITION_UNSUPPORTED_SOURCE = 'unsupported-source'
 CONDITION_PANO_LIST_EMPTY = 'pano-list-empty'
+# Ids dropped at intake (common.PANO_ID_SHAPE). No floor: production had none on 2026-11-23, so one is a probe
+# of the store's paths or a new id form, and the second would otherwise be skipped every night in silence.
+CONDITION_PANO_ID_UNSAFE = 'pano-id-unsafe'
 CONDITION_IMAGES_NO_SUCCESS = 'images-no-success'
 CONDITION_PANO_SCHEMA_DRIFT = 'pano-schema-drift'
 # One or more panos refused with gsv.FrameDisagreementError (#185 Part 1). No floor: 0 of 651 live labelled
@@ -77,7 +80,7 @@ CONDITION_IMAGE_LEDGER = 'image-ledger-unusable'
 # row for a file checked by eye (docs/ops.md, "A stored file that is not a whole JPEG").
 CONDITION_INCOMPLETE_ON_DISK = 'incomplete-on-disk'
 RUN_CONDITIONS = gsv.DEPTH_CONDITIONS | frozenset({
-    CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY,
+    CONDITION_MAPILLARY_TOKEN, CONDITION_UNSUPPORTED_SOURCE, CONDITION_PANO_LIST_EMPTY, CONDITION_PANO_ID_UNSAFE,
     CONDITION_IMAGES_NO_SUCCESS, CONDITION_PANO_SCHEMA_DRIFT, CONDITION_FRAME_DISAGREEMENT,
     CONDITION_EDGE_BAND, CONDITION_IMAGE_LEDGER, CONDITION_INCOMPLETE_ON_DISK})
 
@@ -228,7 +231,7 @@ def progress_check(csv_pano_log_path):
     Five kinds of damage, two costs - gsv._load_depth_log's list, which this reader mirrors (#189, #203):
     - A malformed row (a line torn by a crash mid-append) is skipped, above, so that pano is re-attempted.
     - A stray '"' is a literal character, because the ledger is read with QUOTE_NONE: the writer never quotes
-      (ids are [A-Za-z0-9_-]; fetched_at is digits and ' ', '-', ':', '.', '+' - never a quote or a comma), so
+      (ids are common.PANO_ID_SHAPE; fetched_at is digits and ' ', '-', ':', '.', '+' - never a quote or a comma), so
       nothing legitimate changes. Under csv's default quoting it opened a field that swallowed every later row,
       future appends included, and the read returned a partial set with no error - every pano after the quote
       read as unattempted, and its permanent downloaded=0 verdict went back to the provider every night - until
@@ -257,8 +260,12 @@ def progress_check(csv_pano_log_path):
     return ledgered_ids, total_processed, total_success, total_processed - total_success
 
 
-def _normalize_pano_records(records):
-    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial' rows, dedupe keeping the first.
+# A module attribute so a test can widen it to reach the defences behind it.
+_PANO_ID_SHAPE = common.PANO_ID_SHAPE
+
+
+def _normalize_pano_records(records, conditions=None):
+    """Coerce pano_id to str at the intake boundary, drop empty/'tutorial'/unsafe rows, dedupe keeping the first.
 
     Numeric (Mapillary) ids otherwise arrive as ints and crash every pano_id[:2] shard slice, and set
     membership against the ledger's string ids silently misses (#46). Centralised so the CSV and webserver
@@ -266,6 +273,7 @@ def _normalize_pano_records(records):
     """
     unique_ids = set()
     kept = []
+    unsafe = []
     for record in records:
         raw = record.get('pano_id')
         # The float-nan case is the JSON path, not the CSV one: Python's json parses a bare NaN literal by
@@ -282,9 +290,22 @@ def _normalize_pano_records(records):
         if not pano_id or pano_id == 'tutorial':
             print("Pano ID is an empty string or is for tutorial")
             continue
+        if not _PANO_ID_SHAPE.fullmatch(pano_id):
+            unique_ids.add(pano_id)
+            unsafe.append(pano_id)
+            continue
         record['pano_id'] = pano_id
         unique_ids.add(pano_id)
         kept.append(record)
+    if unsafe:
+        # Both channels (CLAUDE.md), clipped: the ids are whatever a stranger typed.
+        detail = ("%d pano id(s) that are not a provider id (letters, digits, '_', '-', then optional '.' "
+                  "padding); first: %s" % (len(unsafe), ', '.join('%.80r' % pano_id for pano_id in unsafe[:3])))
+        message = "WARNING - dropped %s. Never fetched, never ledgered." % detail
+        logging.warning(message)
+        print(message)
+        # stdout reaches the night's message only on a night that already fails, so this fails it (#161).
+        note_condition(conditions, CONDITION_PANO_ID_UNSAFE, detail)
     return kept
 
 
@@ -316,7 +337,7 @@ def _parse_has_labels(raw, metadata_csv_path):
                         ', '.join(sorted(_TRUE_SPELLINGS | _FALSE_SPELLINGS))))
 
 
-def fetch_pano_ids_csv(metadata_csv_path):
+def fetch_pano_ids_csv(metadata_csv_path, conditions=None):
     """
     Loads pano metadata from a CSV file (downloaded from the server). Dedupes on pano_id.
     Expected to include the same columns as /adminapi/panos, notably `source`.
@@ -338,7 +359,7 @@ def fetch_pano_ids_csv(metadata_csv_path):
             raise ValueError("%s has no 'pano_id' column; found %r"
                              % (metadata_csv_path, reader.fieldnames))
         records = [_normalize_csv_row(row, metadata_csv_path) for row in reader]
-    return _normalize_pano_records(records)
+    return _normalize_pano_records(records, conditions)
 
 
 def _normalize_csv_row(row, metadata_csv_path):
@@ -357,7 +378,7 @@ def _normalize_csv_row(row, metadata_csv_path):
     return record
 
 
-def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
+def fetch_pano_ids_from_webserver(sidewalk_server_fqdn, conditions=None):
     """
     Fetch pano metadata from /adminapi/panos on sidewalk_server_fqdn.
 
@@ -390,7 +411,7 @@ def fetch_pano_ids_from_webserver(sidewalk_server_fqdn):
         jsondata = response.json()
 
     # The JSON should carry string ids already; normalising here makes that structural (#46).
-    return _normalize_pano_records(jsondata)
+    return _normalize_pano_records(jsondata, conditions)
 
 
 def select_image_panos(pano_infos, include_all_panos):
@@ -1802,9 +1823,9 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
 
     try:
         if pano_metadata_csv is not None:
-            pano_infos = fetch_pano_ids_csv(pano_metadata_csv)
+            pano_infos = fetch_pano_ids_csv(pano_metadata_csv, conditions=stop_reasons)
         else:
-            pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn)
+            pano_infos = fetch_pano_ids_from_webserver(sidewalk_server_fqdn, conditions=stop_reasons)
         # Checked on the list as served, before anything filters it: a renamed `source` would otherwise be
         # reported as an unsupported source per pano. A drifted list goes no further (below).
         schema_drift = _intake_schema_drift(pano_infos)
@@ -1813,7 +1834,9 @@ def _run_phases(sidewalk_server_fqdn, storage_location, pano_metadata_csv, all_p
             pano_infos = []
         # Also read before the filter: a list the FILTER emptied (a Mapillary city without its token, a source
         # this runner does not know) is the filter's condition, already noted by it, and not the server's.
-        served_empty = not pano_infos
+        # Nor a list intake emptied of unsafe ids: that condition already says so.
+        served_empty = not pano_infos and not any(
+            c.get('code') == CONDITION_PANO_ID_UNSAFE for c in stop_reasons.get('conditions', ()))
         pano_infos = filter_supported_sources(pano_infos, conditions=stop_reasons,
                                               require_credentials=store_settings is None)
         image_pano_infos = select_image_panos(pano_infos, all_panos)

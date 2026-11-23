@@ -143,6 +143,13 @@ class TestReadWorklist:
 
         assert rp.read_worklist(path) == [{'pano_id': 'abc', 'width': 13312, 'height': 6656}]
 
+    def test_an_id_that_is_not_a_provider_id_is_skipped_aloud(self, tmp_path, capsys):
+        """The id becomes a store path this pass may overwrite."""
+        path = self.write(tmp_path / 'w.csv', ['../abc,13312,6656', 'abc,13312,6656'])
+
+        assert rp.read_worklist(path) == [{'pano_id': 'abc', 'width': 13312, 'height': 6656}]
+        assert 'not a provider id' in capsys.readouterr().out
+
     def test_it_reads_a_gzipped_worklist(self, tmp_path):
         path = self.write(tmp_path / 'w.csv.gz', ['abc,13312,6656'], gz=True)
 

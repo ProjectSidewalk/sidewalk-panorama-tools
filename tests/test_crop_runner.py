@@ -803,6 +803,14 @@ class TestBulkExtractCrops:
                           'dims_mismatch': 0, 'out_of_frame': 0, 'shifted_vertically': 0,
                           'recut': 0, 'stale_kept': 0, 'black_content': 0, 'no_pose': 0, 'errors': 2}
 
+    @pytest.mark.parametrize('bad', ['../testpano0001', '/etc/x', 'ab/cd', 'a b'])
+    def test_a_pano_id_that_is_not_a_provider_id_is_an_error(self, crop_runner, tmp_path, bad):
+        """cvMetadata serves what a browser sent, so '../x' is a counted error, never a path that gets opened."""
+        store, out = tmp_path / 'store', tmp_path / 'crops'
+        put_pano(store, 'testpano0001')
+        counts = crop_runner.bulk_extract_crops([label_row(pano_id=bad, label_id=1)], str(store), str(out))
+        assert (counts['errors'], counts['success'], counts['missing_pano']) == (1, 0, 0)
+
     def test_an_unusable_output_directory_is_one_error_not_a_dead_run(self, crop_runner, tmp_path):
         """os.makedirs sat outside the try, so an OSError on the output side — a full store, a read-only
         mount, an sshfs drop, the conditions atomic_output_path itself cites — raised straight out of
