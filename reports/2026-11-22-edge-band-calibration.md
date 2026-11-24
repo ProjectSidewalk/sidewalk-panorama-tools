@@ -12,8 +12,10 @@ sample of each folder's GSV panos):
   GSV stitch. But 18 of those bands fall outside the stitcher's tile-row shape as the rule defines it (class U),
   and all 18 are deeper than both candidates. So 0.05 and 0.0605 give the same 1.68 false flags per 10,000 stored
   GSV stitches (bound 14.24), over the 1-per-10,000 estimate D1 allows. This run cannot tell 0.05 from 0.0605:
-  every limit under 0.0745 flags the same 32 panos. Read on their shape, these 18 look like tile faults just
-  outside the rule's window, not like imagery (Results, class U).
+  every limit under 0.0745 flags the same 32 panos. **On 2026-11-24 the project owner looked at all 18: every one
+  is the same failure, missing imagery, and none is a cap or a dark scene** (Results, class U, addendum). So these
+  "false flags" are correct flags; whether the provider serves black there or our stitch dropped the rows is
+  unverified. D1's committed outcome stands as computed.
 - **On Mapillary a deep exact-black bottom band is the normal shape of two camera setups**: juneau-ak's
   8000x4000 panos (4,847 of 4,847 over 0.05, mostly at 0.1740) and richmond-va's 11000x5500 ones (4,132 of 5,075,
   mostly at 0.1875). The work-list on such a folder lists camera caps. Panoramax and the other Mapillary frames
@@ -211,8 +213,33 @@ are all clean.
 
 Right band 0 and top band 0 on all 18. The in-memory reading equals the file's on all 18. All carry Pillow's
 default quantisation tables. That is consistent with a missing bottom tile row in our own stitch. It is an
-inference from shape only. Nobody has looked at these panos (decision 7), and the rules were not changed to absorb
-them (see Wrong turns).
+inference from shape only, and the rules were not changed to absorb them (see Wrong turns). The addendum below
+records what a person saw.
+
+#### Addendum, 2026-11-24: the project owner looked at the 18 (decision 7)
+
+**Who and how.** The project owner looked at every pano in `unresolved.csv`: the whole frame, the bottom 20%, and a
+full-resolution detail across the band's edge, each with a x12 brightness toggle. The verdict per pano is in
+`data/2026-11-22-edge-band-calibration/unresolved-verdict.csv`.
+
+**The verdict.** All 18 are **the same problem: missing imagery**. In the owner's words, the image provider "just
+didn't publish pixels for those areas of the panos". None is "part of the picture as served" in the sense of a
+camera cap, and none is a real scene that is merely dark.
+
+**What it settles.**
+- These 18 bands are not imagery. A limit that flags them flags them correctly, so the 1.68 per 10,000 that D1
+  counted as false flags are, on this evidence, true ones. No class-U band in this run is a cap.
+- Rule D1 ran as committed and its outcome is not recomputed or relabelled: neither candidate passed, and 0.05
+  stays. The sensitivity reading already computed (`u_read_as_f_rows`) says what follows if these 18 are read as
+  our own faults: the primary run has 0 events, but the committed fold still finds the two 7-pano identical-depth
+  groups (washington-dc 0.0745, newberg-or 0.0769) and returns `fold-flips`. So 0.05 stays either way, and nothing
+  in the verdict argues for a higher limit.
+
+**What it does not settle.**
+- **Whether the provider serves black there or our stitch dropped the rows** is unverified. Nothing was re-fetched,
+  so these could be tiles Google serves black, or tile rows our stitcher never received. The shapes (one tile row
+  16 px short, and a partial last tile row) fit either.
+- Whether the same failure occurs on GSV panos outside the frozen sample (decision 4, the fleet sweep).
 
 ### D1, the limit for stitches
 
@@ -356,10 +383,11 @@ the comment in `DownloadRunner.py`, `docs/ops.md`, `docs/downloader.md`, `docs/c
 
 The plan's decisions table (decisions 1 to 10 in the plan on #179) stands. These are sharpened by the results:
 
-- **Decision 6, the limit.** Keep 0.05: a false flag costs one alarm under save-and-flag. Or look at the 18 U
-  panos first: if they are tile faults, they are correct flags and D1's premise (U means not ours) does not hold
-  for them. Either way the committed rules keep 0.05 (Wrong turns).
-- **Decision 7.** Someone looks at the 18 panos in `unresolved.csv`.
+- **Decision 6, the limit.** The owner's look (decision 7, done) found the 18 U panos to be missing imagery, so they
+  are correct flags and D1's premise (U means not ours to flag) does not hold for them. The committed rules keep
+  0.05 either way (Wrong turns); nothing found argues for raising it.
+- **Decision 7, done 2026-11-24.** All 18 are missing imagery (addendum under class U). Still open: provider black
+  or our dropped rows, which needs a re-fetch.
 - **Decision 2.** A per-source policy for juneau-ak's and richmond-va's caps (0.1740, 0.1875).
 - **Decision 3.** 2 of 869 photospheres are over the limit.
 - **Decision 4.** Whether to sweep the whole fleet: F-class panos were found (10 F-frame, 4 F-rows).
@@ -370,7 +398,8 @@ The plan's decisions table (decisions 1 to 10 in the plan on #179) stands. These
 ## What this cannot show
 
 - The fleet's complete work-list, a per-folder rate below about 1 in 800, anything about panos not yet downloaded,
-  and what an unresolved band is (that needs an eye), as the plan said.
+  and, from the data alone, what an unresolved band is: that needed an eye, and the owner's look on 2026-11-24
+  supplied it for the 18 found here.
 - **That the frozen samples are the seeded draws.** `frame.json` records a sha256 of each folder's full id list,
   not the list, so re-running the draw needs the store. The sampled ids' first characters are as uniform as the
   census folders' (review 1's check); that is a sanity check, not a proof.

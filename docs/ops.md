@@ -888,8 +888,10 @@ and a census or a 2,500-pano sample of each folder's GSV panos) and found:
 - On GSV stitches, no exact-black band shallower than 0.0745 and no black cap: the 32 stitches with a band at all
   sit at tile-grid depths. Rule D1 could not confirm 0.05, because 18 of those bands are not the stitcher's
   tile-row shape as its rule defines it and all 18 are deeper than both candidates (0.05, 0.0605), so 0.05 stays
-  and the value is the owner's to revisit. Every limit under 0.0745 flags the same 32 panos. The 18 look like
-  tile faults just outside the rule's window; nobody has looked yet.
+  and the value is the owner's to revisit. Every limit under 0.0745 flags the same 32 panos. The project owner
+  looked at the 18 on 2026-11-24: all are missing imagery, the same failure in each, none a cap or a dark scene,
+  so flagging them is correct. Whether the provider serves black there or the stitch dropped the rows is
+  unverified.
 - On Mapillary, exact-black camera caps at 0.174 (juneau-ak, 8000x4000) and 0.1875 (richmond-va, 11000x5500), all
   over the limit; richmond-va's 12288x6144 panos carry a near-black cap at about 0.138 with no exact band.
   Panoramax and the other Mapillary frames carry none, apart from one kaysville-ut pano at 0.1816.

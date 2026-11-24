@@ -1038,6 +1038,16 @@ class TestTheCommittedRun:
             total += len(rows)
         assert total == 133919 == sum(c['frozen'] for c in frame_doc['cities'].values())
 
+    def test_the_owners_verdict_covers_exactly_the_unresolved_panos(self):
+        """Decision 7 (2026-11-24): one verdict row per class-U pano, the same (city, pano_id) set as unresolved.csv."""
+        def rows(name):
+            with open(os.path.join(DATA, name), newline='', encoding='utf-8') as f:
+                return list(csv.DictReader(f))
+        verdict = rows('unresolved-verdict.csv')
+        assert sorted((r['city'], r['pano_id']) for r in verdict) == \
+            sorted((r['city'], r['pano_id']) for r in rows('unresolved.csv'))
+        assert len(verdict) == 18 and {r['verdict'] for r in verdict} == {'missing-imagery'}
+
     def test_every_prose_figure_is_in_the_report(self):
         """Review 1, S5: the numbers the report quotes in prose are derived by analyze (`prose`, re-derived from the
         raw files by the summary test above), and each is quoted in the report in its own phrase."""
