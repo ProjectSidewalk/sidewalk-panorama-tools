@@ -8,9 +8,9 @@ on:
 
 jobs:
   pytest:
-    # Matches the production baseline: Ubuntu 22.04 / Python 3.10. streetlevel is installed the way the box
+    # Matches the production baseline: Ubuntu 24.04 / Python 3.12 (#257). streetlevel is installed the way the box
     # installs it (#237), so a requirement a new release imports but requirements.txt lacks fails the hard import.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     # GitHub's default is 6 hours, so a hung subprocess or a test waiting on a lock would hold the check (and
     # a runner) that long before failing. Measured 2026-09-27: the job takes 5.5-6.5 minutes end to end
     # (runs 36270192977 and 36337717048), most of it the pip install; pytest itself ~2m45s. 20 is ~3x that -
@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: pip
           # The default key is requirements*.txt alone; a refreshed pin file must not reuse the old cache.
           cache-dependency-path: |
@@ -74,12 +74,14 @@ jobs:
   # it never does is build the wheel the consumers pin, or run the torch path without streetlevel and the rest of
   # the scraper's requirements. This job does both, outside the checkout.
   package:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
+          # Not production's 3.12: the package's own floor is lower (pyproject.toml, requires-python), and 3.10 is
+          # the oldest Python the pinned test dependencies install on.
           python-version: '3.10'
       # tests/conftest.py imports CropRunner for every test, so the runtime requirements come too - all but
       # streetlevel, which the conftest stubs and this job does not need. Then torch's own dependencies from PyPI
@@ -87,7 +89,8 @@ jobs:
       # carry every pinned dependency version.
       - run: pip install -c constraints.txt -c constraints-ci.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
       - run: pip install -c constraints.txt -c constraints-ci.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m pytest tests/test_torch_geometry.py -v
+      # The package's own tests, so a standard-library call newer than this Python fails here.
+      - run: python -m pytest tests/test_torch_geometry.py tests/test_geometry.py tests/test_gsv_tiles.py tests/test_gsv_equirect.py tests/test_gsv_stitcher.py tests/test_gsv_tile_contract.py tests/test_labels.py tests/test_pano_pose.py tests/test_ps_math.py tests/test_store.py -v
       - name: Build the wheel and import it from a fresh venv
         run: |
           pip wheel --no-deps -w "$RUNNER_TEMP/dist" .

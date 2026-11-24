@@ -4455,7 +4455,7 @@ class TestADamagedDepthLedgerDoesNotCostTheImagePhase:
 class TestADamagedImageLedger:
     """#203, the image-ledger twin of #189. progress_check read pano_id_log.csv with the platform encoding, csv's
     default quoting and no NUL handling, and ImageLedger called it with no guard before the image loop - so one
-    undecodable byte, one NUL (on 3.10, production's interpreter), a stray quote grown past the field limit or an
+    undecodable byte, one NUL (on Python 3.10), a stray quote grown past the field limit or an
     over-long field ended the night, every night until someone hand-edited the file. The first four now cost one
     row each; the fifth sits the image phase out under `image-ledger-unusable`, leaving the file untouched.
 
@@ -4516,7 +4516,7 @@ class TestADamagedImageLedger:
         assert (total, success, failure) == (2, 1, 1)
 
     def test_a_nul_costs_its_row_only_on_this_interpreter(self, tmp_path):
-        """No emulation: discriminates on CI's 3.10 only, where the NUL is real."""
+        """No emulation: discriminates on Python 3.10 only, where the NUL is real."""
         path = self.ledger(tmp_path, b'aa0001,1,\n\0\0\0\0\naa0003,0,\n')
 
         assert DownloadRunner.progress_check(path)[0] == {'aa0001', 'aa0003'}

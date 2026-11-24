@@ -18,7 +18,7 @@ crashes — see [Ops](ops.md).
 
 ## Install
 
-Python 3.10 on Ubuntu 22.04 is the supported baseline — that is what CI installs and what production runs.
+Python 3.12 on Ubuntu 24.04 is the supported baseline — that is what CI installs and what production runs.
 Newer Pythons and other Linux distros work; macOS works for development. No Docker, no root, no FUSE
 capabilities.
 
@@ -33,7 +33,7 @@ pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 
 `-c constraints.txt` installs the exact versions the production box runs and CI tests
 ([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
-`pip freeze` on Python 3.10, refreshed by the procedure in
+`pip freeze` on Python 3.12, refreshed by the procedure in
 [Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
 everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
 example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
@@ -376,8 +376,8 @@ sink fails, how it cuts a backlog night's output to fit, and how to verify a cha
 [Hearing about a bad night](ops.md#hearing-about-a-bad-night).
 
 **The timezone lives in the box, not in the crontab.** The first version of this line carried
-`CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
-ships Debian's Vixie cron (`3.0pl1-137ubuntu3`), which silently ignores it. Measured 2026-09-17: eleven nights of
+`CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu
+ships Debian's cron, which silently ignores it. Measured 2026-09-17: eleven nights of
 `queue starting` at `19:00:01` in a `scrape_queue.log` stamped in the box's then-UTC local time, i.e. **noon
 Pacific**, the working day the queue exists to stay out of
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The fix is
@@ -764,12 +764,7 @@ the form above, and drop the `id_rsa` that used to be baked into the image. Flag
 Nothing about the store's on-disk layout changes, so a store the image has been writing to since 2022 is
 picked up as-is.
 
-**Done on the production box 2026-09-01**, and three things about it are worth passing on.
-
-The old host could not be migrated in place. Its Python was **3.5** (Ubuntu 16.04), and the image it was
-actually running carried **3.8** — that image was built from the `ubuntu:20.04` Dockerfile this repo shipped
-until Aug 2026, not the `ubuntu:22.04` one that was eventually deleted. Both sit below this page's 3.10
-baseline, so the move had to be to a new machine rather than a new virtualenv on the old one.
+**Done on the production box 2026-09-01**, and two things about it are worth passing on.
 
 The per-flag promise above held, but **the sizing did not transfer** — and the retired crontab was not what this
 page recommends. Every city carried `--max-runtime 1320` and no `--min-depth-runtime` at all, against the

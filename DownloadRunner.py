@@ -240,8 +240,8 @@ def progress_check(csv_pano_log_path):
       and ended the night): the replacement lands inside one field, so that row either fails the shape check or
       carries an id that matches no pano. Either way that one pano is re-attempted; nothing is written off.
     - A NUL byte - the zero-filled residue a crash most often leaves - is stripped before csv sees it, so it too
-      costs at most its own row. Python 3.10, the production interpreter, raises `line contains NUL` rather than
-      parse such a line; 3.11 accepts it. Stripping makes every version agree.
+      costs at most its own row. Python 3.10 raises `line contains NUL` rather than parse such a line; 3.11
+      accepts it. Stripping makes every version agree.
     - A field longer than csv.field_size_limit() raises csv.Error, deliberately. The callers
       (IMAGE_LEDGER_UNUSABLE_ERRORS, in _read_image_ledger) sit the phase out under `image-ledger-unusable`.
       Returning the rows before the bad line instead would re-request every pano after it - the permanent

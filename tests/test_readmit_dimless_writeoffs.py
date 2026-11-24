@@ -70,7 +70,7 @@ def test_a_dry_run_counts_and_writes_nothing(tmp_path, store, capsys):
     assert 'dry run' in out.lower()
 
 
-def test_apply_removes_exactly_the_matching_rows_and_keeps_both_copies(tmp_path, store, capsys):
+def test_apply_removes_exactly_the_matching_rows_and_keeps_both_copies(tmp_path, store, capsys, csv_refuses_nul):
     assert run(tmp_path, store, '--apply') == 0
 
     kept = (store / 'pano_id_log.csv').read_text()

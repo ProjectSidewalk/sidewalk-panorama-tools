@@ -9,7 +9,7 @@ python3 -m pytest tests
 python3 -m pytest tests --cov --cov-report=term-missing
 ```
 
-CI runs this on Ubuntu 22.04 / Python 3.10 for every push to `master` and every pull request
+CI runs this on Ubuntu 24.04 / Python 3.12 for every push to `master` and every pull request
 ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), against the production box's pinned versions
 ([`constraints.txt`](ops.md#refreshing-constraintstxt), #167) plus its own pins (`constraints-ci.txt`, #237:
 the pytest runner and torch), with a CPU-only torch installed on purpose for `test_torch_geometry.py`. A second workflow,

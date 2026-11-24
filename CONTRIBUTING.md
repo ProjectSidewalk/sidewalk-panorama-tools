@@ -14,7 +14,7 @@ pip install --no-deps -r requirements-nodeps.txt
 python3 -m pytest tests
 ```
 
-Ubuntu 22.04 / Python 3.10 is the baseline CI enforces; the suite also runs on a Windows dev box, where a
+Ubuntu 24.04 / Python 3.12 is the baseline CI enforces; the suite also runs on a Windows dev box, where a
 handful of tests that assert POSIX file modes skip themselves. See [docs/testing.md](docs/testing.md) for what
 the suite covers and which parts touch the network.
 
@@ -22,7 +22,7 @@ the suite covers and which parts touch the network.
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) installs `requirements.txt` +
 `requirements-dev.txt`, then `streetlevel` from `requirements-nodeps.txt` with `--no-deps` (#237), against
-`constraints.txt` and `constraints-ci.txt`, on Ubuntu 22.04 / Python 3.10, and runs `pytest tests -v` on every
+`constraints.txt` and `constraints-ci.txt`, on Ubuntu 24.04 / Python 3.12, and runs `pytest tests -v` on every
 push to `master`, every pull request, and on demand. There is no linter configured — match the surrounding style.
 
 ## Conventions worth knowing before you write code

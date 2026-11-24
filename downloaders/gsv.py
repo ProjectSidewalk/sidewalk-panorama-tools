@@ -1534,9 +1534,9 @@ def _load_depth_log(depth_log_path):
       replacement lands inside one field and that row either fails the shape check (skipped) or carries an id
       that matches no pano. Either way that one pano is re-checked; nothing is written off.
     - A NUL byte - the zero-filled residue a crash most often leaves - is stripped before csv sees it, so it too
-      costs at most its own row. Python 3.10, the production interpreter, raises `line contains NUL` rather than
-      parse such a line, which the callers would read as an unusable ledger; 3.11 accepts it. Stripping makes
-      every version agree, and a run of NULs however long can never trip the field-size limit below.
+      costs at most its own row. Python 3.10 raises `line contains NUL` rather than parse such a line, which the
+      callers would read as an unusable ledger; 3.11 accepts it. Stripping makes every version agree, and a run
+      of NULs however long can never trip the field-size limit below.
     - A field longer than csv.field_size_limit() makes the ledger unusable: csv.Error propagates, and the callers
       (DEPTH_LEDGER_UNUSABLE_ERRORS) sit the phase out. Returning the rows before the bad line instead would make
       every pano after it look unresolved and re-request them against a store that just wrote junk.
