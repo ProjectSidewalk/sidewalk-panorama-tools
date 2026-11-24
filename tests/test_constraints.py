@@ -156,7 +156,7 @@ class TestTheConstraintsFile:
 
     def test_it_exists_and_is_a_list_of_exact_pins(self):
         pins = _pins()
-        # The box's freeze is 23 packages; a handful means a truncated paste or a freeze of the wrong venv.
+        # A handful of pins means a truncated paste or a freeze of the wrong venv.
         assert len(pins) >= 20, 'constraints.txt pins only %d packages' % len(pins)
 
     def test_every_runtime_requirement_is_pinned(self):
