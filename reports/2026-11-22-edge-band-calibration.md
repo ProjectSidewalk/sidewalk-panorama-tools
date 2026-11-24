@@ -14,8 +14,9 @@ sample of each folder's GSV panos):
   GSV stitches (bound 14.24), over the 1-per-10,000 estimate D1 allows. This run cannot tell 0.05 from 0.0605:
   every limit under 0.0745 flags the same 32 panos. **On 2026-11-24 the project owner looked at all 18: every one
   is the same failure, missing imagery, and none is a cap or a dark scene** (Results, class U, addendum). So these
-  "false flags" are correct flags; whether the provider serves black there or our stitch dropped the rows is
-  unverified. D1's committed outcome stands as computed.
+  "false flags" are correct flags. None of the 18 is served by the provider any more, so whether the black came
+  from the provider or from our download cannot be settled by re-fetching, and the stored files are the only
+  copies. D1's committed outcome stands as computed.
 - **On Mapillary a deep exact-black bottom band is the normal shape of two camera setups**: juneau-ak's
   8000x4000 panos (4,847 of 4,847 over 0.05, mostly at 0.1740) and richmond-va's 11000x5500 ones (4,132 of 5,075,
   mostly at 0.1875). The work-list on such a folder lists camera caps. Panoramax and the other Mapillary frames
@@ -235,10 +236,28 @@ camera cap, and none is a real scene that is merely dark.
   groups (washington-dc 0.0745, newberg-or 0.0769) and returns `fold-flips`. So 0.05 stays either way, and nothing
   in the verdict argues for a higher limit.
 
+**The provider check, the same day** (`data/2026-11-22-edge-band-calibration/provider-probe/`, run by the
+orchestrating agent at the owner's request). For each of the 18, three tiles of the last grid row (left, middle,
+right) and one control tile from the row above were requested at the frame's zoom (5 for 13312x6656, 3 for
+3328x1664), one at a time, 1.5 s apart: 72 requests.
+- **All 72 came back HTTP 200 with the same 1,184-byte, 512x512 tile that is 100% exact black**, the control tiles
+  above the band included. That is the endpoint's answer for a pano with no imagery: **none of the 18 is served
+  any more**, anywhere in the frame.
+- **Positive control** (`control.csv`, transcribed from the run's output): 8 clean 13312x6656 washington-dc panos,
+  drawn at random (seed 1) from the committed ledger, a mid-frame tile and a bottom-row tile each. 3 of 8 returned
+  real imagery in both, the bottom row included (0% black, 2,818 to 5,077 bytes there); 5 of 8 returned the same
+  1,184-byte black tile. So the request form works, a served pano has real pixels in its bottom tile row, and about
+  5 in 8 clean panos of that era are gone too.
+- **File times** (the ledgers' `mtime_ns`): the 18 were written between 2017-07-03 and 2020-04-05, on 11 different
+  days (UTC), each time 1 to 4 banded files among 7 to 493 measured GSV files written in the same folder that day.
+
 **What it does not settle.**
-- **Whether the provider serves black there or our stitch dropped the rows** is unverified. Nothing was re-fetched,
-  so these could be tiles Google serves black, or tile rows our stitcher never received. The shapes (one tile row
-  16 px short, and a partial last tile row) fit either.
+- **Whether the provider published black there or our download dropped the rows cannot be answered by
+  re-fetching**, because none of the 18 is served any more. For the same reason none can be repaired: **the stored
+  files are the only copies**, and the store is an archive. The same-day pattern (isolated files among hundreds of
+  clean ones) points to something about those panoramas rather than a bad download day, and all 18 being withdrawn
+  against about 5 in 8 of the controls is in the same direction. Neither is proof, and the control is only 8 panos.
+  The shapes (one tile row 16 px short, and a partial last tile row) fit either cause.
 - Whether the same failure occurs on GSV panos outside the frozen sample (decision 4, the fleet sweep).
 
 ### D1, the limit for stitches
@@ -386,8 +405,8 @@ The plan's decisions table (decisions 1 to 10 in the plan on #179) stands. These
 - **Decision 6, the limit.** The owner's look (decision 7, done) found the 18 U panos to be missing imagery, so they
   are correct flags and D1's premise (U means not ours to flag) does not hold for them. The committed rules keep
   0.05 either way (Wrong turns); nothing found argues for raising it.
-- **Decision 7, done 2026-11-24.** All 18 are missing imagery (addendum under class U). Still open: provider black
-  or our dropped rows, which needs a re-fetch.
+- **Decision 7, done 2026-11-24.** All 18 are missing imagery (addendum under class U). Provider black or our
+  dropped rows stays open and cannot be settled by re-fetching: none of the 18 is served any more.
 - **Decision 2.** A per-source policy for juneau-ak's and richmond-va's caps (0.1740, 0.1875).
 - **Decision 3.** 2 of 869 photospheres are over the limit.
 - **Decision 4.** Whether to sweep the whole fleet: F-class panos were found (10 F-frame, 4 F-rows).

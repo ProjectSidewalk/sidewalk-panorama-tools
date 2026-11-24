@@ -1048,6 +1048,41 @@ class TestTheCommittedRun:
             sorted((r['city'], r['pano_id']) for r in rows('unresolved.csv'))
         assert len(verdict) == 18 and {r['verdict'] for r in verdict} == {'missing-imagery'}
 
+    def test_the_provider_probe_and_the_file_times_are_what_the_report_says(self):
+        """Decision 7's provider check (2026-11-24): 72 answers for exactly the 18 unresolved panos, every one the same
+        all-black tile; 3 of the 8 control panos served; and the file-time pattern, re-derived from the ledgers."""
+        def rows(name):
+            with open(os.path.join(DATA, name), newline='', encoding='utf-8') as f:
+                return list(csv.DictReader(f))
+        probe = rows('provider-probe/probe.csv')
+        unresolved = {(r['city'], r['pano_id']) for r in rows('unresolved.csv')}
+        assert len(probe) == 72 and {(r['city'], r['pano_id']) for r in probe} == unresolved
+        assert {(r['status'], r['bytes'], r['tile_w'], r['tile_h'], r['black_frac']) for r in probe} == \
+            {('200', '1184', '512', '512', '1.0')}
+        control = rows('provider-probe/control.csv')
+        served = {r['pano_id'] for r in control if r['black_frac'] == '0.0'}
+        assert len({r['pano_id'] for r in control}) == 8 and len(served) == 3
+        assert all(r['black_frac'] == '0.0' for r in control if r['pano_id'] in served)
+        bottom = sorted(int(r['bytes']) for r in control if r['pano_id'] in served and r['y'] == '12')
+        text = ' '.join(open(REPORT, encoding='utf-8').read().split())
+        assert '{:,} to {:,} bytes'.format(bottom[0], bottom[-1]) in text
+        # File times: days the 18 were written, and how many measured GSV files share their (folder, day).
+        day = lambda r: datetime.datetime.fromtimestamp(int(r['mtime_ns']) / 1e9, datetime.timezone.utc).date()  # noqa: E731
+        ledgers = {c: ebc.load_ledger_rows(os.path.join(DATA, 'sweep', c, 'black_bands.csv.gz'))
+                   for c in {c for c, _ in unresolved}}
+        days = {(c, day(ledgers[c][p])) for c, p in unresolved}
+        counts = {}
+        for c, rows_ in ledgers.items():
+            for p, r in rows_.items():
+                if (c, day(r)) in days and ebc.id_form(p, int(r['mtime_ns'])) == 'gsv22':
+                    banded, total = counts.get((c, day(r)), (0, 0))
+                    counts[(c, day(r))] = (banded + ((c, p) in unresolved), total + 1)
+        first, last = min(d for _, d in days), max(d for _, d in days)
+        assert 'between %s and %s, on %d different days' % (first, last, len({d for _, d in days})) in text
+        assert '%d to %d banded files among %d to %d measured GSV files' % (
+            min(b for b, _ in counts.values()), max(b for b, _ in counts.values()),
+            min(t for _, t in counts.values()), max(t for _, t in counts.values())) in text
+
     def test_every_prose_figure_is_in_the_report(self):
         """Review 1, S5: the numbers the report quotes in prose are derived by analyze (`prose`, re-derived from the
         raw files by the summary test above), and each is quoted in the report in its own phrase."""

@@ -890,8 +890,9 @@ and a census or a 2,500-pano sample of each folder's GSV panos) and found:
   tile-row shape as its rule defines it and all 18 are deeper than both candidates (0.05, 0.0605), so 0.05 stays
   and the value is the owner's to revisit. Every limit under 0.0745 flags the same 32 panos. The project owner
   looked at the 18 on 2026-11-24: all are missing imagery, the same failure in each, none a cap or a dark scene,
-  so flagging them is correct. Whether the provider serves black there or the stitch dropped the rows is
-  unverified.
+  so flagging them is correct. None of the 18 is served any more (a tile probe the same day), so whether the
+  provider or the download left the black cannot be settled by re-fetching, and the stored files are the only
+  copies.
 - On Mapillary, exact-black camera caps at 0.174 (juneau-ak, 8000x4000) and 0.1875 (richmond-va, 11000x5500), all
   over the limit; richmond-va's 12288x6144 panos carry a near-black cap at about 0.138 with no exact band.
   Panoramax and the other Mapillary frames carry none, apart from one kaysville-ut pano at 0.1816.
