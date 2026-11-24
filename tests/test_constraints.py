@@ -432,16 +432,12 @@ class TestTheDocsShowBothInstallLines:
 
 OPS = os.path.join(REPO_ROOT, 'docs', 'ops.md')
 DEPLOYING = '### Deploying'
-BOX_MOVE = '### Moving the box to the --no-deps install (#237)'
+REBUILD = '### Rebuilding the venv'
 # The one check that catches every wrong install the #244 review measured (line 2 without -c or without --no-deps,
 # a by-name streetlevel install, the old one-line install, line 1 alone): the venv's freeze IS constraints.txt.
 FREEZE_CHECK = "diff <({venv}/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)"
-# Guarded (#244 final review A): once .venv-before-237 is removed there is nothing to roll back to, and the bare
-# `[ -L .venv ] && unlink .venv; ...` would unlink the only .venv and then fail its mv.
-ROLLBACK = ("if [ -d .venv-before-237 ]; then [ -L .venv ] && unlink .venv; [ -e .venv ] || mv .venv-before-237 .venv; "
-            "else echo 'nothing to roll back to: no .venv-before-237 (rolled back already, or removed)'; fi")
-SWAP = '[ -x .venv-237/bin/python ] && mv .venv .venv-before-237 && ln -s .venv-237 .venv'
-REMOVAL = ['readlink .venv', 'ls -d .venv*', 'rm -rf -- .venv-before-237']
+# .venv is a symlink on the box, so a rebuild repoints it in one rename and never builds at .venv itself.
+REPOINT = 'ln -s .venv-<date> .venv.new && mv -T .venv.new .venv'
 
 
 def _ops_section(heading):
@@ -465,61 +461,28 @@ def _first_block(section):
 
 
 class TestTheDeployInstructions:
-    """docs/ops.md's Deploying block and the #237 move (#244 review): what they check, and that the move never
+    """docs/ops.md's Deploying block (#244 review) and the venv rebuild: what they check, and that a rebuild never
     leaves the box without a .venv."""
 
-    @pytest.mark.parametrize('heading, venvs', [(DEPLOYING, ['.venv']), (BOX_MOVE, ['.venv-237', '.venv'])],
-                             ids=['deploying', 'box-move'])
-    def test_the_block_compares_the_freeze_with_constraints_txt_and_imports_streetlevel(self, heading, venvs):
-        block = _first_block(_ops_section(heading))
-        for venv in venvs:
-            assert any(FREEZE_CHECK.format(venv=venv) in line for line in block), (heading, venv)
-            assert any(line.startswith('%s/bin/python -c "from streetlevel import streetview' % venv)
-                       for line in block), (heading, venv)
+    def test_the_block_compares_the_freeze_with_constraints_txt_and_imports_streetlevel(self):
+        block = _first_block(_ops_section(DEPLOYING))
+        assert any(FREEZE_CHECK.format(venv='.venv') in line for line in block)
+        assert any(line.startswith('.venv/bin/python -c "from streetlevel import streetview') for line in block)
 
-    def test_the_move_builds_beside_the_old_venv_and_swaps_in_one_command(self):
-        block = _first_block(_ops_section(BOX_MOVE))
-        assert not any(re.match(r'^python3 -m venv \.venv(\s|$)', line) for line in block), \
-            'the move builds the new venv at .venv, so the box has none until the build finishes'
-        build = next(i for i, line in enumerate(block) if line.startswith('python3 -m venv .venv-237'))
-        swaps = [i for i, line in enumerate(block) if 'mv .venv .venv-before-237' in line]
-        assert len(swaps) == 1, swaps
-        assert block[swaps[0]].startswith(SWAP), block[swaps[0]]
-        checks = [i for i, line in enumerate(block) if FREEZE_CHECK.format(venv='.venv-237') in line]
-        assert build < min(checks) and max(checks) < swaps[0], 'the new venv must be checked before the swap'
+    def test_a_rebuild_goes_beside_the_serving_venv_and_repoints_the_link(self):
+        """Building at .venv fails through the link, and a renamed venv's scripts point at an interpreter path
+        that no longer exists; a glob removal would take the serving venv with the old one."""
+        text = ' '.join(_ops_section(REBUILD))
+        assert REPOINT in text and '[Deploying](#deploying)' in text
+        assert 'never a glob' in text
 
-    def test_the_rollback_works_from_any_state(self):
-        assert any(ROLLBACK in line for line in _ops_section(BOX_MOVE))
-
-    def test_removing_the_old_venv_is_spelled_out_and_never_a_glob(self):
-        """The one directory removal the move asks for, in a checkout holding three `.venv*` names: `rm -rf .venv*`
-        would take the serving venv and the link with it."""
-        section = [line.strip() for line in _ops_section(BOX_MOVE)]   # the block sits inside a list item
-        starts = [i for i, line in enumerate(section) if line.startswith(REMOVAL[0])]
-        assert starts, 'no removal sequence for .venv-before-237'
-        assert [line.split('#')[0].strip() for line in section[starts[0]:starts[0] + 3]] == REMOVAL
-        commands, fenced = [], False   # only lines inside code blocks are commands; the prose may name the glob
-        for line in section:
-            if line.startswith('```'):
-                fenced = not fenced
-            elif fenced:
-                commands.append(line.split('#')[0])
-        removals = [line for line in commands if re.search(r'(^|[;&|]\s*)rm\s', line)]
-        assert removals and all('*' not in line for line in removals), removals
-
-    def test_the_optional_city_run_passes_what_the_nightly_passes(self):
-        cron = _read(os.path.join(REPO_ROOT, 'docs', 'downloader.md'))
-        nightly = re.search(r'^\s*(-- --all-panos [^\\\n]*?)\s*\\$', cron, re.M).group(1)
-        runs = [line for line in _ops_section(BOX_MOVE) if '--only <city_id>' in line]
-        assert runs and all(nightly in line for line in runs), (nightly, runs)
-
-    def test_every_name_the_move_leaves_in_the_checkout_is_ignored(self):
-        """The Deploying block requires an empty `git status --short`; an untracked .venv-before-237/ (or a
-        .venv that is a symlink, which `.venv/` does not match) would block every later deploy."""
+    def test_every_name_a_rebuild_leaves_in_the_checkout_is_ignored(self):
+        """The Deploying block requires an empty `git status --short`; an untracked venv beside the serving one
+        (or a .venv that is a symlink, which `.venv/` does not match) would block every later deploy."""
         with open(os.path.join(REPO_ROOT, '.gitignore'), encoding='utf-8') as f:
             patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
-        for name in ('.venv', '.venv-237', '.venv-before-237'):
+        for name in ('.venv', '.venv-237', '.venv-2026-11-24', '.venv.new'):
             # Each is checked as a plain file, as git sees a symlink: a pattern ending in / does not match it.
             assert any(not pattern.endswith('/') and fnmatch.fnmatch(name, pattern.lstrip('/'))
                        for pattern in patterns), name

@@ -7,9 +7,8 @@
 # pytest and its requirements are the test runner (tests/conftest.py turns PytestRemovedIn10Warning into an
 # error, so a new pytest can fail an unrelated PR). torch and its requirements are the CPU-only wheel that
 # tests/test_torch_geometry.py and the coverage gate need, installed --no-deps from the CPU index.
-#
-# exceptiongroup and tomli left with the move to Python 3.12 (#257): pytest requires both only below 3.11, so the
-# gated job no longer installs them.
+async-timeout==5.0.1
+exceptiongroup==1.3.1
 filelock==3.32.5
 fsspec==2026.7.0
 iniconfig==2.3.0
@@ -22,4 +21,5 @@ pluggy==1.6.0
 Pygments==2.21.0
 pytest==9.1.1
 sympy==1.14.0
+tomli==2.4.1
 torch==2.13.0

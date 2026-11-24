@@ -10,7 +10,7 @@ virtualenv, per [Downloader → Install](downloader.md#install).
 
 **The repo and production retired it a month apart.** The files came out in Aug 2026, but the scraper box kept
 running `projectsidewalk/scraper:v6` on one crontab line per city until **2026-09-01**, when it moved to a new
-Ubuntu 22.04 host running the venv.
+host running the venv.
 
 The specific thing that was wrong is worth naming, because it is the kind of claim that is easy to make and
 hard to check: the retiring commit's own message said "Production has been a crontab line per city calling
@@ -30,8 +30,7 @@ Run from cron against a venv, none of that machinery is needed: the exit code is
 reaches it directly, and the store is an ordinary host mount.
 
 The pinning argument didn't survive either — CI installs `requirements.txt` on a plain Ubuntu runner at
-production's Python on every push (22.04 / 3.10 then, 24.04 / 3.12 since #257), which is the same proof the image
-was providing, without the beast.
+production's Python on every push, which is the same proof the image was providing, without the beast.
 
 Nothing about the store's on-disk layout changed, and no flag changed. `tests/test_entrypoint.py`, which
 pinned the entrypoint's flag forwarding, went with the script it tested. See

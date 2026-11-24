@@ -71,7 +71,7 @@ needs a true perspective (gnomonic) view of a label instead, with the rig-tilt c
 `render_view`. sidewalk-validator-ai and sidewalk-ai-api pin it so training and serving use the same
 framing. See [docs/geometry.md](docs/geometry.md).
 
-> **Requirements:** Python 3.12+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
+> **Requirements** for the scraper and cropper: Python 3.12+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
 > supported production platform; macOS and Windows are fine for development, and install without a
 > compiler. **No Docker** — the image and its sshfs entrypoint were
 > [retired from the repo in Aug 2026](docs/history.md#the-docker-image-aug-2026), and from the production box

@@ -47,7 +47,7 @@ def run(tmp_path, *args):
     return readmit.main([*args, '--lock', str(tmp_path / 'queue.lock')])
 
 
-def test_the_forms_are_the_downloaders_and_the_default_is_the_served_one(tmp_path, store, capsys):
+def test_the_forms_are_the_downloaders_and_the_default_is_the_served_one(tmp_path, store, capsys, csv_refuses_nul):
     parser = readmit.build_parser()
     assert parser.parse_args(['x']).forms is None, 'no --form given: main() falls back to the served form'
     choices = next(a for a in parser._actions if a.dest == 'forms').choices
@@ -75,7 +75,7 @@ def test_a_dry_run_counts_and_writes_nothing(tmp_path, store, capsys):
     assert 'would re-admit 2 row(s)' in out and 'dry run' in out.lower()
 
 
-def test_apply_removes_exactly_the_af1qip_zero_rows_and_keeps_both_copies(tmp_path, store, capsys):
+def test_apply_removes_exactly_the_af1qip_zero_rows_and_keeps_both_copies(tmp_path, store, capsys, csv_refuses_nul):
     assert run(tmp_path, str(store), '--apply') == 0
 
     kept = (store / 'pano_id_log.csv').read_text()

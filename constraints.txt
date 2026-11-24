@@ -1,11 +1,9 @@
 # The production box's frozen dependency set (#167). Generated, not hand-edited: refresh it with the procedure in
 # docs/ops.md, "Refreshing constraints.txt".
 #
-# Source: `.venv/bin/pip freeze` on the production host, Python 3.12.3 (Ubuntu 24.04, #257), repo at deee721,
-# read 2026-11-24. That host's venv was built the #237 way from the start (requirements.txt, then streetlevel
-# with --no-deps), so the freeze is these 23 pins and nothing else. The versions are those of the 2026-10-06
-# freeze from the 22.04 host; its 24th pin, async-timeout, is gone because aiohttp requires it only below
-# Python 3.11.
+# Source: `.venv/bin/pip freeze` on the production host, Python 3.12.3, repo at deee721, read 2026-11-24. The
+# venv is built the #237 way (requirements.txt, then streetlevel with --no-deps), so the freeze is these 23
+# pins and nothing else.
 #
 # CI's gated job installs with `-c constraints.txt -c constraints-ci.txt`, then streetlevel from
 # requirements-nodeps.txt with --no-deps (#237). A constraint only pins a package something else asks for; it

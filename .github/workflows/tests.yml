@@ -80,14 +80,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          # Not production's 3.12: the package's own floor is lower (pyproject.toml, requires-python), and 3.10 is
+          # the oldest Python the pinned test dependencies install on.
+          python-version: '3.10'
       # tests/conftest.py imports CropRunner for every test, so the runtime requirements come too - all but
       # streetlevel, which the conftest stubs and this job does not need. Then torch's own dependencies from PyPI
       # at the CI pins, and the CPU-only torch wheel at the pinned version with --no-deps: the CPU index does not
       # carry every pinned dependency version.
       - run: pip install -c constraints.txt -c constraints-ci.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
       - run: pip install -c constraints.txt -c constraints-ci.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
-      - run: python -m pytest tests/test_torch_geometry.py -v
+      # The package's own tests, so a standard-library call newer than this Python fails here.
+      - run: python -m pytest tests/test_torch_geometry.py tests/test_geometry.py tests/test_gsv_tiles.py tests/test_labels.py tests/test_pano_pose.py tests/test_ps_math.py tests/test_store.py -v
       - name: Build the wheel and import it from a fresh venv
         run: |
           pip wheel --no-deps -w "$RUNNER_TEMP/dist" .
