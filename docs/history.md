@@ -29,8 +29,9 @@ working around `/app` being a CWD that died with the container ([#49](https://gi
 Run from cron against a venv, none of that machinery is needed: the exit code is the runner's, `SIGTERM`
 reaches it directly, and the store is an ordinary host mount.
 
-The pinning argument didn't survive either — CI installs `requirements.txt` on plain Ubuntu 22.04 / Python
-3.10 on every push, which is the same proof the image was providing, without the beast.
+The pinning argument didn't survive either — CI installs `requirements.txt` on a plain Ubuntu runner at
+production's Python on every push (22.04 / 3.10 then, 24.04 / 3.12 since #257), which is the same proof the image
+was providing, without the beast.
 
 Nothing about the store's on-disk layout changed, and no flag changed. `tests/test_entrypoint.py`, which
 pinned the entrypoint's flag forwarding, went with the script it tested. See

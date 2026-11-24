@@ -1181,8 +1181,8 @@ class TestADamagedLedgerNeverCrashesTheRun:
         assert condition_codes(stop_reasons) == []
 
     def test_a_nul_byte_costs_one_row_under_python_3_10_csv(self, tmp_path, fake_streetview, csv_refuses_nul):
-        """A run of NULs is the most familiar crash residue, and on 3.10 - production - csv raised on it, so the
-        phase sat out every night (#189 review). Stripped, it costs its own row: no condition, one request."""
+        """A run of NULs is the most familiar crash residue, and on 3.10 - production until #257 - csv raised on it,
+        so the phase sat out every night (#189 review). Stripped, it costs its own row: no condition, one request."""
         storage = str(tmp_path)
         write_ledger_bytes(storage, b'pano_id,status\r\nbbbbbb,saved\r\naaaa\x00\x00\x00\x00\r\n'
                                     b'cccccc,unavailable\r\n')

@@ -90,7 +90,7 @@ python3 -m pytest tests
 python3 -m pytest tests --cov --cov-report=term-missing   # what CI reports and gates on
 ```
 
-CI (`tests.yml`) runs it on Ubuntu 22.04 / Python 3.10, the production baseline, pinned by `constraints.txt` (the box's `pip freeze`, #167) and `constraints-ci.txt`; weekly `tests-latest.yml` runs unpinned, gating nothing. `tests/test_constraints.py` keeps requirements and pins in step; refresh: `docs/ops.md`, "Refreshing `constraints.txt`". No linter.
+CI (`tests.yml`) runs it on Ubuntu 24.04 / Python 3.12, the production baseline, pinned by `constraints.txt` (the box's `pip freeze`, #167) and `constraints-ci.txt`; weekly `tests-latest.yml` runs unpinned, gating nothing. `tests/test_constraints.py` keeps requirements and pins in step; refresh: `docs/ops.md`, "Refreshing `constraints.txt`". No linter.
 
 ## Documentation layout
 

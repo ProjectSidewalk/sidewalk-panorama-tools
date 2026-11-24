@@ -37,7 +37,7 @@ pip install -r requirements.txt -c constraints.txt
 pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 ```
 
-`-c constraints.txt` installs the exact versions production runs (Python 3.10). Drop it if a pin has no wheel
+`-c constraints.txt` installs the exact versions production runs (Python 3.12). Drop it if a pin has no wheel
 for your Python: numpy 2.2.6 and scipy 1.15.3 stop at 3.13, so on 3.14 they would build from source. `streetlevel`
 is installed on its own, with `--no-deps`, so that the torch and CUDA wheels it declares but never imports are not
 ([#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237)). See
@@ -138,7 +138,7 @@ pip3 install --no-deps -r requirements-nodeps.txt -c constraints.txt
 python3 -m pytest tests
 ```
 
-Network-free, `streetlevel` stubbed, run on Ubuntu 22.04 / Python 3.10 in CI for every push and pull request.
+Network-free, `streetlevel` stubbed, run on Ubuntu 24.04 / Python 3.12 in CI for every push and pull request.
 See [docs/testing.md](docs/testing.md).
 
 ## Contributing

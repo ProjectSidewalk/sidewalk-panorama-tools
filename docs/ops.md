@@ -116,7 +116,9 @@ first width that warns.
   * **The latch** is `sidewalk-width-ceiling-alarmed` in the system temp directory, or `--width-alarm-latch
     PATH`. It is on local disk, beside the depth block latch, because a wider frame is a fact about Google
     rather than one city: a per-city latch would alarm once per city. Its content is the UTC time of the first
-    sighting, and it is never rewritten.
+    sighting, and it is never rewritten. **Production passes `/var/lib/sidewalk/width-ceiling-alarmed`** since the
+    24.04 host (#257): 24.04 removes `/tmp` files untouched for 30 days and a reboot empties `/tmp` on any
+    release, and either would re-arm a latch that is written once.
   * **Delete it to re-arm** — after acting on an alarm, say, so the next change reaches you too.
   * **A latch that cannot be written fails every run** that sees a wide frame, with the path in `scrape.log`:
     a latch nobody can write must not swallow the one alarm it exists for.
@@ -1403,13 +1405,28 @@ The split goes to stdout and `scrape.log`. The analyzer's stats line puts it in 
 
 ## Operating the production host
 
-The nightly scrape runs on one small cloud instance (Ubuntu 22.04 / Python 3.10, the CI baseline) with the repo
-at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv` (a symlink to `.venv-237` once the
-[#237 move](#moving-the-box-to-the---no-deps-install-237) is done), the pano store sshfs-mounted at
+The nightly scrape runs on one small cloud instance (Ubuntu 24.04 / Python 3.12, the CI baseline) with the repo
+at `/srv/sidewalk-panorama-tools` on `master`, its virtualenv at `.venv` (a symlink to `.venv-237`, built
+[the #237 way](#moving-the-box-to-the---no-deps-install-237)), the pano store sshfs-mounted at
 `/mnt/panostore` by a systemd mount unit, the city manifest at `/etc/sidewalk/cities.csv`, and the one crontab
 line from [Nightly deployment](downloader.md#nightly-deployment). Which instance, its addresses and who holds
 which key are deliberately **not** here; they live in the team's private planning repo, next to the rest of the
 account-level detail.
+
+**The host was rebuilt on Ubuntu 24.04 on 2026-11-24** ([#257](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/257)),
+because 22.04's standard support ends on 2027-05-31 (the date in AWS's notice). Like the 22.04 host before it
+(2026-09-01), it was built beside the one it replaces, which stays as the rollback. The two install lines, the
+checks in [Deploying](#deploying) and `scrape_queue.py --dry-run` passed on it with no code change. Three things
+differ on 24.04 and are easy to lose in the next rebuild:
+
+- **There is no `awscli` apt package.** The 22.04 host had `/usr/bin/aws` from apt. The crontab line calls a bare
+  `aws` for the sink, and cron's `PATH` is `/usr/bin:/bin`. Amazon's installer for AWS CLI v2 links it into
+  `/usr/local/bin` by default, where cron does not look, so it was run with `--bin-dir /usr/bin`. Check it as
+  cron sees it: `env -i PATH=/usr/bin:/bin sh -c 'command -v aws'`.
+- **`/tmp` files untouched for 30 days are removed**, so the [width-alarm latch](#the-width-tripwire) is at
+  `/var/lib/sidewalk/width-ceiling-alarmed` and the crontab line passes `--width-alarm-latch`
+  ([Nightly deployment](downloader.md#nightly-deployment) has the reasoning).
+- **cron still ignores `CRON_TZ`.** The box's timezone is the schedule, set with `timedatectl` as before.
 
 ### Deploying
 
@@ -1444,9 +1461,8 @@ pins, made in a PR and tested by CI, not something the box picks up from PyPI on
 The `diff` is the check that the installs did what they should: since #237 the venv's `pip freeze` is exactly
 `constraints.txt`, so it prints nothing. A line marked `<` is a package the venv has and the pins do not (a
 `streetlevel` installed without `--no-deps` brings `pyequilib`, `torch` and the CUDA wheels back that way); `>`
-is a pin the venv lacks or holds at another version (line 2 run without `-c` installs a newer `streetlevel`). Until
-the box has [moved to the --no-deps install](#moving-the-box-to-the---no-deps-install-237), its old venv still
-holds the 41 packages #237 dropped, so the diff prints those 41 `<` lines and nothing else. The last line catches
+is a pin the venv lacks or holds at another version (line 2 run without `-c` installs a newer `streetlevel`). The
+last line catches
 the one mistake the freeze cannot show as clearly, `streetlevel` missing because line 2 was not run.
 
 **An install that changes a pin `streetlevel` also requires prints a red `ERROR:` block and exits 0.** Since #237,
@@ -1540,6 +1556,13 @@ passing.
 
 ### Moving the box to the --no-deps install (#237)
 
+**How it was done in the end (2026-11-24, [#257](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/257)).**
+The 22.04 host never ran this procedure. It was replaced by a 24.04 host whose venv was built this way from the
+start: `.venv-237`, with `.venv` a symlink to it, 23 distributions and 302 MB (Python 3.12.3, pip 24.0). That
+host has no `.venv-before-237`, so the before-figures, the swap, the rollback and the removal below describe a
+state it was never in. The section stays as the recipe for rebuilding a venv beside the one that is serving; the
+item "`.venv` is a symlink from now on" says how to repoint the link.
+
 Since [#237](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/237) `streetlevel` is installed
 on its own with `--no-deps` (`requirements-nodeps.txt`), so the venv no longer holds `torch`, `triton`,
 `pyequilib` and the `nvidia-*`/`cuda-*` wheels. **Merging that change does nothing to the box's existing venv.**
@@ -1610,7 +1633,8 @@ What to expect along the way:
 - **The dry run.** Its `streetlevel` probe must not print `streetlevel is not importable`.
 - **The new venv's pip.** Stock Ubuntu 22.04 gives pip 22.0.2, which warns that a newer pip exists. Off the box it
   produced the identical 24 packages, building `CoordinatesConverter` with `setup.py install`. Do not upgrade it
-  unless the old venv's pip was upgraded. Record both versions.
+  unless the old venv's pip was upgraded. Record both versions. Stock 24.04 gives pip 24.0, which installed the
+  same versions on Python 3.12: 23 packages, without `async-timeout`.
 - **`pip check`** exits 1, naming `streetlevel`'s 7 uninstalled requirements, and a later install that moves one
   of `streetlevel`'s requirements prints them as a red `ERROR:` block (see [Deploying](#deploying)). Both are
   expected. Do not install what they name.
@@ -1631,7 +1655,7 @@ What to expect along the way:
   photometa and depth requests from the new venv are made at 19:00. To see one while watching, run one city
   through the queue (lever 3 of [Rolling back](#rolling-back-smallest-blast-radius-first)) with a short budget,
   one city slot exactly as the nightly runs it:
-  `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --only <city_id> --max-runtime 12 --city-max-runtime 12 -- --all-panos --min-depth-runtime 6`.
+  `.venv/bin/python scrape_queue.py --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore --only <city_id> --max-runtime 12 --city-max-runtime 12 -- --all-panos --min-depth-runtime 6 --width-alarm-latch /var/lib/sidewalk/width-ceiling-alarmed`.
   It makes real requests and writes to that city's store like a night does.
 - **The morning after.** `tail -1 ~/cron_notify.log` carries last night's date and says
   `nothing to publish (clean run, --only-on-failure)`; `heartbeat.log` shows `heartbeat published`; no SNS message

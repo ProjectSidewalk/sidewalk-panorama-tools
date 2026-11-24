@@ -18,9 +18,10 @@ crashes — see [Ops](ops.md).
 
 ## Install
 
-Python 3.10 on Ubuntu 22.04 is the supported baseline — that is what CI installs and what production runs.
-Newer Pythons and other Linux distros work; macOS works for development. No Docker, no root, no FUSE
-capabilities.
+Python 3.12 on Ubuntu 24.04 is the supported baseline — that is what CI installs and what production runs.
+It was Python 3.10 on Ubuntu 22.04 until November 2026 ([#257](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/257)),
+and CI no longer runs 3.10 or 3.11. Newer Pythons and other Linux distros work; macOS works for development. No
+Docker, no root, no FUSE capabilities.
 
 ```bash
 git clone https://github.com/ProjectSidewalk/sidewalk-panorama-tools.git
@@ -33,7 +34,7 @@ pip install --no-deps -r requirements-nodeps.txt -c constraints.txt
 
 `-c constraints.txt` installs the exact versions the production box runs and CI tests
 ([#167](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/167)). The file is that box's
-`pip freeze` on Python 3.10, refreshed by the procedure in
+`pip freeze` on Python 3.12, refreshed by the procedure in
 [Refreshing `constraints.txt`](ops.md#refreshing-constraintstxt). Leave it off to take the latest release of
 everything, which is what a weekly CI job tests, or when a pin has no wheel for your platform or Python. For
 example, numpy 2.2.6 and scipy 1.15.3 publish wheels for CPython 3.10 to 3.13 only, so on 3.14 `-c` means building
@@ -348,7 +349,7 @@ BASH_ENV=/home/ubuntu/.scraper.env
               /srv/sidewalk-panorama-tools/scrape_queue.py \
               --cities /etc/sidewalk/cities.csv --store-root /mnt/panostore \
               --max-runtime 690 --city-max-runtime 12 \
-              -- --all-panos --min-depth-runtime 6 \
+              -- --all-panos --min-depth-runtime 6 --width-alarm-latch /var/lib/sidewalk/width-ceiling-alarmed \
               ; if [ -n "$(find /home/ubuntu/cron_notify.log -mmin -10 2>/dev/null)" ]; then \
               aws cloudwatch put-metric-data --region us-west-2 --namespace SidewalkPanoramaTools \
               --metric-name QueueHeartbeat --value 1 --unit Count >> /home/ubuntu/heartbeat.log 2>&1 \
@@ -368,6 +369,14 @@ this is one line.
 images at all. To stop the depth backfill without touching anything else, add `--skip-depth` after the
 queue's `--` (the second one; the first ends the wrapper's own arguments).
 
+**`--width-alarm-latch` keeps one latch out of `/tmp`** (since the 24.04 host, [#257](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/257)).
+Ubuntu 24.04 removes `/tmp` files that have gone untouched for 30 days (`D /tmp 1777 root root 30d` in
+`tmpfiles.d/tmp.conf`; 22.04 has `-`, no age), and a reboot empties `/tmp` on both. The
+[width-alarm latch](ops.md#the-width-tripwire) is written once and never touched again, so in `/tmp` its
+once-per-host alarm would re-arm a month later. `/var/lib/sidewalk/` is a directory the cron user owns. The
+other host state stays in `/tmp`: the depth block latch is only meant to last six hours, a pace file older than a
+day is ignored, and the queue lock is rewritten by every run.
+
 **The wrapper is cron's mail rule with the delivery made pluggable.** It runs the queue, streams its stdout and
 stderr through, and when the queue exits hands the capture to `--sink` — by default whenever there was any
 output, cron's rule; with `--only-on-failure`, production's choice, only on a nonzero exit — with the exit
@@ -376,8 +385,10 @@ sink fails, how it cuts a backlog night's output to fit, and how to verify a cha
 [Hearing about a bad night](ops.md#hearing-about-a-bad-night).
 
 **The timezone lives in the box, not in the crontab.** The first version of this line carried
-`CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu 22.04
-ships Debian's Vixie cron (`3.0pl1-137ubuntu3`), which silently ignores it. Measured 2026-09-17: eleven nights of
+`CRON_TZ=America/Los_Angeles`, which is how cronie (Fedora/RHEL) pins a schedule to a zone — and Ubuntu
+ships Debian's Vixie cron (`3.0pl1-137ubuntu3` on 22.04), which silently ignores it. 24.04 ships the same cron
+(`3.0pl1-184ubuntu2`), and its binary does not contain the string `CRON_TZ` either. Measured on 22.04,
+2026-09-17: eleven nights of
 `queue starting` at `19:00:01` in a `scrape_queue.log` stamped in the box's then-UTC local time, i.e. **noon
 Pacific**, the working day the queue exists to stay out of
 ([#101](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/101)). The fix is
@@ -768,8 +779,8 @@ picked up as-is.
 
 The old host could not be migrated in place. Its Python was **3.5** (Ubuntu 16.04), and the image it was
 actually running carried **3.8** — that image was built from the `ubuntu:20.04` Dockerfile this repo shipped
-until Aug 2026, not the `ubuntu:22.04` one that was eventually deleted. Both sit below this page's 3.10
-baseline, so the move had to be to a new machine rather than a new virtualenv on the old one.
+until Aug 2026, not the `ubuntu:22.04` one that was eventually deleted. Both sat below the 3.10 baseline this
+page had then, so the move had to be to a new machine rather than a new virtualenv on the old one.
 
 The per-flag promise above held, but **the sizing did not transfer** — and the retired crontab was not what this
 page recommends. Every city carried `--max-runtime 1320` and no `--min-depth-runtime` at all, against the

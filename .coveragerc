@@ -1,8 +1,8 @@
 # Coverage settings for `pytest --cov` (#57). See .github/workflows/tests.yml and the README's "Tests".
 #
-# Not pyproject.toml: coverage reads a pyproject only when a TOML parser is importable - which on the CI
-# Python (3.10) arrives as a transitive dependency rather than a guarantee, so a bare `coverage report` could
-# ignore the config with no error. A pyproject.toml now exists, for packaging the geometry
+# Not pyproject.toml: coverage reads a pyproject only when a TOML parser is importable - which below Python
+# 3.11 (CI ran 3.10 until #257) arrives as a transitive dependency rather than a guarantee, so a bare
+# `coverage report` could ignore the config with no error. A pyproject.toml now exists, for packaging the geometry
 # (docs/geometry.md), and it deliberately carries no [tool.coverage] table: coverage reads this file first.
 # Not setup.cfg either. The repo's scripts are still not an installed package: pyproject.toml installs only
 # sidewalk_panorama_tools/ and pano_pose.py, and the suite imports everything through conftest.py's sys.path
