@@ -319,9 +319,10 @@ def pano_file(tmp_path):
 class TestTheDownloaderSavesAndFlagsADeepEdgeBand:
     """#179 item 2 as #213's review resolved it (S1): a stitch with a deep edge band is SAVED, ledgered
     downloaded=1, and said loudly on both channels - never refused. The store is an archive: a refused pano
-    that Google later retires is lost for good, the limit is uncalibrated, and since #181/#214 both arms
-    refuse a frame larger than served before the fan-out, so what reaches this check is the unmeasured
-    class the calibration needs to see. Because the file is the resume marker, a flagged pano is said once,
+    that Google later retires is lost for good, the store calibration found no GSV band under 0.0745 and no cap
+    on a GSV stitch while its rule D1 could not confirm the limit (reports/2026-11-22-edge-band-calibration.md),
+    and since #181/#214 both arms refuse a frame larger than served before the fan-out, a refusal here would
+    guard nothing known. Because the file is the resume marker, a flagged pano is said once,
     ever. It is NOT a frame disagreement (S2): no exception, no FrameDisagreementError subclass, which #207
     counts by isinstance."""
 
@@ -901,3 +902,19 @@ class TestTheSweepsCommandLine:
     def test_min_band_must_be_a_fraction(self, tmp_path, value):
         with pytest.raises(SystemExit):
             scan_black_bands.main([str(tmp_path), '--min-band', value])
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_the_limit_is_the_committed_calibrations_decision():
+    """EDGE_BAND_MAX_FRACTION is the limit rule D1 of the #179 calibration returned on the committed run
+    (reports/2026-11-22-edge-band-calibration.md). It lives here, beside the constant, so a later and separately
+    decided change edits this one line and leaves the dated report alone. The synthetic D1 tests in
+    tests/test_edge_band_calibration_report.py are what keep the decision from being read back from its own output.
+    """
+    import json
+    with open(os.path.join(REPO_ROOT, 'reports', 'data', '2026-11-22-edge-band-calibration.json'),
+              encoding='utf-8') as f:
+        decision = json.load(f)['decision']
+    assert common.EDGE_BAND_MAX_FRACTION == decision['limit']

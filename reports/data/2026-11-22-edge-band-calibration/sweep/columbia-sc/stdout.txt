@@ -1,0 +1,1 @@
+Examined 2502 panorama(s): 0 with an edge band over 5.0%, 2502 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/columbia-sc/black_band_worklist.csv

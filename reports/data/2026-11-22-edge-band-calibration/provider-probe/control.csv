@@ -1,0 +1,17 @@
+city,pano_id,zoom,x,y,status,bytes,tile_w,tile_h,black_frac
+washington-dc,DhMEQWnvBgV_RKsn59cKLw,5,13,6,200,1184,512,512,1.0
+washington-dc,DhMEQWnvBgV_RKsn59cKLw,5,13,12,200,1184,512,512,1.0
+washington-dc,xfTAJUL9yaHbV7m73rwiSw,5,13,6,200,1184,512,512,1.0
+washington-dc,xfTAJUL9yaHbV7m73rwiSw,5,13,12,200,1184,512,512,1.0
+washington-dc,5zmstOX-3LN8g4ant1wnXA,5,13,6,200,1184,512,512,1.0
+washington-dc,5zmstOX-3LN8g4ant1wnXA,5,13,12,200,1184,512,512,1.0
+washington-dc,QGQPmK7b_KR9c5H1GJJpJA,5,13,6,200,46845,512,512,0.0
+washington-dc,QGQPmK7b_KR9c5H1GJJpJA,5,13,12,200,5077,512,512,0.0
+washington-dc,C24Mwu7zdRU9O_2SjmJjYg,5,13,6,200,1184,512,512,1.0
+washington-dc,C24Mwu7zdRU9O_2SjmJjYg,5,13,12,200,1184,512,512,1.0
+washington-dc,pCOjj1D0SdCshboHHa1Wpw,5,13,6,200,37027,512,512,0.0
+washington-dc,pCOjj1D0SdCshboHHa1Wpw,5,13,12,200,2818,512,512,0.0
+washington-dc,kcgqXA3rM_1La2VjXMvnVg,5,13,6,200,43497,512,512,0.0
+washington-dc,kcgqXA3rM_1La2VjXMvnVg,5,13,12,200,3952,512,512,0.0
+washington-dc,n6x0OgDUpz13VelWKHEI6g,5,13,6,200,1184,512,512,1.0
+washington-dc,n6x0OgDUpz13VelWKHEI6g,5,13,12,200,1184,512,512,1.0

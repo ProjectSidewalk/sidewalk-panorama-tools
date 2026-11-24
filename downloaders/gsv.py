@@ -642,10 +642,12 @@ def _flag_deep_edge_band(image, pano_id):
     `downloaded=1`, and the file is the resume marker, so the flag fires once per pano, ever. Save-and-flag
     rather than refuse (#213 review, S1) because the store is an archive: a refused pano that Google later
     retires is lost for good, while a saved one with a band costs a work-list row and one alarm, and even a
-    D4 stitch holds the real pano losslessly in its top-left corner. The limit is uncalibrated (#179 item 4),
-    and since #181/#214 both arms refuse a frame larger than served BEFORE the fan-out, so what reaches here
-    is the unmeasured class - a real black nadir cap deeper than 9 degrees, or Google serving black tiles
-    inside the pano - which a refusal could not clear and which the calibration needs to see.
+    D4 stitch holds the real pano losslessly in its top-left corner. The store calibration (#179 item 4,
+    reports/2026-11-22-edge-band-calibration.md) found no GSV band under 0.0745 and no cap on a GSV stitch, and
+    its rule D1 could not confirm 0.05, so the limit stays the owner's to revisit; and since #181/#214 both arms
+    refuse a frame larger than served BEFORE the fan-out, so what
+    reaches here - a real black nadir cap deeper than 9 degrees, or Google serving black
+    tiles inside the pano - is a class a refusal could not clear.
 
     Deliberately no exception and no FrameDisagreementError subclass: DownloadRunner's image loop counts that
     type by isinstance (#207), and a band is not a frame disagreement. The message carries `exactly-black edge band`

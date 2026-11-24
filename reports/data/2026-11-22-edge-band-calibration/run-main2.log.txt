@@ -1,0 +1,7 @@
+sweep start 2026-11-23T17:08:57Z
+session main2: stop done, abort None, 2735 rows, 29.6 GB
+baseline per 100 panos (s): {"gsv": 31.0, "provider": 30.53}
+sweep exit 0 2026-11-23T17:23:09Z
+extras start 2026-11-23T17:23:09Z
+extras: 9987 panos
+extras exit 0 2026-11-23T17:49:26Z

@@ -1,0 +1,1 @@
+Examined 2500 panorama(s): 0 with an edge band over 5.0%, 2500 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/oradell-nj/black_band_worklist.csv

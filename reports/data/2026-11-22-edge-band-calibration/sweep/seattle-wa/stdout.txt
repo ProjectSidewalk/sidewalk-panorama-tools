@@ -1,0 +1,1 @@
+Examined 2548 panorama(s): 9 with an edge band over 5.0%, 2539 without, 0 already ledgered, 0 failed, 0 unreached. Work-list: <out>/sweep/seattle-wa/black_band_worklist.csv

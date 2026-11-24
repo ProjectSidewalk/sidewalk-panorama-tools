@@ -878,12 +878,25 @@ is not. A black stripe with imagery between it and the edge is therefore not an 
 night scene or a near-black nadir, because JPEG noise keeps them off 0. A band deeper than
 `EDGE_BAND_MAX_FRACTION` (strict `>`) is **deep**.
 
-**`EDGE_BAND_MAX_FRACTION` is 0.05 and not yet calibrated.** A camera's genuinely black nadir cap is also a
-bottom band (a spherical cap maps to whole rows of the frame), so only depth separates it from a fault, and
-#179 asks for that depth to be measured per source before the limit is trusted. The 0.05 is set from the
-tile grid instead. One zoom-5 tile row is 1/16 = 6.25% of the frame, so any band a grid leaves is over the
-limit with room to spare, while a black cap up to 9° of elevation is under it. The sweep below records every
-pano's depths, so one sweep over a store is the calibration measurement.
+**`EDGE_BAND_MAX_FRACTION` is 0.05, set from the tile grid and kept by the store calibration.** A camera's
+genuinely black nadir cap is also a bottom band (a spherical cap maps to whole rows of the frame), so only depth
+separates it from a fault. One zoom-5 tile row is 1/16 = 6.25% of the frame, so any band a grid leaves is over
+the limit with room to spare, while a black cap up to 9° of elevation is under it. The
+[calibration](../reports/2026-11-22-edge-band-calibration.md) swept 133,919 frozen panos (every non-GSV pano,
+and a census or a 2,500-pano sample of each folder's GSV panos) and found:
+
+- On GSV stitches, no exact-black band shallower than 0.0745 and no black cap: the 32 stitches with a band at all
+  sit at tile-grid depths. Rule D1 could not confirm 0.05, because 18 of those bands are not the stitcher's
+  tile-row shape as its rule defines it and all 18 are deeper than both candidates (0.05, 0.0605), so 0.05 stays
+  and the value is the owner's to revisit. Every limit under 0.0745 flags the same 32 panos. The project owner
+  looked at the 18 on 2026-11-24: all are missing imagery, the same failure in each, none a cap or a dark scene,
+  so flagging them is correct. None of the 18 is served any more (a tile probe the same day), so whether the
+  provider or the download left the black cannot be settled by re-fetching, and the stored files are the only
+  copies.
+- On Mapillary, exact-black camera caps at 0.174 (juneau-ak, 8000x4000) and 0.1875 (richmond-va, 11000x5500), all
+  over the limit; richmond-va's 12288x6144 panos carry a near-black cap at about 0.138 with no exact band.
+  Panoramax and the other Mapillary frames carry none, apart from one kaysville-ut pano at 0.1816.
+- 2 of 869 stored photospheres are over the limit.
 
 **Exact black depends on the encoder.** The stitcher's canvas is exact RGB 0, so the downloader's own
 check reads it exactly. A *stored* JPEG is another matter: a region written as RGB 0 decodes to luma 1 at 26
@@ -900,7 +913,8 @@ not a verdict: the work-list is cut on the exact band, and the downloader's in-m
 `gsv.download_single_pano` measures the stitch **after** the atomic save and never refuses it
 ([#213](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/pull/213) review, decision S1). The store is an archive: a refused pano that Google later retires is
 lost for good, while a saved one with a band costs a work-list row and one alarm, and even a D4 stitch holds
-the real pano losslessly in its top-left. The limit is uncalibrated, and since
+the real pano losslessly in its top-left. The calibration found no cap on a GSV stitch and its rule could not
+confirm the limit, so 0.05 stays, and since
 [#181](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/issues/181) both arms refuse a frame
 larger than served *before* the fan-out, so what reaches this check is the class nobody has measured — a
 genuinely black nadir cap deeper than 9°, or Google serving black tiles inside the pano — which a refusal
@@ -921,7 +935,8 @@ never contain `frame disagreement`, and the frame-disagreement count ([#207](htt
 
 **The morning after:** run `python3 scan_black_bands.py <store>/<city>` (or read its ledger if it has run)
 and look at the named pano. A band that is imagery Google really served — a deep black cap — means the limit
-is too low for that source: raise `EDGE_BAND_MAX_FRACTION` per the calibration below, and the pano needs
+is too low for that source: raising `EDGE_BAND_MAX_FRACTION` is the owner's call (the
+[calibration](../reports/2026-11-22-edge-band-calibration.md) could not justify one by depth), and the pano needs
 nothing. A band that is not imagery is a pano to repair as the work-list describes. To count flagged panos
 over time, `grep -c "saved with an exactly-black edge band" <store>/<city>/scrape.log` — the per-pano line;
 the end-of-phase line is worded differently (`deep exact-black`) so it does not add one per night.
@@ -933,6 +948,22 @@ python3 scan_black_bands.py <storage-dir>                     # ledger every pan
 python3 scan_black_bands.py <storage-dir> --max-runtime 240   # a slice; the rest report as unreached
 python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano with ANY band: calibration
 ```
+
+**Keep its outputs off the store.** By default both files land *inside* `<storage-dir>`, and on a host whose
+account can write the store that write succeeds. Pass `--ledger` and `--worklist` outside the store every time.
+The #179 calibration went one step further and never handed the tool a store path at all: it swept a
+**symlink farm** on local disk, `<farm>/<city>/<shard>/<id>.jpg`, real shard directories and each file a
+symlink to the stored pano. `walk_store_panos` lists and `os.stat`/Pillow follow links, so the ledger's `size`
+and `mtime_ns` are the stored file's and even a forgotten default lands on scratch:
+
+```bash
+python3 scan_black_bands.py <farm>/<city> --ledger <out>/<city>/black_bands.csv \
+    --worklist <out>/<city>/black_band_worklist.csv --max-runtime 240
+```
+
+`reports/scripts/edge_band_calibration.py frame` builds such a farm from a frozen id list, and its `run`
+dispatches the unmodified tool over it under a read-rate cap; see
+[the calibration report](../reports/2026-11-22-edge-band-calibration.md).
 
 **It reads, and writes only its own two files.** No panorama is written, moved or deleted. The files are:
 
@@ -949,7 +980,8 @@ python3 scan_black_bands.py <storage-dir> --min-band 0        # list every pano 
 - `<storage-dir>/black_band_worklist.csv` (`--worklist`), rewritten from the whole ledger at the end of
   every run. It lists the panos whose **exact** band is deeper than `--min-band` (default
   `EDGE_BAND_MAX_FRACTION`), with `pano_id, width, height, bottom_band, right_band, near_bottom_band,
-  near_right_band, side`.
+  near_right_band, side`. On a folder whose panos are the provider's own files the work-list lists camera caps:
+  most of juneau-ak's and richmond-va's Mapillary panos are on it (the calibration's D3).
 
 **Idempotent and resumable.** A pano whose ledger row still matches its size and mtime is not decoded again,
 so a re-run over a finished store costs one `stat` per pano. A pano swapped since then is scanned afresh. A

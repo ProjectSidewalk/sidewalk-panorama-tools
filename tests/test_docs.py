@@ -655,6 +655,8 @@ FUNCTION_SCOPE_REPORT_READERS = {
     'tests/test_crop_runner.py': '.claude/rules/cropper.md',
     # The 2026-08-07 pano-y histogram is checked against the tile contract's band edges.
     'tests/test_gsv_tile_contract.py': '.claude/rules/downloader.md',
+    # The 2026-11-22 edge black-band calibration's decision pins EDGE_BAND_MAX_FRACTION (#179).
+    'tests/test_black_bands.py': '.claude/rules/store-repair.md',
 }
 
 

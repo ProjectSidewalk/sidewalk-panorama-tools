@@ -65,7 +65,8 @@ CONDITION_FRAME_DISAGREEMENT = 'frame-disagreement'
 # One or more GSV stitches were SAVED with an exact-black band deeper than common.EDGE_BAND_MAX_FRACTION along
 # the bottom or right edge (#179): ledgered downloaded=1, so a pano fires this once, the night it is
 # downloaded. Its own code, not an exclusion from a frame-disagreement count (#213 review, S2): a band is not
-# a frame disagreement, the limit is uncalibrated, and the detail names the first pano for the morning.
+# a frame disagreement, the limit is the store calibration's (reports/2026-11-22-edge-band-calibration.md), and
+# the detail names the first pano for the morning.
 CONDITION_EDGE_BAND = 'edge-band'
 # pano_id_log.csv could not be read, or csv could not parse it (a field over csv.field_size_limit(): a crash that
 # wrote binary junk), so the image phase - or the store pull - sat the run out without attempting a pano (#203).

@@ -1,0 +1,30 @@
+{
+ "recorded_after_the_fact": "Written on 2026-11-23, after the measurement ended, in answer to review 1 of the PR (S3). The plan asked for this file at run time and the script never wrote it. Every value below names where it was recovered from; nothing is reconstructed by guesswork.",
+ "commit_measured": {
+  "value": "6a38e901844186341b62e60670f35b48fbf18dee",
+  "evidence": "The run used the code archive delivered to the host's work directory on 2026-11-22 at 08:46:35 Pacific (16:46:35 UTC) and extracted beside the venv at 08:47:00. On 2026-11-23, one read-only host call found the archive's uncompressed tar sha256 to be 2052de0fe297cc08d0f6537c65d664b3db467ecc92dc01cb0979c82234a55ba3, which equals `git archive --format=tar 6a38e90 | sha256sum` here. That tar's embedded commit id (`git get-tar-commit-id`) is 6a38e901844186341b62e60670f35b48fbf18dee. What changed since then, and what did not (corrected 2026-11-23 after review 2, which found the earlier sentence here false): neither file is byte-identical to 6a38e90 at the PR head. scan_black_bands.py changed in its docstring only (36e81f4); with docstrings removed, its syntax tree at the head is identical to 6a38e90's. In reports/scripts/edge_band_calibration.py only analyze was edited and prose_figures added (a919b52), both offline analysis run on committed files; every other part of the script (frame, run, the dispatcher, extras, the guards, the classifier, D1) has a syntax tree identical to 6a38e90's. So the code that framed, swept and measured is unchanged."
+ },
+ "environment": {
+  "python": "3.12.15",
+  "pillow": "12.3.0",
+  "libjpeg": "6.2 (libjpeg-turbo 3.1.4.1)",
+  "numpy": "2.2.6",
+  "pip_freeze": ["aiohappyeyeballs==2.7.1", "aiohttp==3.14.3", "aiosignal==1.4.0", "attrs==26.1.0", "backoff==2.2.1",
+                 "certifi==2026.7.22", "charset-normalizer==3.5.1", "frozenlist==1.8.0", "idna==3.19",
+                 "multidict==6.7.1", "numpy==2.2.6", "pillow==12.3.0", "propcache==0.5.2", "requests==2.34.2",
+                 "typing_extensions==4.16.0", "urllib3==2.7.0", "yarl==1.24.5"],
+  "venv": "Created on local scratch on 2026-11-22 at 08:46:47 Pacific with `pip install pillow requests urllib3 aiohttp backoff numpy -c constraints.txt` from the delivered archive; include-system-site-packages = false.",
+  "evidence": "Read from the venv itself on 2026-11-23 by the same read-only host call (`python -c` version print, `pip freeze`, the venv's config, file times). The setup step on 2026-11-22 had printed the same four versions (Python 3.12.15, Pillow 12.3.0, libjpeg 6.2, numpy 2.2.6) before any store read, but that output went to the operator's terminal and was not committed. No session script installs anything, so the venv read on 2026-11-23 is taken to be the one every session ran in; that is an inference, not a measurement.",
+  "instrument_check": "instrument-check.csv: the committed band fixtures measured in this environment before any store read, equal value for value to a local measurement (Python 3.12.10, Pillow 12.3.0, libjpeg-turbo with version string 8.0)."
+ },
+ "sessions": {
+  "evidence": "sessions/<name>.json (written by the dispatcher at each session's end), run-<name>.log.txt",
+  "opening": {"start_utc": "2026-11-22T16:54:18Z", "end_utc": "2026-11-22T17:06:18Z", "readers": 1},
+  "main1": {"start_utc": "2026-11-22T17:07:02Z", "end_utc": "2026-11-22T23:12:52Z", "readers": 2},
+  "main2": {"start_utc": "2026-11-23T17:08:57Z", "end_utc": "2026-11-23T17:23:09Z", "readers": 1},
+  "extras": {"start_utc": "2026-11-23T17:23:09Z", "end_utc": "2026-11-23T17:49:26Z", "readers": 1,
+             "note": "Paced to the 60 MB/s cap only: not watched by the dispatcher's abort rules, and no timing log (run-main2.log.txt)."}
+ },
+ "seeds": {"seed_prefix": "179-calibration:", "formula": "random.Random('179-calibration:' + city).sample(sorted(gsv22_ids), 2500)", "evidence": "frame.json"},
+ "store_root": "<store-root>"
+}

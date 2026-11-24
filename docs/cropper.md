@@ -617,7 +617,7 @@ bands instead ([Ops → Edge black bands](ops.md#edge-black-bands), #179): it li
 they are deeper than 5% of the frame (`EDGE_BAND_MAX_FRACTION`); a band under 5% is neither flagged nor
 listed unless the sweep is run with `--min-band 0`. The downloader saves such a stitch but flags it (the
 `edge-band` run condition), and `scan_black_bands.py` lists the stored panos that have one, which are the
-panos whose crops to re-cut.
+panos whose crops to re-cut. On a Mapillary folder the list is mostly camera caps: the [calibration](../reports/2026-11-22-edge-band-calibration.md) measured exact-black caps at 0.174 of the height (juneau-ak) and 0.1875 (richmond-va), just past the H/6 (0.167) at which this check withholds a label.
 
 **Not an error.** `black_content` is like `dims_mismatch`: the run refused to trust the imagery rather than
 getting anything wrong, so it does not move the exit code or the `SYSTEMIC FAILURE` alarm. It *is* said: one
@@ -640,7 +640,7 @@ known limit. The pano-level check is on the downloader side, not here
 decode plus a full-frame luma copy (~134 MB at 16384×8192) per pano. The GSV downloader saves a new stitch
 with a deep edge band but flags it (the `edge-band` run condition), and `scan_black_bands.py` lists the panos
 on the store that have one.
-The cropper does not read that list; a person deletes the listed panos' crops and re-runs to re-cut them.
+The cropper does not read that list; a person deletes the listed panos' crops and re-runs to re-cut them. On a Mapillary folder the list is mostly camera caps: the [calibration](../reports/2026-11-22-edge-band-calibration.md) measured exact-black caps at 0.174 of the height (juneau-ak) and 0.1875 (richmond-va), just past the H/6 (0.167) at which this check withholds a label.
 
 ## Outcomes, exit code, and re-runs
 
@@ -1017,7 +1017,10 @@ can disagree slightly for a label near a band's edge; well inside a band both re
 never withheld ([the numbers](#the-content-check-black_content)), so a stricter threshold, such as 0.25, is
 the consumer's to choose. Alternatively, drop every crop whose pano is on `scan_black_bands.py`'s work-list
 ([Ops → Edge black bands](ops.md#edge-black-bands)). That also drops the D4 crops that are clean but
-mis-scaled, which no per-crop filter can see.
+mis-scaled, which no per-crop filter can see. But on a Mapillary folder it drops most of the folder: the
+[calibration](../reports/2026-11-22-edge-band-calibration.md) found exact-black camera caps at 0.174 of the height
+on juneau-ak's 8000x4000 panos and 0.1875 on richmond-va's 11000x5500 ones, beside the H/6 (0.167) the content
+check withholds at, so labels inside those caps are already withheld and the rest of the pano is imagery.
 
 **You will likely want to filter out labels where `disagree_count > agree_count`.** These come from human
 validations by other Project Sidewalk users; the cropper does **not** filter them by default. A stricter
