@@ -5,7 +5,7 @@
 # sidewalk-panorama-tools
 
 [![Tests](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/actions/workflows/tests.yml/badge.svg)](https://github.com/ProjectSidewalk/sidewalk-panorama-tools/actions/workflows/tests.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
 
 Python tooling that turns [Project Sidewalk](https://github.com/ProjectSidewalk/SidewalkWebpage)'s
 crowdsourced accessibility labels into machine-learning data: it downloads the Google Street View,
@@ -71,7 +71,7 @@ needs a true perspective (gnomonic) view of a label instead, with the rig-tilt c
 `render_view`. sidewalk-validator-ai and sidewalk-ai-api pin it so training and serving use the same
 framing. See [docs/geometry.md](docs/geometry.md).
 
-> **Requirements:** Python 3.10+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
+> **Requirements:** Python 3.12+ and ~2 GB RAM (a 16384×8192 panorama is 384 MB decoded). Linux is the
 > supported production platform; macOS and Windows are fine for development, and install without a
 > compiler. **No Docker** — the image and its sshfs entrypoint were
 > [retired from the repo in Aug 2026](docs/history.md#the-docker-image-aug-2026), and from the production box
