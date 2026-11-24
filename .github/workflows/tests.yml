@@ -17,7 +17,10 @@ jobs:
     # room for a slow runner or a cold pip resolve - while still failing a hang in minutes, not hours (#165).
     # Re-measured 2026-11-16 (#237): master's job took 13m37s-15m25s (runs 43726007931, 43727474183 and
     # 43727565985) and #237's 9m34s, so the margin is now under 1.5x on master's figures; not changed here.
-    timeout-minutes: 20
+    # Raised to 40 on 2026-11-24: PR heads measured 2026-11-22/23 took 15m35s-19m09s (#253, #254), and the same
+    # tests took 9m45s and 17m11s on consecutive heads, so the spread is the runner and a green PR could fail on
+    # time alone. 40 is about 2x the slowest run seen; a hang still fails in minutes, not hours.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

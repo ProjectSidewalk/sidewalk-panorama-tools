@@ -14,7 +14,7 @@ CI runs this on Ubuntu 22.04 / Python 3.10 for every push to `master` and every 
 ([`constraints.txt`](ops.md#refreshing-constraintstxt), #167) plus its own pins (`constraints-ci.txt`, #237:
 the pytest runner and torch), with a CPU-only torch installed on purpose for `test_torch_geometry.py`. A second workflow,
 [`tests-latest.yml`](../.github/workflows/tests-latest.yml), runs the same suite weekly with no constraints, so
-the latest releases are tested too. It never runs on a pull request and gates nothing. Both jobs have a 20-minute timeout, so a test
+the latest releases are tested too. It never runs on a pull request and gates nothing. Both suite jobs have a 40-minute timeout (raised from 20 on 2026-11-24, when PR runs reached 19 minutes), so a test
 that hangs instead of failing is a red X rather than a runner held for six hours. There is no pytest timeout,
 so a test that loops on an unbounded clock (an instant stand-in `run_one` under a real window) must bound it
 itself: a `FakeClock` the stand-in advances, or a call cap that raises. There is no linter configured.
