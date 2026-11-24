@@ -90,7 +90,7 @@ jobs:
       - run: pip install -c constraints.txt -c constraints-ci.txt numpy pytest Pillow requests urllib3 aiohttp backoff filelock typing_extensions sympy networkx jinja2 fsspec
       - run: pip install -c constraints.txt -c constraints-ci.txt --no-deps torch --index-url https://download.pytorch.org/whl/cpu
       # The package's own tests, so a standard-library call newer than this Python fails here.
-      - run: python -m pytest tests/test_torch_geometry.py tests/test_geometry.py tests/test_gsv_tiles.py tests/test_labels.py tests/test_pano_pose.py tests/test_ps_math.py tests/test_store.py -v
+      - run: python -m pytest tests/test_torch_geometry.py tests/test_geometry.py tests/test_gsv_tiles.py tests/test_gsv_equirect.py tests/test_gsv_stitcher.py tests/test_gsv_tile_contract.py tests/test_labels.py tests/test_pano_pose.py tests/test_ps_math.py tests/test_store.py -v
       - name: Build the wheel and import it from a fresh venv
         run: |
           pip wheel --no-deps -w "$RUNNER_TEMP/dist" .

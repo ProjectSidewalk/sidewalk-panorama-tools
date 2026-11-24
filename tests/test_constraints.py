@@ -156,8 +156,7 @@ class TestTheConstraintsFile:
 
     def test_it_exists_and_is_a_list_of_exact_pins(self):
         pins = _pins()
-        # The box's freeze had 65 packages on 2026-10-06; #237 deleted 41 by hand, leaving 24. A refresh after
-        # the #237 deploy stays near that; a handful means a truncated paste or a freeze of the wrong venv.
+        # The box's freeze is 23 packages; a handful means a truncated paste or a freeze of the wrong venv.
         assert len(pins) >= 20, 'constraints.txt pins only %d packages' % len(pins)
 
     def test_every_runtime_requirement_is_pinned(self):
@@ -437,7 +436,7 @@ REBUILD = '### Rebuilding the venv'
 # a by-name streetlevel install, the old one-line install, line 1 alone): the venv's freeze IS constraints.txt.
 FREEZE_CHECK = "diff <({venv}/bin/pip freeze | sort -f) <(grep -v '^#' constraints.txt | grep . | sort -f)"
 # .venv is a symlink on the box, so a rebuild repoints it in one rename and never builds at .venv itself.
-REPOINT = 'ln -s .venv-<date> .venv.new && mv -T .venv.new .venv'
+REPOINT = 'ln -sfn .venv-<date> .venv.new && mv -T .venv.new .venv'
 
 
 def _ops_section(heading):

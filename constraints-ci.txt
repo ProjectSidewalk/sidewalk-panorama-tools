@@ -6,7 +6,8 @@
 #
 # pytest and its requirements are the test runner (tests/conftest.py turns PytestRemovedIn10Warning into an
 # error, so a new pytest can fail an unrelated PR). torch and its requirements are the CPU-only wheel that
-# tests/test_torch_geometry.py and the coverage gate need, installed --no-deps from the CPU index.
+# tests/test_torch_geometry.py and the coverage gate need, installed --no-deps from the CPU index. async-timeout,
+# exceptiongroup and tomli are here for the package job alone: it runs on Python 3.10, which still needs them (#259).
 async-timeout==5.0.1
 exceptiongroup==1.3.1
 filelock==3.32.5

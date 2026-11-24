@@ -1546,7 +1546,8 @@ passing.
 renamed, because its scripts carry the absolute path of the interpreter they were built with, and
 `python3 -m venv .venv` fails through the link. So build a new one **beside** it, in the daytime
 (`python3 -m venv .venv-<date>`), run the two install lines and the checks from [Deploying](#deploying) against
-it, and repoint the link in one atomic step: `ln -s .venv-<date> .venv.new && mv -T .venv.new .venv`. The old
+it (`.venv-<date>/bin/` where they say `.venv/bin/`), and repoint the link in one atomic step:
+`ln -sfn .venv-<date> .venv.new && mv -T .venv.new .venv`. The old
 directory is untouched, so rolling back is repointing the link at it the same way. Remove it after a few clean
 nights, by its full name and never a glob: `rm -rf .venv*` would take the serving venv and the link with it.
 
