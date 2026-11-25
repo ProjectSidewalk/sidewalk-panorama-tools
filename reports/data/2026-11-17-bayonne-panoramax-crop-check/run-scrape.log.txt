@@ -1,0 +1,1 @@
+DEBUG:root:IMAGEDOWNLOAD: Final result: Completed 40 of 40 (40 success, 0 fallback success, 0 failed, 0 skipped)

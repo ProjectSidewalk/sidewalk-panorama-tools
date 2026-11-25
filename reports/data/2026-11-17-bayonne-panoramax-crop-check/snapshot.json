@@ -1,0 +1,23 @@
+{
+  "city": "bayonne-fr",
+  "counts": {
+    "label_panos": 40,
+    "labels": 81,
+    "panos": 98,
+    "panos_labelled": 40
+  },
+  "host": "sidewalk-bayonne.cs.washington.edu",
+  "platform": {
+    "implementation": "CPython",
+    "os": "Windows-11",
+    "python": "3.12.10",
+    "streetlevel_imports": false
+  },
+  "sha256": {
+    "crop_provenance.csv": "a54fb2fc9e77fcdb0fea0ca8bd11b2fe191c508018b87ca4ca85be03847f73ce",
+    "crop_provenance.run1.csv": "a54fb2fc9e77fcdb0fea0ca8bd11b2fe191c508018b87ca4ca85be03847f73ce",
+    "cvmetadata.json": "41bbd8ecbfe418781b1f9bb6e0865822afb1d4d3445b1d014dc6c927567f22fb",
+    "panos.json": "7b6161ac605158a9dfeda753c86827343071ce9e854e61a4bd087d2608d4446f"
+  },
+  "taken_at_utc": "2026-11-17T14:29:11+00:00"
+}
