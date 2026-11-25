@@ -1,0 +1,14 @@
+control 2182 0.354735
+fov25 2182 0.34947
+fov50 2182 0.319444
+fov90 2182 0.280305
+cut rows 10853 test keys in cut 2182
+Counter({'gsv': 10853})
+test depression p10/50/90 [ 8.7 15.1 27.2]
+v2 fov p10/50/90 [23.5 32.9 90. ] share>=70 0.139 share>=37.5 0.393 share<37.5 0.607
+v3 fov p10/50/90 [22.6 37.1 65. ] share>=70 0.074 share>=37.5 0.49 share<37.5 0.51
+(-90, 10) 365 {'fov25': 0.246, 'fov50': 0.208, 'fov90': 0.173} positives {'missing-tactile-warning': 114, 'narrow': 20, 'not-enough-landing-space': 7, 'not-level-with-street': 3, 'points-into-traffic': 39, 'pooled-water': 5, 'steep': 1, 'surface-problem': 22}
+(10, 20) 1205 {'fov25': 0.341, 'fov50': 0.332, 'fov90': 0.296} positives {'missing-tactile-warning': 465, 'narrow': 74, 'not-enough-landing-space': 48, 'not-level-with-street': 36, 'points-into-traffic': 164, 'pooled-water': 19, 'steep': 19, 'surface-problem': 157}
+(20, 26.55) 376 {'fov25': 0.421, 'fov50': 0.365, 'fov90': 0.316} positives {'missing-tactile-warning': 182, 'narrow': 33, 'not-enough-landing-space': 19, 'not-level-with-street': 23, 'points-into-traffic': 57, 'pooled-water': 9, 'steep': 8, 'surface-problem': 55}
+(26.55, 90) 236 {'fov25': 0.418, 'fov50': 0.388, 'fov90': 0.345} positives {'missing-tactile-warning': 110, 'narrow': 25, 'not-enough-landing-space': 10, 'not-level-with-street': 3, 'points-into-traffic': 37, 'pooled-water': 9, 'steep': 1, 'surface-problem': 33}
+camera_roll present 0 camera_pitch present 10853

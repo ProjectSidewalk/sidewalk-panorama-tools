@@ -1,0 +1,3 @@
+v2 window >= 37.5 deg from depression 17.24 ; >= 70 deg from 24.54
+v3 window >= 37.5 deg from depression 15.33 ; >= 70 deg from 29.48
+v3 fov at 2 m / 2.3412 m camera height pairs, sanity: W/h dof 5.8

@@ -1,0 +1,6 @@
+b=   0 pitch=2.0 roll=0.0  horizon above middle by 2.000 deg; T(b)=2.000
+b=  90 pitch=0.0 roll=2.0  horizon above middle by 2.000 deg; T(b)=2.000
+b= 180 pitch=2.0 roll=0.0  horizon above middle by -2.000 deg; T(b)=-2.000
+b= -90 pitch=0.0 roll=2.0  horizon above middle by -2.000 deg; T(b)=-2.000
+b=  45 pitch=1.0 roll=1.0  horizon above middle by 1.414 deg; T(b)=1.414
+wrap_deg(359.8) = -0.19999999999998863
